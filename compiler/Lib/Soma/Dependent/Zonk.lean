@@ -450,4 +450,91 @@ end
 def reportUnsolvedMetas (v : Value) (span : Span) : TCM Unit := do
   collectUnsolvedMetas v span
 
+/-- Eagerly expand all parameterized type abbreviation DataTypes in a Value -/
+partial def expandAbbrevValue (v : Value) : TCM Value := do
+  match v with
+  | .vDataType dId params =>
+    -- Check if this DataType is actually a type abbreviation
+    let abbrev? ← TCM.lookupAbbrev ⟨dId⟩
+    match abbrev? with
+    | some abbrevInfo =>
+      -- Recursively expand params first
+      let params' ← params.mapM expandAbbrevValue
+      if params'.length == abbrevInfo.arity then
+        -- Fully applied: expand the abbreviation by applying expansion to args
+        let mut result := abbrevInfo.expansion
+        for arg in params' do
+          match result with
+          | .vLam _ body => result ← applyClosure body arg
+          | .vPi _ _ _ _ cod => result ← applyClosure cod arg
+          | _ => return .vDataType dId params'
+        -- Recursively expand the result (abbreviations may contain other abbreviations)
+        expandAbbrevValue result
+      else
+        -- Not fully applied: keep as DataType with expanded params
+        return .vDataType dId params'
+    | none =>
+      -- Real DataType, not an abbreviation: expand params
+      let params' ← params.mapM expandAbbrevValue
+      return .vDataType dId params'
+  | .vPi qty binder name dom cod =>
+    let dom' ← expandAbbrevValue dom
+    let cod' ← expandAbbrevClosure cod
+    return .vPi qty binder name dom' cod'
+  | .vLam name body =>
+    let body' ← expandAbbrevClosure body
+    return .vLam name body'
+  | .vSigma qty name fst snd =>
+    let fst' ← expandAbbrevValue fst
+    let snd' ← expandAbbrevClosure snd
+    return .vSigma qty name fst' snd'
+  | .vPair a b =>
+    let a' ← expandAbbrevValue a
+    let b' ← expandAbbrevValue b
+    return .vPair a' b'
+  | .vNeutral ty neu =>
+    let ty' ← expandAbbrevValue ty
+    return .vNeutral ty' neu
+  | .vRecord row =>
+    let row' ← expandAbbrevValue row
+    return .vRecord row'
+  | .vVariant row =>
+    let row' ← expandAbbrevValue row
+    return .vVariant row'
+  | .vRowExtend label fieldTy tail =>
+    let label' ← expandAbbrevValue label
+    let fieldTy' ← expandAbbrevValue fieldTy
+    let tail' ← expandAbbrevValue tail
+    return .vRowExtend label' fieldTy' tail'
+  | .vRecordVal fields =>
+    let fields' ← fields.mapM fun (name, val) => do
+      let val' ← expandAbbrevValue val
+      return (name, val')
+    return .vRecordVal fields'
+  | .vConstructor name tag args rty =>
+    let args' ← args.mapM expandAbbrevValue
+    let rty' ← expandAbbrevValue rty
+    return .vConstructor name tag args' rty'
+  | .vEq l ty lhs rhs =>
+    let ty' ← expandAbbrevValue ty
+    let lhs' ← expandAbbrevValue lhs
+    let rhs' ← expandAbbrevValue rhs
+    return .vEq l ty' lhs' rhs'
+  | _ => return v
+where
+  /-- Expand abbreviations inside a closure by applying to a fresh var, expanding, and rebuilding -/
+  expandAbbrevClosure (clos : Closure) : TCM Closure := do
+    match clos with
+    | .const name val =>
+      let val' ← expandAbbrevValue val
+      return .const name val'
+    | .term name env body =>
+      -- Apply the closure to a fresh variable, expand abbreviations in the result,
+      -- then rebuild the closure via quote.
+      let freshVar := Value.vNeutral (.vType .zero) (.nVar ⟨name, env.level⟩)
+      let applied := Closure.applyPure clos freshVar
+      let expanded ← expandAbbrevValue applied
+      let bodyExpr := Soma.Core.quoteExpr env.level.succ expanded
+      return .term name env bodyExpr
+
 end Soma.Dependent

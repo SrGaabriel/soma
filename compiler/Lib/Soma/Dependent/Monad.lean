@@ -182,6 +182,7 @@ end InductiveMeta
 /-- Typed roles for language-level wired declarations -/
 inductive WiredRole where
   | pair
+  | typePair
   | cons
   | nil
   | typeInt
@@ -201,8 +202,10 @@ inductive WiredRole where
   | typeList
   | typeArray
   | typeRef
-  | typeIO
+  | typeWorld
   | typePtr
+  | pureIO
+  | bindIO
   | sortType
   | sortType0
   | sortType1
@@ -224,6 +227,7 @@ namespace WiredRole
 
 def canonical : WiredRole → String
   | .pair => "pair"
+  | .typePair => "type.pair"
   | .cons => "cons"
   | .nil => "nil"
   | .typeInt => "type.int"
@@ -243,8 +247,10 @@ def canonical : WiredRole → String
   | .typeList => "type.list"
   | .typeArray => "type.array"
   | .typeRef => "type.ref"
-  | .typeIO => "type.io"
+  | .typeWorld => "type.world"
   | .typePtr => "type.ptr"
+  | .pureIO => "io.pure"
+  | .bindIO => "io.bind"
   | .sortType => "sort.type"
   | .sortType0 => "sort.type0"
   | .sortType1 => "sort.type1"
@@ -265,6 +271,7 @@ instance : ToString WiredRole := ⟨canonical⟩
 
 def fromString? : String → Option WiredRole
   | "pair" => some .pair
+  | "type.pair" => some .typePair
   | "cons" => some .cons
   | "nil" => some .nil
   | "type.int" | "int" => some .typeInt
@@ -284,8 +291,10 @@ def fromString? : String → Option WiredRole
   | "type.list" | "list" => some .typeList
   | "type.array" | "array" => some .typeArray
   | "type.ref" | "ref" => some .typeRef
-  | "type.io" | "io" => some .typeIO
+  | "type.world" | "world" => some .typeWorld
   | "type.ptr" | "ptr" => some .typePtr
+  | "io.pure" => some .pureIO
+  | "io.bind" => some .bindIO
   | "sort.type" | "type" => some .sortType
   | "sort.type0" | "type0" => some .sortType0
   | "sort.type1" | "type1" => some .sortType1
@@ -318,7 +327,7 @@ def primType? : WiredRole → Option Soma.Core.PrimType
   | .typeWord8 => some .word8
   | .typeWord16 => some .word16
   | .typeWord64 => some .word64
-  | .typeIO => some .io
+  | .typeWorld => some .world
   | .typeArray => some .array
   | .typeList => some .list
   | .typeRef => some .ref
@@ -876,9 +885,10 @@ def forModule (moduleName : String) : TCState :=
   { uniqueSupply := Soma.UniqueSupply.initial moduleName }
 
 /-- Create a fresh metavariable -/
-def freshMeta (s : TCState) (ty : Value) (ctx : List CtxEntry) : MetaId × TCState :=
+def freshMeta (s : TCState) (ty : Value) (ctx : List CtxEntry)
+    (piLevel : Option Nat := none) : MetaId × TCState :=
   let ctxList := ctx.map fun e => (e.name, e.type, e.qty)
-  let (id, metas') := s.metas.fresh ty ctxList
+  let (id, metas') := s.metas.fresh ty ctxList (piLevel := piLevel)
   (id, { s with metas := metas' })
 
 /-- Create a fresh level variable -/
@@ -1310,10 +1320,10 @@ def getErrors : TCM (Array TCError) := do
   return state.errors
 
 /-- Create a fresh metavariable of the given type -/
-def freshMeta (ty : Value) : TCM MetaId := do
+def freshMeta (ty : Value) (piLevel : Option Nat := none) : TCM MetaId := do
   let ctx ← getCtx
   let state ← getState
-  let (id, state') := state.freshMeta ty ctx.locals
+  let (id, state') := state.freshMeta ty ctx.locals (piLevel := piLevel)
   set state'
   return id
 
@@ -1329,6 +1339,10 @@ def freshMetaVal (ty : Value) : TCM Value := do
 /-- Solve a metavariable -/
 def solveMeta (id : MetaId) (v : Value) : TCM Unit := do
   modifyState (·.solveMeta id v)
+
+/-- Clear a metavariable's solution, making it unsolved again -/
+def unsolvedMeta (id : MetaId) : TCM Unit := do
+  modifyState fun s => { s with metas := s.metas.unsolve id }
 
 /-- Update metavariable solution for path compression.
     This is a lightweight version of solveMeta that just updates the solution

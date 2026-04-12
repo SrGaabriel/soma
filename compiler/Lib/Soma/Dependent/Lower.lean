@@ -27,15 +27,17 @@ private def extractVarName : Syntax.Pattern → String
   | .typed inner _ _ => extractVarName inner
   | _ => "_"
 
-private partial def explicitArityOfType : Syntax.TypeExpr → Nat
-  | .arrow _ to _ => 1 + explicitArityOfType to
-  | .pi _ _ _ cod _ => 1 + explicitArityOfType cod
+/-- Count the minimum explicit parameter arity visible in a type expression -/
+private partial def explicitArityOfType : Syntax.TypeExpr → Option Nat
+  | .arrow _ to _ => (explicitArityOfType to).map (· + 1)
+  | .pi _ _ _ cod _ => (explicitArityOfType cod).map (· + 1)
   | .implicit _ _ cod _ => explicitArityOfType cod
   | .forall_ _ body _ => explicitArityOfType body
   | .constrained _ body _ => explicitArityOfType body
   | .parens inner _ => explicitArityOfType inner
   | .kinded ty _ _ => explicitArityOfType ty
-  | _ => 0
+  | .app _ _ _ => none
+  | _ => some 0
 
 private def functionAttrsFromSyntax
     (attrs : Array Syntax.Attribute)
@@ -66,6 +68,7 @@ private def functionAttrsFromSyntax
     inline := attrs.any fun a => a.name.name == "inline"
     noInline := attrs.any fun a => a.name.name == "noinline"
     total := attrs.any fun a => a.name.name == "total"
+    irreducible := attrs.any fun a => a.name.name == "irreducible"
     deprecated := none
     extern := externName
     intrinsic := intrinsicTag
@@ -161,14 +164,16 @@ private def lowerFunctionDeclCore
         let hasPatternClauses := clauses.any (fun c => c.patterns.size > 0)
         if hasPatternClauses then
           if let some sigTy := sig then
-            let totalArity := explicitArityOfType sigTy
-            let explicitHeaderParams := headerParams.filter (!·.isImplicit)
-            let expectedArity := totalArity - explicitHeaderParams.size
-            if let some badClause := clauses.find? (fun c => c.patterns.size != expectedArity) then
-              let d := Diagnostic.error
-                (s!"definition '{name.name}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}")
-                badClause.span
-              return (none, #[d])
+            -- Arity check: only validate when the syntactic type is fully known
+            match explicitArityOfType sigTy with
+            | some totalArity =>
+              let explicitHeaderParams := headerParams.filter (!·.isImplicit)
+              let expectedArity := totalArity - explicitHeaderParams.size
+              if let some badClause := clauses.find? (fun c => c.patterns.size != expectedArity) then
+                return (none, #[Diagnostic.error
+                  (s!"definition '{name.name}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}")
+                  badClause.span])
+            | none => pure ()  -- Alias application in tail: defer arity check to elaborator
 
         let headerParamNames := (headerParams.filter (!·.isImplicit)).map (·.name.name)
         if allSimplePatterns clause.patterns then

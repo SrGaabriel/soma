@@ -148,9 +148,12 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     -- Resolve through the namespace tree
     else match ← TCM.resolve name.path name.name with
     | some qn =>
-      -- Check if it's a type abbreviation
       if let some abbrevInfo ← TCM.lookupAbbrev qn then
-        return abbrevInfo.expansion
+        -- Parameterized abbreviations are represented as vDataType during elaboration
+        if abbrevInfo.arity > 0 then
+          return Value.vDataType abbrevInfo.abbrevId []
+        else
+          return abbrevInfo.expansion
       -- Check globals for constructors/types
       else if let some globalInfo ← TCM.lookupGlobal name.path name.name then
         if globalInfo.isConstructor then
@@ -167,7 +170,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
         return Value.vDataType qn.id []
     | none =>
       TCM.throw (.cannotInfer
-        s!"unknown type constructor `{name.name}` (no builtin/intrinsic binding in context)"
+        s!"unknown type constructor `{name.name}`"
         name.span
         none)
 
@@ -185,8 +188,10 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Accumulate arguments to the constructor
       return Value.vConstructor name tag (args ++ [argVal]) rty
     | .vPi _ _ _ _ cod =>
-      -- Apply function type - evaluate the closure with TCM's applyClosure
+      -- Apply Pi type
       Soma.Dependent.applyClosure cod argVal
+    | .vLam _ body =>
+      Soma.Dependent.applyClosure body argVal
     | .vNeutral ty neu =>
       -- Stuck application; if the function kind is Pi, compute codomain kind.
       let resultTy ← match ty with

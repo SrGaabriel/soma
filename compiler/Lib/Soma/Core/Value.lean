@@ -214,6 +214,12 @@ def Env.lookupByName (env : Env) (name : String) : Option Value :=
 /-- Current level (next variable will get this level) -/
 def Env.level (env : Env) : DeBruijnLvl := ⟨env.size⟩
 
+/-- Level accessor for closures -/
+def Closure.level? (c : Closure) : Option DeBruijnLvl :=
+  match c with
+  | .term _ env _ => some env.level
+  | .const _ _ => none
+
 /-- Create a closure with no body (placeholder) -/
 def Closure.mkEmpty (name : String) (env : Env) : Closure :=
   let clos : Closure := .term name env (.bvar 0)
@@ -389,6 +395,9 @@ structure MetaInfo where
   dependsOn : Array MetaId := #[]
   /-- Metavariables that depend on this meta (reverse of dependsOn) -/
   dependents : Array MetaId := #[]
+  /-- When this meta was created for an implicit Pi binder's type parameter,
+      the de Bruijn level of that binder -/
+  piLevel : Option Nat := none
   deriving Inhabited
 
 /-- A constraint index for tracking which constraints involve which metas -/
@@ -481,9 +490,10 @@ structure MetaState where
 
 def MetaState.empty : MetaState := ⟨{}, 0, {}⟩
 
-def MetaState.fresh (state : MetaState) (ty : Value) (ctx : List (String × Value × Quantity)) : MetaId × MetaState :=
+def MetaState.fresh (state : MetaState) (ty : Value) (ctx : List (String × Value × Quantity))
+    (piLevel : Option Nat := none) : MetaId × MetaState :=
   let id := state.nextId
-  let info : MetaInfo := { type := ty, context := ctx }
+  let info : MetaInfo := { type := ty, context := ctx, piLevel := piLevel }
   let metas := state.metas.insert id info
   (⟨id⟩, { state with metas := metas, nextId := id + 1 })
 
@@ -494,6 +504,14 @@ def MetaState.solve (state : MetaState) (id : MetaId) (v : Value) : MetaState :=
     { state with metas := state.metas.insert id.id info' }
   | none => state
 
+/-- Clear a metavariable's solution (make it unsolved again) -/
+def MetaState.unsolve (state : MetaState) (id : MetaId) : MetaState :=
+  match state.metas.get? id.id with
+  | some info =>
+    let info' : MetaInfo := { info with solution := none }
+    { state with metas := state.metas.insert id.id info' }
+  | none => state
+
 def MetaState.lookup (state : MetaState) (id : MetaId) : Option MetaInfo :=
   state.metas.get? id.id
 
@@ -501,6 +519,13 @@ def MetaState.isSolved (state : MetaState) (id : MetaId) : Bool :=
   match state.metas.get? id.id with
   | some info => info.solution.isSome
   | none => false
+
+/-- Build a map from MetaId to the de Bruijn level of the Pi binder it represents -/
+def MetaState.implicitLevelMap (state : MetaState) : Std.HashMap Nat Nat :=
+  state.metas.fold (init := {}) fun acc metaId info =>
+    match info.piLevel with
+    | some lvl => acc.insert metaId lvl
+    | none => acc
 
 /-- Register a constraint and the metas it references -/
 def MetaState.registerConstraint (state : MetaState) (metas : Array MetaId)

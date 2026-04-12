@@ -15,10 +15,13 @@ structure ProcessResult where
   exitCode : UInt32
   stdout : String
   stderr : String
+  timedOut : Bool := false
   deriving Repr
 
-/-- Run a process and capture output -/
-def runProcess (cmd : String) (args : Array String) : IO ProcessResult := do
+/-- Run a process with a timeout (in milliseconds). If the process exceeds the
+    timeout, it is killed and a timeout result is returned. Uses IO.asTask to
+    run the process wait on a separate thread, racing it against a timer. -/
+def runProcess (cmd : String) (args : Array String) (timeoutMs : Nat := 0) : IO ProcessResult := do
   let config : IO.Process.SpawnArgs := {
     cmd := cmd
     args := args
@@ -26,10 +29,30 @@ def runProcess (cmd : String) (args : Array String) : IO ProcessResult := do
     stderr := .piped
   }
   let proc ← IO.Process.spawn config
-  let stdout ← proc.stdout.readToEnd
-  let stderr ← proc.stderr.readToEnd
-  let exitCode ← proc.wait
-  return { exitCode, stdout, stderr }
+  if timeoutMs == 0 then
+    let stdout ← proc.stdout.readToEnd
+    let stderr ← proc.stderr.readToEnd
+    let exitCode ← proc.wait
+    return { exitCode, stdout, stderr }
+  else
+    let waitTask ← IO.asTask do
+      let stdout ← proc.stdout.readToEnd
+      let stderr ← proc.stderr.readToEnd
+      let exitCode ← proc.wait
+      return (exitCode, stdout, stderr)
+    let timerTask ← IO.asTask do
+      IO.sleep (timeoutMs.toUInt32)
+    let winner ← IO.waitAny [
+      waitTask.map fun r => Sum.inl r,
+      timerTask.map fun _ => Sum.inr ()
+    ]
+    match winner with
+    | .inl (.ok (exitCode, stdout, stderr)) =>
+      return { exitCode, stdout, stderr }
+    | .inl (.error e) =>
+      return { exitCode := 1, stdout := "", stderr := s!"Process error: {e}" }
+    | .inr _ =>
+      return { exitCode := 1, stdout := "", stderr := s!"TIMEOUT: process exceeded {timeoutMs}ms time limit", timedOut := true }
 
 /-- Normalize line endings and trailing whitespace for comparison -/
 def normalizeOutput (s : String) : String :=
@@ -88,11 +111,6 @@ partial def LibCache.ensure (cache : LibCache) (lib : String) : IO (LibCache × 
   IO.FS.createDirAll libCacheDir
   let outputPath := libCacheDir / s!"{lib}.toria"
 
-  -- Skip rebuild if artifact already exists on disk
-  if ← outputPath.pathExists then
-    let cache' := { cache with artifacts := cache.artifacts.insert lib outputPath }
-    return (cache', outputPath)
-
   let buildOpts : BuildOptions := {
     input := srcDir.toString
     output := some outputPath.toString
@@ -147,7 +165,8 @@ def LibCache.resolveTestDeps (cache : LibCache) (tc : TestCase)
 
 /-- Run the test body, returning the result -/
 private def runTestBody (tc : TestCase) (tempDir : System.FilePath)
-    (deps : Array (String × String)) (profile : OptProfile) : IO (String × TestResult) := do
+    (deps : Array (String × String)) (profile : OptProfile)
+    (defaultTimeout : Nat) : IO (String × TestResult) := do
   let testId := s!"e2e/{tc.name}[{profile}]"
 
   setupTestDir tc tempDir
@@ -176,7 +195,11 @@ private def runTestBody (tc : TestCase) (tempDir : System.FilePath)
   unless ← outputPath.pathExists do
     return (testId, .failed s!"Compilation succeeded but output file not found: {outputPath}")
 
-  let runResult ← runProcess outputPath.toString #[]
+  let timeout := tc.runTimeout.getD defaultTimeout
+  let runResult ← runProcess outputPath.toString #[] timeout
+
+  if runResult.timedOut then
+    return (testId, .failed s!"Execution timed out after {timeout}ms")
 
   if runResult.exitCode ≠ tc.expectedExitCode then
     return (testId, .failed s!"Exit code mismatch: expected {tc.expectedExitCode}, got {runResult.exitCode}\nstdout: {runResult.stdout}\nstderr: {runResult.stderr}")
@@ -204,7 +227,7 @@ def runTestCase (config : Config) (cache : LibCache) (tc : TestCase) (profile : 
     let errMsg := deps.find? (·.1 == "_err") |>.map (·.2) |>.getD "unknown"
     return (cache, s!"e2e/{tc.name}[{profile}]", .failed s!"Dependency resolution failed: {errMsg}")
 
-  let result ← runTestBody tc tempDir deps profile |>.catchExceptions fun e =>
+  let result ← runTestBody tc tempDir deps profile config.runTimeout |>.catchExceptions fun e =>
     pure (s!"e2e/{tc.name}[{profile}]", .failed s!"Exception: {e}")
 
   -- Keep temp dir on failure for debugging

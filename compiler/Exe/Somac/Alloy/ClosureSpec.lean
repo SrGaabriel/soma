@@ -1,5 +1,6 @@
 import Somac.Alloy.Func
 import Somac.Alloy.Analysis
+import Somac.Alloy.Monomorphize
 import Std.Data.HashMap
 import Std.Data.HashSet
 
@@ -42,6 +43,15 @@ private def removeAt [Inhabited α] (arr : Array α) (idx : Nat) : Array α := I
   let mut result : Array α := #[]
   for i in [:arr.size] do
     if i != idx then result := result.push arr[i]!
+  return result
+
+/-- Insert an element at a given index, shifting subsequent elements right -/
+private def insertAtIdx [Inhabited α] (arr : Array α) (idx : Nat) (val : α) : Array α := Id.run do
+  let mut result : Array α := #[]
+  for i in [:arr.size] do
+    if i == idx then result := result.push val
+    result := result.push arr[i]!
+  if idx >= arr.size then result := result.push val
   return result
 
 
@@ -282,10 +292,40 @@ private def remapLocalInOperand (op : Operand) (from_ to_ : LocalId) : Operand :
 private def remapLocalsInOps (ops : Array Operand) (from_ to_ : LocalId) : Array Operand :=
   ops.map fun op => remapLocalInOperand op from_ to_
 
+/-- Resolve the actual environment operand for a recursive call's closure argument -/
+private def resolveRecursiveEnv (cfg : ClosedCFG) (closureArg : Operand)
+    (targetFuncId : FuncId) (envLocalId : Option LocalId) : Operand :=
+  match closureArg with
+  | .local lid =>
+    let found := cfg.blocks.toArray.findSome? fun (_, block) =>
+      block.stmts.findSome? fun stmt =>
+        match stmt.result with
+        | some resultId =>
+          if resultId == lid then
+            match stmt.inst with
+            | .makeClosure (.local funcId) env =>
+              if funcId == targetFuncId then some env else none
+            | .makeClosurePoly (.local funcId) _ env =>
+              if funcId == targetFuncId then some env else none
+            | _ => none
+          else none
+        | none => none
+    match found with
+    | some dynamicEnv => dynamicEnv
+    | none =>
+      match envLocalId with
+      | some envId => .local envId
+      | none => closureArg
+  | _ =>
+    match envLocalId with
+    | some envId => .local envId
+    | none => closureArg
+
 /-- Rewrite a statement for the specialized function -/
 private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet Nat)
     (targetFuncId : FuncId) (origFuncId : FuncId) (specFuncId : FuncId)
     (paramIdx : Nat) (hasEnv : Bool) (envLocalId : Option LocalId)
+    (cfg : ClosedCFG)
     (targetRetTy : Option ClosedTy := none)
     : Option ClosedStmt :=
   match stmt.inst with
@@ -298,19 +338,29 @@ private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet
           | some envId => #[.local envId] ++ args
           | none => args
         else args
-        let actualRetTy := targetRetTy.getD retTy
+        let actualRetTy := if retTy != .rawPtr then retTy else targetRetTy.getD retTy
         some { stmt with inst := .call targetFuncId callArgs actualRetTy }
       else some stmt
     | _ => some stmt
   | .call funcId args retTy =>
     if funcId == origFuncId then
       let newArgs := removeAt args paramIdx
-      some { stmt with inst := .call specFuncId newArgs retTy }
+      let finalArgs := if hasEnv then
+        let closureArg := if h : paramIdx < args.size then args[paramIdx] else .const .unit
+        let dynamicEnv := resolveRecursiveEnv cfg closureArg targetFuncId envLocalId
+        insertAtIdx newArgs paramIdx dynamicEnv
+      else newArgs
+      some { stmt with inst := .call specFuncId finalArgs retTy }
     else some stmt
   | .callPoly funcId _tyArgs args retTy =>
     if funcId == origFuncId then
       let newArgs := removeAt args paramIdx
-      some { stmt with inst := .call specFuncId newArgs retTy }
+      let finalArgs := if hasEnv then
+        let closureArg := if h : paramIdx < args.size then args[paramIdx] else .const .unit
+        let dynamicEnv := resolveRecursiveEnv cfg closureArg targetFuncId envLocalId
+        insertAtIdx newArgs paramIdx dynamicEnv
+      else newArgs
+      some { stmt with inst := .call specFuncId finalArgs retTy }
     else some stmt
   | .erase (.local lid) _ =>
     -- Drop erase of closure-derived values since the caller owns the env lifetime
@@ -327,11 +377,12 @@ private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet
 private def rewriteBlockForSpec (block : ClosedBlock) (closureDerived : Std.HashSet Nat)
     (targetFuncId : FuncId) (origFuncId : FuncId) (specFuncId : FuncId)
     (paramIdx : Nat) (hasEnv : Bool) (envLocalId : Option LocalId)
+    (cfg : ClosedCFG)
     (targetRetTy : Option ClosedTy := none)
     : ClosedBlock :=
   let newStmts := block.stmts.filterMap fun stmt =>
     rewriteStmtForSpec stmt closureDerived
-      targetFuncId origFuncId specFuncId paramIdx hasEnv envLocalId targetRetTy
+      targetFuncId origFuncId specFuncId paramIdx hasEnv envLocalId cfg targetRetTy
   { block with stmts := newStmts }
 
 /-- Create a specialized version of a function with a known closure parameter -/
@@ -383,21 +434,22 @@ def specializeFunc (m : Module) (origFunc : ClosedFunc) (req : SpecRequest)
   let newBlocks := cfg.blocks.fold (init := ({} : Std.HashMap Nat ClosedBlock))
     fun acc id block =>
       acc.insert id (rewriteBlockForSpec block closureDerived
-        req.targetFuncId origFunc.id specFuncId req.paramIdx req.hasEnv envLocalId targetRetTy)
+        req.targetFuncId origFunc.id specFuncId req.paramIdx req.hasEnv envLocalId cfg targetRetTy)
 
   -- Update local types: remove closure-derived locals and fix return types for callClosure → direct call rewrites
   let mut cleanLocalTypes := origFunc.localTypes.fold (init := ({} : Std.HashMap Nat ClosedTy))
     fun acc lid ty =>
       if closureDerived.contains lid || lid == closureParamId.id then acc
       else acc.insert lid ty
-  if let some retTy := targetRetTy then
-    for (_, block) in cfg.blocks.toArray do
-      for stmt in block.stmts do
-        match stmt.inst, stmt.result with
-        | .callClosure (.local cloId) _ _, some rid =>
-          if closureDerived.contains cloId.id then
-            cleanLocalTypes := cleanLocalTypes.insert rid.id retTy
-        | _, _ => pure ()
+  for (_, block) in cfg.blocks.toArray do
+    for stmt in block.stmts do
+      match stmt.inst, stmt.result with
+      | .callClosure (.local cloId) _ cloRetTy, some rid =>
+        if closureDerived.contains cloId.id then
+          let bestRetTy := if cloRetTy != .rawPtr then cloRetTy
+            else targetRetTy.getD cloRetTy
+          cleanLocalTypes := cleanLocalTypes.insert rid.id bestRetTy
+      | _, _ => pure ()
 
   let specName := s!"{origFunc.sig.name}$cs_{req.targetFuncId.id}"
   return {
@@ -479,19 +531,19 @@ private def inlineCall (callee : ClosedFunc) (callArgs : Array Operand)
         freshId := freshId + 1
         freshTypes := freshTypes.insert convId.id paramTy
         -- Determine conversion direction
+        let isAggregate := fun (t : ClosedTy) => match t with | .struct _ | .tagged _ _ => true | _ => false
+        let argIsAggregate := match argTy with | some t => isAggregate t | none => false
         let convInst : ClosedInst :=
-          if isPtrLikeTy (argTy.getD .rawPtr) then
-            -- ptr-like → prim: ptrtoint
+          if argIsAggregate && !isAggregate paramTy then
+            .copy argOp
+          else if isPtrLikeTy (argTy.getD .rawPtr) then
             match asPrimTy paramTy with
             | some primTy => .unOp (.ptrtoint primTy) argOp
             | none => .unOp (.bitcast paramTy) argOp
+          else if isPtrLikeTy paramTy then
+            .unOp .inttoptr argOp
           else
-            -- prim → ptr-like: inttoptr
-            if isPtrLikeTy paramTy then
-              .unOp .inttoptr argOp
-            else
-              -- Fallback: bitcast
-              .unOp (.bitcast paramTy) argOp
+            .unOp (.bitcast paramTy) argOp
         conversionStmts := conversionStmts.push
           { result := some convId, inst := convInst }
         paramSubst := paramSubst.insert callee.sig.params[i]!.id.id (.local convId)
@@ -546,18 +598,21 @@ private def inlineCall (callee : ClosedFunc) (callArgs : Array Operand)
         inlinedStmts := inlinedStmts.push
           { result := some rawRetId, inst := .copy remappedRet }
         -- Insert conversion from callee return type to expected return type
-        let convInst : ClosedInst :=
-          if isPtrLikeTy calleeRetTy then
-            -- ptr-like → prim: ptrtoint
-            match asPrimTy expectedRetTy with
-            | some primTy => .unOp (.ptrtoint primTy) (.local rawRetId)
-            | none => .unOp (.bitcast expectedRetTy) (.local rawRetId)
+        let isAggregate := fun (t : ClosedTy) => match t with | .struct _ | .tagged _ _ => true | _ => false
+        let structScalarMismatch := isAggregate calleeRetTy && !isAggregate expectedRetTy
+        let (convInst, resultTy) :=
+          if structScalarMismatch then
+            (.copy (.local rawRetId), calleeRetTy)
+          else if isPtrLikeTy calleeRetTy then
+            let inst := match asPrimTy expectedRetTy with
+              | some primTy => .unOp (.ptrtoint primTy) (.local rawRetId)
+              | none => .unOp (.bitcast expectedRetTy) (.local rawRetId)
+            (inst, expectedRetTy)
           else if isPtrLikeTy expectedRetTy then
-            -- prim → ptr-like: inttoptr
-            .unOp .inttoptr (.local rawRetId)
+            (.unOp .inttoptr (.local rawRetId), expectedRetTy)
           else
-            .unOp (.bitcast expectedRetTy) (.local rawRetId)
-        freshTypes := freshTypes.insert cResult.id expectedRetTy
+            (.unOp (.bitcast expectedRetTy) (.local rawRetId), expectedRetTy)
+        freshTypes := freshTypes.insert cResult.id resultTy
         inlinedStmts := inlinedStmts.push
           { result := some cResult, inst := convInst }
       else
@@ -692,11 +747,12 @@ private def closureAnalysisSpec (m : Module) (localTypes : Std.HashMap Nat Close
 /-- Rewrite a block's callClosure instructions using analysis results -/
 private def rewriteBlockWithAnalysis (m : Module) (localTypes : Std.HashMap Nat ClosedTy)
     (block : ClosedBlock) (entryState : Analysis.AbsState ClosureVal) (nextLocalId : Nat)
-    : ClosedBlock × Nat := Id.run do
+    : ClosedBlock × Nat × Std.HashMap Nat ClosedTy := Id.run do
   let spec := closureAnalysisSpec m localTypes
   let mut state := entryState
   let mut newStmts : Array ClosedStmt := #[]
   let mut freshId := nextLocalId
+  let mut typeUpdates : Std.HashMap Nat ClosedTy := {}
   for stmt in block.stmts do
     match stmt.inst with
     | .phi _ _ =>
@@ -713,8 +769,15 @@ private def rewriteBlockWithAnalysis (m : Module) (localTypes : Std.HashMap Nat 
             let callArgs := totalArgs[:arity].toArray
             let extraArgs := if totalArgs.size > arity then totalArgs[arity:].toArray else #[]
             if extraArgs.isEmpty then
-              -- Exactly saturated: replace with direct call, keep original result
-              newStmts := newStmts.push { stmt with inst := .call funcId callArgs retTy }
+              let sigRetTy := match m.getFunc funcId with
+                | some sf => match sf.asMono? with
+                  | some f => if f.sig.retTy != .rawPtr then f.sig.retTy else retTy
+                  | none => retTy
+                | none => retTy
+              newStmts := newStmts.push { stmt with inst := .call funcId callArgs sigRetTy }
+              if let some rid := stmt.result then
+                if sigRetTy != retTy then
+                  typeUpdates := typeUpdates.insert rid.id sigRetTy
             else
               -- Over-saturated: direct call returns a closure, then apply remaining args
               let mut curId : LocalId := ⟨freshId⟩
@@ -744,7 +807,7 @@ private def rewriteBlockWithAnalysis (m : Module) (localTypes : Std.HashMap Nat 
     | _ =>
       state := spec.transfer state stmt
       newStmts := newStmts.push stmt
-  return ({ block with stmts := newStmts }, freshId)
+  return ({ block with stmts := newStmts }, freshId, typeUpdates)
 
 /-- Flatten makeClosure → callClosure chains across all blocks in a function -/
 def flattenClosureChains (m : Module) (f : ClosedFunc) : ClosedFunc := Id.run do
@@ -762,15 +825,19 @@ def flattenClosureChains (m : Module) (f : ClosedFunc) : ClosedFunc := Id.run do
   let rpo := cfg.reversePostorder
   let mut newBlocks := cfg.blocks
   let mut freshId := f.nextLocalId
+  let mut updatedLocalTypes := f.localTypes
   for bid in rpo do
     let some block := cfg.getBlock bid | continue
     let entryState := result.blockEntryState closureDomain predMap bid cfg.entry initState
-    let (newBlock, newFreshId) := rewriteBlockWithAnalysis m f.localTypes block entryState freshId
+    let (newBlock, newFreshId, typeUpdates) := rewriteBlockWithAnalysis m f.localTypes block entryState freshId
     newBlocks := newBlocks.insert bid.id newBlock
     freshId := newFreshId
+    for (lid, ty) in typeUpdates.toArray do
+      updatedLocalTypes := updatedLocalTypes.insert lid ty
   return { f with
     body := some { cfg with blocks := newBlocks }
     nextLocalId := freshId
+    localTypes := updatedLocalTypes
   }
 
 /-- Find the makeClosure instruction that produces a given local, checking expected target -/
@@ -897,6 +964,7 @@ def closureSpec (m : Module) : Module := Id.run do
     if closureCountAfter >= closureCountBefore then
       break
 
+  module := Somac.Alloy.Monomorphize.deadFunctionElimination module
   return module
 
 end Somac.Alloy.ClosureSpec

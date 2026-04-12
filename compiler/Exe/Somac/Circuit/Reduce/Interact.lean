@@ -206,9 +206,19 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
     let lam0 ← ReduceM.addNode (.lam erased) valEntry.ty
     let lam1 ← ReduceM.addNode (.lam erased) valEntry.ty
 
+    let varTy := valEntry.ty.piDomain?.getD valEntry.ty
+    let bodyTy := match valEntry.ty with
+      | .vPi _ _ name dom cod =>
+        match cod with
+        | .const _ value => value
+        | .term _ env _ =>
+          let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
+          cod.applyPure dummyArg
+      | _ => valEntry.ty
+
     if !erased then
-      -- DUP the variable binding
-      let dupVar ← ReduceM.addNode (.dup label) valEntry.ty
+      -- DUP the variable binding (domain type)
+      let dupVar ← ReduceM.addNode (.dup label) varTy
       -- DUP_var.principal ← whatever LAM.var was connected to
       ReduceM.rewirePort ⟨valId, ⟨1⟩⟩ (PortId.principal dupVar)
       -- DUP_var.aux0 ← LAM0.var, DUP_var.aux1 ← LAM1.var
@@ -222,8 +232,8 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
       ReduceM.connect (PortId.principal eraVar1) ⟨lam1, ⟨1⟩⟩
       ReduceM.disconnect ⟨valId, ⟨1⟩⟩
 
-    -- DUP the body
-    let dupBody ← ReduceM.addNode (.dup label) valEntry.ty
+    -- DUP the body (codomain type)
+    let dupBody ← ReduceM.addNode (.dup label) bodyTy
     ReduceM.rewirePort ⟨valId, ⟨2⟩⟩ (PortId.principal dupBody)
     ReduceM.connect ⟨dupBody, ⟨1⟩⟩ ⟨lam0, ⟨2⟩⟩
     ReduceM.connect ⟨dupBody, ⟨2⟩⟩ ⟨lam1, ⟨2⟩⟩
@@ -256,8 +266,15 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
       -- DUP^L1(SUP^L2(a, b)) → (SUP^L2(DUP^L1(a)₀, DUP^L1(b)₀),
       --                           SUP^L2(DUP^L1(a)₁, DUP^L1(b)₁))
       ReduceM.modifyStats (·.incDupSupCommutation)
-      let dupA ← ReduceM.addNode (.dup label) valEntry.ty
-      let dupB ← ReduceM.addNode (.dup label) valEntry.ty
+      -- Get field types from connected nodes rather than the parent SUP type
+      let tyA ← match valEntry.getPort ⟨1⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure valEntry.ty
+      let tyB ← match valEntry.getPort ⟨2⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure valEntry.ty
+      let dupA ← ReduceM.addNode (.dup label) tyA
+      let dupB ← ReduceM.addNode (.dup label) tyB
       let sup0 ← ReduceM.addNode (.sup supLabel) valEntry.ty
       let sup1 ← ReduceM.addNode (.sup supLabel) valEntry.ty
       -- Wire DUP_A to value a (SUP.val0): fresh dupA replaces SUP.val0's endpoint
@@ -299,10 +316,17 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
       -- DUP^L1(DUP^L2(a, b)) → (DUP^L2(DUP^L1(a)₀, DUP^L1(b)₀),
       --                           DUP^L2(DUP^L1(a)₁, DUP^L1(b)₁))
       ReduceM.modifyStats (·.incDupSupCommutation)
-      let dupA ← ReduceM.addNode (.dup label) valEntry.ty
-      let dupB ← ReduceM.addNode (.dup label) valEntry.ty
-      let dup0 ← ReduceM.addNode (.dup innerLabel) valEntry.ty
-      let dup1 ← ReduceM.addNode (.dup innerLabel) valEntry.ty
+      -- Get field types from connected nodes
+      let tyA ← match valEntry.getPort ⟨1⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure valEntry.ty
+      let tyB ← match valEntry.getPort ⟨2⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure valEntry.ty
+      let dupA ← ReduceM.addNode (.dup label) tyA
+      let dupB ← ReduceM.addNode (.dup label) tyB
+      let dup0 ← ReduceM.addNode (.dup innerLabel) tyA
+      let dup1 ← ReduceM.addNode (.dup innerLabel) tyB
       -- Wire DUP_A to value a (inner DUP.copy0): fresh dupA replaces inner's endpoint
       ReduceM.rewirePort ⟨valId, ⟨1⟩⟩ (PortId.principal dupA)
       -- Wire DUP_B to value b (inner DUP.copy1): fresh dupB replaces inner's endpoint
@@ -342,12 +366,23 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
       ReduceM.trackPeakNodes
       whnf demandPort
     else
-      -- N-arity node: duplicate the node, DUP each auxiliary port
+      -- N-arity node: duplicate the node, DUP each auxiliary port.
+      -- Each field DUP gets the field's type (from the connected node)
+      -- rather than the parent's type, so the Alloy lowering uses the
+      -- correct memory management strategy for each field.
       ReduceM.modifyStats (·.incDupCommutation)
       let node0 ← ReduceM.addNode other valEntry.ty
       let node1 ← ReduceM.addNode other valEntry.ty
       for i in [:arity] do
-        let dupField ← ReduceM.addNode (.dup label) valEntry.ty
+        -- Get the field's type from whatever node is connected to this aux port.
+        -- Falls back to the parent's type if no connection exists.
+        let fieldTy ← do
+          match valEntry.getPort ⟨i + 1⟩ with
+          | some fieldPort =>
+            let fieldEntry ← ReduceM.getNode fieldPort.node
+            pure fieldEntry.ty
+          | none => pure valEntry.ty
+        let dupField ← ReduceM.addNode (.dup label) fieldTy
         ReduceM.rewirePort ⟨valId, ⟨i + 1⟩⟩ (PortId.principal dupField)
         ReduceM.connect ⟨dupField, ⟨1⟩⟩ ⟨node0, ⟨i + 1⟩⟩
         ReduceM.connect ⟨dupField, ⟨2⟩⟩ ⟨node1, ⟨i + 1⟩⟩
@@ -389,8 +424,17 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
     let fnEntry ← ReduceM.getNode fnId
     match fnEntry.node with
     | .lam erased =>
+      let argPort ← ReduceM.getConnection ⟨nid, ⟨2⟩⟩
+      let argEntry ← match argPort with
+        | some p => ReduceM.getNode p.node
+        | none => ReduceM.getNode nid
+      let isWorldArg := match argEntry.ty with
+        | .vPrimTy .world => true
+        | _ => false
+      if isWorldArg then
+        pure nid
+      else
       -- β-reduction: APP-LAM annihilation
-      -- Both APP and LAM ports have existing connections: link bypasses both
       ReduceM.modifyStats (·.incBeta)
       if !erased then
         -- Bind argument to variable: APP.arg ↔ LAM.var
@@ -413,8 +457,12 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       -- APP-SUP: (&L{f,g} a) → !A &L = a; &L{(f A₀),(g A₁)}
       -- Distribute application through both branches of the superposition
       ReduceM.modifyStats (·.incSupCommutation)
-      -- Create a DUP to clone the argument for both branches
-      let dupArg ← ReduceM.addNode (.dup supLabel) fnEntry.ty
+      -- Create a DUP to clone the argument for both branches.
+      -- Use the argument's type (from the connected node), not the function's type.
+      let argTy ← match entry.getPort ⟨2⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure entry.ty
+      let dupArg ← ReduceM.addNode (.dup supLabel) argTy
       ReduceM.rewirePort ⟨nid, ⟨2⟩⟩ (PortId.principal dupArg)
       -- Create two APP nodes: one for each SUP branch
       let app0 ← ReduceM.addNode .app entry.ty
@@ -451,8 +499,38 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       ReduceM.removeNode fnId
       whnf demandPort
 
+    | .ctor tag 2 =>
+      if tag == 0xFFFE then
+        -- APP-CLOSURE: apply a closure by extracting fn (port 1) and env (port 2)
+        let envIsEra ← do
+          match fnEntry.getPort ⟨2⟩ with
+          | some envPort =>
+            let envEntry ← ReduceM.getNode envPort.node
+            pure (match envEntry.node with | .era => true | _ => false)
+          | none => pure true
+        if envIsEra then
+          -- Link APP.fn ↔ CTOR.fn_port (port 1) to connect APP to fn
+          ReduceM.link ⟨nid, ⟨1⟩⟩ ⟨fnId, ⟨1⟩⟩
+          -- ERA the env (already ERA, just disconnect)
+          ReduceM.disconnect ⟨fnId, ⟨2⟩⟩
+          ReduceM.removeNode fnId
+          ReduceM.trackPeakNodes
+          whnf demandPort
+        else
+          -- Has env: APP(APP(fn, env), arg)
+          let innerApp ← ReduceM.addNode .app entry.ty
+          ReduceM.rewirePort ⟨fnId, ⟨1⟩⟩ ⟨innerApp, ⟨1⟩⟩
+          ReduceM.rewirePort ⟨fnId, ⟨2⟩⟩ ⟨innerApp, ⟨2⟩⟩
+          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
+          ReduceM.connect ⟨nid, ⟨1⟩⟩ (PortId.principal innerApp)
+          ReduceM.removeNode fnId
+          ReduceM.trackPeakNodes
+          whnf demandPort
+      else
+        pure nid
+
     | _ =>
-      -- Non-lambda/sup/era in function position: stuck application
+      -- Non-lambda/sup/era/closure in function position: stuck application
       pure nid
 
   -- Binary operation: two-phase evaluation (left first, then right)
@@ -663,9 +741,15 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       -- MAT-SUP: (mat &L{a,b} hit miss) → !H &L = hit; !M &L = miss;
       --          &L{(mat a H₀ M₀),(mat b H₁ M₁)}
       ReduceM.modifyStats (·.incSupCommutation)
-      -- DUP both hit and miss branches
-      let dupHit ← ReduceM.addNode (.dup supLabel) entry.ty
-      let dupMiss ← ReduceM.addNode (.dup supLabel) entry.ty
+      -- DUP both hit and miss branches with their own types
+      let hitTy ← match entry.getPort ⟨2⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure entry.ty
+      let missTy ← match entry.getPort ⟨3⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure entry.ty
+      let dupHit ← ReduceM.addNode (.dup supLabel) hitTy
+      let dupMiss ← ReduceM.addNode (.dup supLabel) missTy
       ReduceM.rewirePort ⟨nid, ⟨2⟩⟩ (PortId.principal dupHit)
       ReduceM.rewirePort ⟨nid, ⟨3⟩⟩ (PortId.principal dupMiss)
       -- Create two MAT nodes
@@ -846,7 +930,7 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
   | .alo refId => do
     ReduceM.consumeFuel
     let def_ ← ReduceM.getDefinition refId
-    if def_.isExternal then
+    if def_.reducibility != .reducible then
       pure nid
     else if (← ReduceM.isNormalizingDef refId) then
       pure nid
@@ -868,7 +952,7 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
   | .ref refId => do
     ReduceM.consumeFuel
     let def_ ← ReduceM.getDefinition refId
-    if def_.isExternal then
+    if def_.reducibility != .reducible then
       pure nid
     else if (← ReduceM.isNormalizingDef refId) then
       pure nid

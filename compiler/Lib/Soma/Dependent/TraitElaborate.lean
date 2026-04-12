@@ -48,6 +48,8 @@ private partial def applyTypeValue (fnVal argVal : Value) : TCM Value := do
     return .vDataType id (params ++ [argVal])
   | .vPi _ _ _ _ cod =>
     applyClosure cod argVal
+  | .vLam _ body =>
+    applyClosure body argVal
   | .vNeutral ty neu =>
     let resultTy ← match ty with
       | .vPi _ _ _ _ cod => applyClosure cod argVal

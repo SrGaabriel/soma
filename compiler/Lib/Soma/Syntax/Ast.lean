@@ -515,6 +515,7 @@ structure DefParam where
   name : QualName
   type? : Option TypeExpr
   isImplicit : Bool := false
+  quantity? : Option Soma.Core.Quantity := none
   span : Span
   deriving Repr
 

@@ -4,6 +4,7 @@ import Soma.Project.Check
 import Soma.Core.LambdaLift
 import Soma.Driver.Target
 import Somac.Circuit
+import Somac.Circuit.IOErasure
 import Somac.Alloy
 import Somac.Alloy.Merge
 import Somac.Alloy.Serialize
@@ -101,20 +102,63 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
     pure (.ok allModules)
 
 /-- Lower a single checked module to Alloy IR -/
-def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Alloy.Module := do
+def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
+    (globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {}) : IO Alloy.Module := do
   -- Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv)
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv) (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv) cm.metas
 
   -- Lower to Circuit IR
-  let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv
+  let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas) (abbrevEnv := cm.abbrevEnv)
 
-  -- Partial evaluation
-  let (optimized, _stats) ← Circuit.partialEval graph
+  let mkIOCtx (g : Circuit.Graph.Graph) : Circuit.IOErasure.IOErasureCtx := {
+    worldUid? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id.id)
+    pairUid? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id.id)
+    ioBindBookIdx? := globals.wiredIn.getUnique? .bindIO |>.bind fun info =>
+      g.findDefinition info.name |>.map (·.1)
+    pureIOBookIdx? := globals.wiredIn.getUnique? .pureIO |>.bind fun info =>
+      g.findDefinition info.name |>.map (·.1)
+    abbrevEnv := Id.run do
+      let mut merged := cm.abbrevEnv
+      for (k, v) in globalAbbrevEnv.toList do
+        if !merged.contains k then
+          merged := merged.insert k v
+      merged
+  }
+
+  let ioBindName? := globals.wiredIn.getUnique? .bindIO |>.map (·.name)
+  let pureIOName? := globals.wiredIn.getUnique? .pureIO |>.map (·.name)
+
+  let definesIOPrimitives :=
+    graph.book.any fun d =>
+      (ioBindName?.any (· == d.name)) && d.reducibility != .external
+
+  let g ← if definesIOPrimitives then do
+    -- Simple pipeline for the IO runtime module
+    let (optimized, _) ← Circuit.partialEval graph (abbrevEnv := cm.abbrevEnv)
+    let resolved := Circuit.Lower.resolveGraphMetas optimized cm.metas
+    let (erased, erasureCount) ← Circuit.IOErasure.eraseIO resolved (mkIOCtx resolved)
+    pure erased
+  else do
+    -- Step 1: partial eval with io_bind/pure_io preserved as irreducible
+    let setIrreducible (g : Circuit.Graph.Graph) : Circuit.Graph.Graph := Id.run do
+      let mut graph := g
+      for i in [:graph.book.size] do
+        if let some d := graph.book[i]? then
+          let isIOPrim := (ioBindName?.any (· == d.name)) || (pureIOName?.any (· == d.name))
+          if isIOPrim then
+            graph := graph.setReducibility i .irreducible
+      graph
+    let (optimized, _) ← Circuit.partialEval (setIrreducible graph) (abbrevEnv := cm.abbrevEnv)
+    -- Step 2: resolve all metas so IOErasure and Alloy see clean types
+    let resolved := Circuit.Lower.resolveGraphMetas optimized cm.metas
+    -- Step 3: IOErasure detects and erases io_bind/pure_io patterns
+    let (erased, erasureCount) ← Circuit.IOErasure.eraseIO resolved (mkIOCtx resolved)
+    pure erased
 
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
   let wiredFuncs := Alloy.Lower.buildWiredFuncRegistry globals.wiredIn
-  let alloyMod := Alloy.Lower.lower optimized cm.name primTypes globals.inductives globals.intrinsics wiredFuncs
+  let alloyMod := Alloy.Lower.lower g cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas)
   return alloyMod
 
 /-- Result of compilation pipeline -/
@@ -133,6 +177,7 @@ def lowerAndMerge
     (externalConstructors : Std.HashMap String Nat)
     (mergedGlobals : Soma.Dependent.Globals)
     (dependencyAlloyModules : Array (String × Alloy.Module) := #[])
+    (globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {})
     : IO (Std.HashMap String Nat × Array (String × Alloy.Module) × Alloy.Module) := do
   IO.println "\n=== Starting compilation phase ==="
   IO.println s!"  Compiling {modules.size} module(s) for package '{packageName}'"
@@ -150,7 +195,7 @@ def lowerAndMerge
   IO.println "  Lowering to Alloy IR..."
   let mut localAlloyModules : Array (String × Alloy.Module) := #[]
   for cm in modules do
-    let alloyMod ← lowerToAlloy cm mergedGlobals
+    let alloyMod ← lowerToAlloy cm mergedGlobals globalAbbrevEnv
     localAlloyModules := localAlloyModules.push (cm.name, alloyMod)
 
   IO.println s!"  Generated {localAlloyModules.size} local Alloy module(s)"
@@ -176,9 +221,10 @@ def compileLibrary
     (externalConstructors : Std.HashMap String Nat)
     (mergedGlobals : Soma.Dependent.Globals)
     (dependencyAlloyModules : Array (String × Alloy.Module) := #[])
+    (globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {})
     : IO CompileResult := do
   let (allConstructors, localAlloyModules, _merged) ←
-    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules
+    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules globalAbbrevEnv
 
   IO.println "Compilation phase complete"
 
@@ -196,9 +242,10 @@ def compileModules
     (targetOs : Soma.Driver.TargetOS)
     (ptrSize : Nat)
     (dataLayout : Option String := none)
+    (globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {})
     : IO CompileResult := do
   let (allConstructors, localAlloyModules, merged) ←
-    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules
+    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules globalAbbrevEnv
 
   -- Monomorphize
   IO.println "  Monomorphizing..."

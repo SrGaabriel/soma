@@ -61,6 +61,16 @@ def connections (e : NodeEntry) : List (PortIdx × PortId) :=
 
 end NodeEntry
 
+/-- Controls how a definition interacts with the reducer and downstream passes. -/
+inductive Reducibility where
+  /-- Normal function -/
+  | reducible
+  /-- Has a body that is compiled to Alloy/LLVM, but the interaction net reducer treats it as opaque -/
+  | irreducible
+  /-- No real body (extern/intrinsic) and opaque to both the reducer and Alloy lowering -/
+  | external
+  deriving Inhabited, BEq, Repr
+
 /-- A global definition in the "book" (for recursion via REF nodes) -/
 structure Definition where
   /-- Unique name for this definition -/
@@ -71,8 +81,8 @@ structure Definition where
   arity : Nat
   /-- Full type of this definition (possibly polymorphic) -/
   ty : Value
-  /-- Whether this is an external/intrinsic function -/
-  isExternal : Bool := false
+  /-- How the reducer and downstream passes treat this definition -/
+  reducibility : Reducibility := .reducible
   deriving Inhabited
 
 /-- The interaction net graph -/
@@ -105,6 +115,13 @@ def empty : Graph :=
   , nextLabel := 0
   , book := #[]
   }
+
+/-- Set the reducibility of a book definition by index -/
+def setReducibility (g : Graph) (bookIdx : Nat) (r : Reducibility) : Graph :=
+  if h : bookIdx < g.book.size then
+    let d := g.book[bookIdx]
+    { g with book := g.book.set bookIdx { d with reducibility := r } }
+  else g
 
 /-- Store resolved type arguments for a call site node -/
 def setResolvedTypeArgs (g : Graph) (nodeId : NodeId) (typeArgs : Array Value) : Graph :=
@@ -245,9 +262,9 @@ def isFullyConnected (g : Graph) : Bool :=
 
 /-- Add a definition to the book -/
 def addDefinition (g : Graph) (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (isExternal : Bool := false) : Nat × Graph :=
+    (reducibility : Reducibility := .reducible) : Nat × Graph :=
   let idx := g.book.size
-  let def_ : Definition := { name, root, arity, ty, isExternal }
+  let def_ : Definition := { name, root, arity, ty, reducibility }
   (idx, { g with book := g.book.push def_ })
 
 /-- Look up a definition by index -/
@@ -258,7 +275,24 @@ def getDefinition (g : Graph) (idx : Nat) : Option Definition :=
 def updateDefinitionRoot (g : Graph) (idx : Nat) (newRoot : NodeId) : Graph :=
   if h : idx < g.book.size then
     let def_ := g.book[idx]
-    { g with book := g.book.set idx { def_ with root := newRoot } }
+    -- Recount the LAM chain arity from the new root, since partial eval
+    -- may have beta-reduced some root LAMs (e.g., World LAMs consumed by
+    -- APP-LAM annihilation), making the stored arity stale.
+    let newArity := Id.run do
+      let mut count : Nat := 0
+      let mut cur := newRoot
+      for _ in [:100] do
+        match g.getNode cur with
+        | some e => match e.node with
+          | .lam _ =>
+            count := count + 1
+            match e.getPort ⟨2⟩ with
+            | some bp => cur := bp.node
+            | none => break
+          | _ => break
+        | none => break
+      count
+    { g with book := g.book.set idx { def_ with root := newRoot, arity := newArity } }
   else g
 
 /-- Look up a definition by name -/
@@ -343,6 +377,7 @@ def sweep (g : Graph) : Graph × Nat :=
     else
       (g', removed)
 
+
 end Graph
 
 /-- State monad for graph construction -/
@@ -421,9 +456,9 @@ def wireToAux (n1 : NodeId) (p1 : PortIdx) (n2 : NodeId) (auxIdx : Nat) : GraphM
 
 /-- Add a definition to the book -/
 def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (isExternal : Bool := false) : GraphM Nat := do
+    (reducibility : Reducibility := .reducible) : GraphM Nat := do
   let g ← get
-  let (idx, g') := g.addDefinition name root arity ty isExternal
+  let (idx, g') := g.addDefinition name root arity ty reducibility
   set g'
   return idx
 

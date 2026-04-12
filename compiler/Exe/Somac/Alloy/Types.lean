@@ -518,7 +518,7 @@ end UnOp
 inductive IntrinsicOp where
   | ptrNull | ptrAdd | ptrDiff | ptrRead | ptrWrite | ptrCast
   | toCString | fromCString | cstringLen
-  | strcat | intToString | pureIO | bindIO
+  | strcat | intToString
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace IntrinsicOp
@@ -527,8 +527,7 @@ def name : IntrinsicOp → String
   | .ptrNull => "ptr_null" | .ptrAdd => "ptr_add" | .ptrDiff => "ptr_diff"
   | .ptrRead => "ptr_read" | .ptrWrite => "ptr_write" | .ptrCast => "ptr_cast"
   | .toCString => "to_cstring" | .fromCString => "from_cstring" | .cstringLen => "cstring_len"
-  | .strcat => "strcat" | .intToString => "int_to_string" | .pureIO => "pure_io"
-  | .bindIO => "io_bind"
+  | .strcat => "strcat" | .intToString => "int_to_string"
 
 instance : ToString IntrinsicOp where
   toString := IntrinsicOp.name
@@ -539,7 +538,6 @@ def hasResult : IntrinsicOp → Bool
 
 /-- Whether this intrinsic is a closure call -/
 def isClosureCall : IntrinsicOp → Bool
-  | .bindIO => true
   | _ => false
 
 def fixedRetTy : IntrinsicOp → Option ClosedTy
@@ -554,8 +552,6 @@ def fixedRetTy : IntrinsicOp → Option ClosedTy
   | .cstringLen => some (.prim .u64)
   | .strcat => some Ty.string
   | .intToString => some Ty.string
-  | .pureIO => none
-  | .bindIO => none
 
 end IntrinsicOp
 
@@ -672,6 +668,8 @@ inductive WiredFunc where
   | listAny
   | listAll
   | listReverse
+  | pureIO
+  | bindIO
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 end Somac.Alloy

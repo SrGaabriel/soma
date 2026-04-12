@@ -185,6 +185,31 @@ end Arm
 instance : Inhabited Expr := ⟨.sort Level.zero⟩
 instance : Inhabited Arm := ⟨.mk #[] default⟩
 
+/-- Replace all occurrences of a metavariable with a given expression -/
+partial def Expr.replaceMvar (e : Expr) (metaId : MetaId) (replacement : Expr) : Expr :=
+  match e with
+  | .mvar mid => if mid == metaId then replacement else e
+  | .app f a => .app (f.replaceMvar metaId replacement) (a.replaceMvar metaId replacement)
+  | .lam info n d b => .lam info n (d.replaceMvar metaId replacement) (b.replaceMvar metaId replacement)
+  | .let_ n ty v b => .let_ n (ty.replaceMvar metaId replacement) (v.replaceMvar metaId replacement) (b.replaceMvar metaId replacement)
+  | .pi qty info n d c => .pi qty info n (d.replaceMvar metaId replacement) (c.replaceMvar metaId replacement)
+  | .sigma qty info n f s => .sigma qty info n (f.replaceMvar metaId replacement) (s.replaceMvar metaId replacement)
+  | .pair f s => .pair (f.replaceMvar metaId replacement) (s.replaceMvar metaId replacement)
+  | .projFst x => .projFst (x.replaceMvar metaId replacement)
+  | .projSnd x => .projSnd (x.replaceMvar metaId replacement)
+  | .ann x t => .ann (x.replaceMvar metaId replacement) (t.replaceMvar metaId replacement)
+  | _ => e
+
+partial def Expr.containsPairExpr : Expr → Bool
+  | .pair _ _ => true
+  | .app f a => f.containsPairExpr || a.containsPairExpr
+  | .lam _ _ _ b => b.containsPairExpr
+  | .let_ _ _ v b => v.containsPairExpr || b.containsPairExpr
+  | .«case» scruts arms _ => scruts.any (·.containsPairExpr) || arms.any (·.body.containsPairExpr)
+  | .closure _ caps => caps.any (·.containsPairExpr)
+  | .projFst e | .projSnd e => e.containsPairExpr
+  | _ => false
+
 /-- Short constructor name for diagnostic messages -/
 def Expr.ctorName : Expr → String
   | .bvar _ => "bvar" | .fvar _ _ => "fvar" | .mvar _ => "mvar" | .const _ _ => "const"

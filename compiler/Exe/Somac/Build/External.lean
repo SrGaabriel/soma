@@ -117,8 +117,6 @@ def compileToObject
   let optFlag := s!"-O{min optLevel 3}"
   let mut args := #["-c", optFlag, "-o", oPath.toString, llPath.toString]
 
-  if lto then
-    args := args.push "-flto"
 
   if let some triple := llvmTarget then
     args := #["-target", triple] ++ args
@@ -143,11 +141,7 @@ def linkExecutable
     : IO (Except String Unit) := do
   let optFlag := s!"-O{min optLevel 3}"
 
-  -- Build argument list
   let mut args := #[optFlag, "-o", output.toString]
-
-  if lto then
-    args := args.push "-flto"
 
   -- Add object files
   for obj in objs do
@@ -159,15 +153,10 @@ def linkExecutable
       args := args ++ #["-I", rtDir.toString]
     args := args.push rt.toString
 
-  let linker := if lto then tools.clang else tools.cc
-  if lto then
-    if let some triple := llvmTarget then
-      args := #["-target", triple, "-fuse-ld=bfd"] ++ args
-
   if isWindowsTarget then
     args := args.push "-lgcc"
 
-  let result ← runCommand linker args
+  let result ← runCommand tools.cc args
 
   if result.exitCode == 0 then
     pure (.ok ())

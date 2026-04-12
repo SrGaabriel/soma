@@ -146,6 +146,7 @@ partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value)
 
   | .vRecordVal fields => checkPositivityFields unique pol fields
 
+
 end
 
 /-- Check positivity for a data type definition -/

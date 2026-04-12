@@ -52,6 +52,7 @@ record Float
 @[intrinsic]
 record Double
 
+@[wired_in "type.pair"]
 inductive Pair {a : Type} {b : Type} where
     @[wired_in "pair"]
     | Mk (fst : a) (snd : b)
@@ -67,9 +68,11 @@ inductive List {a : Type} where
 @[intrinsic]
 record Ptr {a : Type}
 
-@[wired_in "type.io"]
+@[wired_in "type.world"]
 @[intrinsic]
-record IO {a : Type}
+record World
+
+alias IO a = (1 w : World) -> Pair World a
 
 @[intrinsic "primop.add"]
 def {+} : Int32 -> Int32 -> Int32

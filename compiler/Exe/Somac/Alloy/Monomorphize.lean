@@ -538,11 +538,12 @@ def deadFunctionElimination (m : Module) : Module := Id.run do
       acc.insert f.sig.name f.id
   let newMain := m.mainFunc.bind fun oldId =>
     idMap.get? oldId.id |>.map FuncId.mk
-  return {
+  let result : Module := {
     m with
     funcs := finalFuncs.map SomeFunc.ofMono
     funcIndex := newFuncIndex
     mainFunc := newMain
   }
+  return result.rebuildWiredFuncIndex
 
 end Somac.Alloy.Monomorphize

@@ -72,6 +72,22 @@ partial def force (v : Value) : TCM Value := do
         | none => return v
       | none => return v
     | none => return v
+  | .vDataType dId params =>
+    -- Abbreviations are kept as vDataType during higher-kinded unification and
+    -- expanded here when structural comparison or Pi decomposition is needed
+    let abbrev? ← TCM.lookupAbbrev ⟨dId⟩
+    match abbrev? with
+    | some abbrevInfo =>
+      if params.length == abbrevInfo.arity then
+        let mut result := abbrevInfo.expansion
+        for arg in params do
+          match result with
+          | .vLam _ body => result ← applyClosure body arg
+          | .vPi _ _ _ _ cod => result ← applyClosure cod arg
+          | _ => return v
+        force result
+      else return v
+    | none => return v
   | _ => return v
 
 /-- Apply a value to a list of arguments, forcing as we go -/

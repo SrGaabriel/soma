@@ -374,9 +374,7 @@ private partial def fuseNamedConsumerDirect
         let fusedG := Expr.lam .explicit "acc" accTy
           (.lam .explicit "x" elemTy
             (.app (.app opConst (.bvar 1)) (.app f' (.bvar 0))))
-        let foldlTyArgs := if innerTyArgs.size >= 1
-          then #[innerTyArgs[0]!, Expr.primTy .int]
-          else #[]
+        let foldlTyArgs := #[elemTy, Expr.primTy .int]
         some (Expr.rebuildAppSpine foldlConst (foldlTyArgs ++ #[fusedG, identity, xs]))
     | some .filter =>
       if innerValArgs.size != 2 then none
@@ -392,9 +390,7 @@ private partial def fuseNamedConsumerDirect
             (.if_ (.app p' (.bvar 0))
               (.app (.app opConst (.bvar 1)) (.bvar 0))
               (.bvar 1)))
-        let foldlTyArgs := if innerTyArgs.size >= 1
-          then #[innerTyArgs[0]!, Expr.primTy .int]
-          else #[]
+        let foldlTyArgs := #[elemTy, Expr.primTy .int]
         some (Expr.rebuildAppSpine foldlConst (foldlTyArgs ++ #[fusedG, identity, xs]))
     | _ => none
   | _, _ => none
@@ -424,15 +420,13 @@ private partial def fuseLengthWithProducer
         let xs := innerValArgs[1]!
         let p' := p.shiftUp 2
         let accTy := Expr.primTy .int
-        let elemTy := innerTyArgs[0]?.getD dummyTy
+        let elemTy := if innerTyArgs.size >= 1 then innerTyArgs[0]! else Expr.primTy .int
         let countG := Expr.lam .explicit "acc" accTy
           (.lam .explicit "x" elemTy
             (.if_ (.app p' (.bvar 0))
               (.app (.app addConst (.bvar 1)) (.lit (.int 1)))
               (.bvar 1)))
-        let foldlTyArgs := if innerTyArgs.size >= 1
-          then #[innerTyArgs[0]!, Expr.primTy .int]
-          else #[]
+        let foldlTyArgs := #[elemTy, Expr.primTy .int]
         some (Expr.rebuildAppSpine foldlConst (foldlTyArgs ++ #[countG, .lit (.int 0), xs]))
       | _, _ => none
   | _ => none

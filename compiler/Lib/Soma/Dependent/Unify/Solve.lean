@@ -153,20 +153,23 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     solveMeta m [] lhs
 
   -- Metavariable with spine on the left
-  | .vNeutral _ neu1, rhs =>
+  | .vNeutral _ neu1, _rhs =>
     match getMetaWithSpine neu1 with
-    | some (m, spine) => solveMeta m spine rhs
+    | some (m, spine) =>
+      solveMeta m spine v2
     | none =>
-      match rhs with
+      match v2' with
       | .vNeutral _ neu2 => unifyNeutral neu1 neu2
       | _ => throwUnifyError v1' v2' "flex-rigid mismatch"
 
   -- Metavariable with spine on the right
-  | lhs, .vNeutral _ty2 neu2 =>
+  | _lhs, .vNeutral _ty2 neu2 =>
     match getMetaWithSpine neu2 with
-    | some (m, spine) => solveMeta m spine lhs
+    | some (m, spine) =>
+      -- Pass original (pre-force) v1 so solvePattern can see abbreviation DataTypes
+      solveMeta m spine v1
     | none =>
-      match lhs with
+      match v1' with
       | .vNeutral _ neu1 => unifyNeutral neu1 neu2
       | _ => throwUnifyError v1' v2' "rigid-flex mismatch"
 
@@ -414,9 +417,15 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
   | _ => pure ()
 
   -- Higher-kinded decomposition: ?m x₁...xₙ = T y₁...yₙ where T is a type constructor
-  -- Solve ?m = T (unapplied) and unify xᵢ = yᵢ
-  match rhs' with
-  | .vDataType id params =>
+  -- Solve ?m = T (unapplied) and unify xᵢ = yᵢ.
+  -- Check the UNFORCED rhs first (preserves abbreviation DataTypes that force expands)
+  let decomposeTarget? := match rhs with
+    | .vDataType id params => some (Value.vDataType id [], params)
+    | _ => match rhs' with
+      | .vDataType id params => some (Value.vDataType id [], params)
+      | _ => none
+  match decomposeTarget? with
+  | some (unapplied, params) =>
     if spine.length == params.length && spine.length > 0 then
       -- Check if all spine args are unsolved metas
       let allUnsolvedMetas ← spine.allM fun arg => do
@@ -425,14 +434,12 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
         | .vNeutral _ (.nMeta _) => pure true
         | _ => pure false
       if allUnsolvedMetas then
-        -- Decompose: solve ?m = T (with no params) and unify spine with params
-        let unappliedTyCon := Value.vDataType id []
-        TCM.solveMeta m unappliedTyCon
-        -- Unify each spine element with corresponding param
+        -- Decompose: solve ?m = T (unapplied) and unify spine with params
+        TCM.solveMeta m unapplied
         for (spineArg, param) in spine.zip params do
           unify spineArg param
         return
-  | _ => pure ()
+  | none => pure ()
 
   -- Check if spine is a pattern (distinct bound variables)
   match spineIsPattern ⟨spine⟩ with

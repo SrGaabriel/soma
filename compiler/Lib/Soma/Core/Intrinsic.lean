@@ -77,10 +77,6 @@ inductive FFIOp where
   | strcat
   /-- Convert integer to string -/
   | intToString
-  /-- Lift pure value into IO -/
-  | pureIO
-  /-- Sequence IO actions: io_bind m f = f m -/
-  | bindIO
   deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace FFIOp
@@ -97,8 +93,6 @@ def name : FFIOp → String
   | .cstringLen => "cstring_len"
   | .strcat => "strcat"
   | .intToString => "int_to_string"
-  | .pureIO => "pure_io"
-  | .bindIO => "io_bind"
 
 instance : ToString FFIOp := ⟨FFIOp.name⟩
 
@@ -182,8 +176,6 @@ def fromTag? : String → Option Intrinsic
   | "ffi.cstring_len" => some (.ffiOp .cstringLen)
   | "ffi.strcat" => some (.ffiOp .strcat)
   | "ffi.int_to_string" => some (.ffiOp .intToString)
-  | "ffi.pure_io" => some (.ffiOp .pureIO)
-  | "ffi.io_bind" => some (.ffiOp .bindIO)
   | _ => none
 
 end Intrinsic

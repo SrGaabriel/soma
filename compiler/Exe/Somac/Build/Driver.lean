@@ -172,6 +172,7 @@ def build (opts : BuildOptions) : IO BuildResult := do
         extConstructors
         result.globals
         dependencyAlloyModules
+        result.abbrevEnv
       let libPath := outputPath.withExtension "toria"
       match ← generateLibrary opts result compileResult libPath with
       | .ok () =>
@@ -194,6 +195,7 @@ def build (opts : BuildOptions) : IO BuildResult := do
         targetSpec.os
         (targetSpec.pointerWidth / 8)
         dataLayout
+        result.abbrevEnv
       match compileResult.llvmIR with
       | some llvmIR =>
         match ← generateOutput opts outputPath llvmIR targetSpec with

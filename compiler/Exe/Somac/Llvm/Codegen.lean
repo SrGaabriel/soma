@@ -410,12 +410,9 @@ def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue 
         if srcBits < dstBits then FuncBuilder.zext srcTy dstTy val
         else if srcBits > dstBits then FuncBuilder.trunc srcTy dstTy val
         else FuncBuilder.asLocalRef dstTy val
-      -- Tagged union struct { i32, ptr } → extract tag (i32) or payload (ptr)
-      else if srcTy == taggedTy then
-        match dstTy with
-        | .i32 => FuncBuilder.extractvalue srcTy val #[0]
-        | .ptr => FuncBuilder.extractvalue srcTy val #[1]
-        | _ => panic! s!"CODEGEN BUG: coerceValue cannot convert {srcTy.toLLVM} to {dstTy.toLLVM}"
+      -- Tagged union struct { i32, ptr } → extract tag (i32)
+      else if srcTy == taggedTy && dstTy == .i32 then
+        FuncBuilder.extractvalue srcTy val #[0]
       -- ptr → aggregate: load from pointer
       else if srcTy == .ptr && !(dstTy.isInt) && !(dstTy == .ptr) then
         FuncBuilder.load dstTy val
@@ -437,7 +434,11 @@ def convertOperand (op : Operand) : CodegenM LLVMValue := do
     match ← CodegenM.getLocal id.id with
     | some ref => pure (.local ref)
     | none =>
-      panic! s!"CODEGEN BUG: local %{id.id} not found"
+      let s ← get
+      let fname := match s.currentFunc with
+        | some f => f.sig.name
+        | none => "unknown"
+      panic! s!"CODEGEN BUG: local %{id.id} not found in {fname}"
   | .const c =>
     match c with
     | .int val t =>
@@ -744,6 +745,8 @@ def convertUnOp (op : UnOp 0) (srcTy : ClosedTy) (operand : LLVMValue) : Codegen
         FuncBuilder.ptrtoint toTy operand
       else if llvmSrcTy == .ptr && toTy == .ptr then
         FuncBuilder.bitcast .ptr .ptr operand
+      else if llvmSrcTy == .ptr && toTy.isStruct then
+        FuncBuilder.load toTy operand
       else if llvmSrcTy.isInt && toTy.isInt then
         let srcBits := llvmSrcTy.intBits.getD 64
         let dstBits := toTy.intBits.getD 64
@@ -1289,14 +1292,17 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
   let envAlloTy ← operandTy env
   -- Detect empty env (unit/erased)
   let isEmptyEnv := envAlloTy == .prim .unit
+  let envFieldCount : Nat := if isEmptyEnv then 0
+    else match envLLVMTy with
+      | .struct _ fields => if fields.size > 1 then fields.size else 1
+      | _ => 1
   let closureArity : Nat ← do
     match ← CodegenM.getFuncSig funcId.id with
     | some sig =>
       let n := sig.params.size
-      pure (if isEmptyEnv then n else if n == 0 then 0 else n - 1)
+      pure (if isEmptyEnv then n else if n ≤ envFieldCount then 0 else n - envFieldCount)
     | none => pure 0
-  -- Headerless closure: { i8 arity, [7xi8] pad, ptr func_ptr, i64 env[0..] }
-  let envSlotCount : Nat := if isEmptyEnv then 0 else 1
+  let envSlotCount : Nat := if isEmptyEnv then 0 else envFieldCount
   let ps := (← get).ptrSize
   let closureHeaderSize := ps + ps
   let closureByteSize : Int := Int.ofNat (closureHeaderSize + envSlotCount * ps)
@@ -1319,12 +1325,29 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
   -- Store func_ptr (field 2 of closureHeaderTy = the ptr field)
   let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
   CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal funcName) (.local funcFieldAddr))
-  -- Store env slot only if env is non-empty
+  -- Store env slots
   if !isEmptyEnv then
-    let envPtrVal ← ensurePtr envLLVMTy envVal
-    -- Env slot is at GEP index 1 past the header struct
-    let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
-    CodegenM.withFuncBuilder (FuncBuilder.store .ptr envPtrVal (.local envSlotAddr))
+    if envFieldCount > 1 then
+      -- Multi-field struct env: extract each field and store as separate slots
+      let headerSlots : Nat := closureHeaderSize / ps
+      match envLLVMTy with
+      | .struct _ fields =>
+        for fi in [:fields.size] do
+          let fieldVal ← CodegenM.withFuncBuilder (FuncBuilder.extractvalue envLLVMTy envVal #[fi])
+          let fieldPtrVal ← ensurePtr (fields[fi]!) (.local fieldVal)
+          let slotAddr ← CodegenM.withFuncBuilder do
+            FuncBuilder.gepi32 .ptr (.local closurePtr) #[headerSlots + fi]
+          CodegenM.withFuncBuilder (FuncBuilder.store .ptr fieldPtrVal (.local slotAddr))
+      | _ =>
+        -- Fallback: single slot
+        let envPtrVal ← ensurePtr envLLVMTy envVal
+        let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
+        CodegenM.withFuncBuilder (FuncBuilder.store .ptr envPtrVal (.local envSlotAddr))
+    else
+      -- Single env slot
+      let envPtrVal ← ensurePtr envLLVMTy envVal
+      let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
+      CodegenM.withFuncBuilder (FuncBuilder.store .ptr envPtrVal (.local envSlotAddr))
   let closureTyAlloy ← do
     match ← CodegenM.getFuncSig funcId.id with
     | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
@@ -1335,9 +1358,15 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
 def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := do
   match inst with
   | .binOp op lhs rhs ty =>
-    let lhsVal ← convertOperand lhs
-    let rhsVal ← convertOperand rhs
-    let ref ← convertBinOp op ty lhsVal rhsVal
+    let targetLlvmTy := convertTy ty
+    let (lhsTy, lhsVal) ← convertOperandWithTy lhs
+    let (rhsTy, rhsVal) ← convertOperandWithTy rhs
+    -- Coerce operands to matching types when widths differ
+    let lhsCoerced ← if lhsTy == targetLlvmTy then pure lhsVal
+                      else coerceValue lhsTy targetLlvmTy lhsVal
+    let rhsCoerced ← if rhsTy == targetLlvmTy then pure rhsVal
+                      else coerceValue rhsTy targetLlvmTy rhsVal
+    let ref ← convertBinOp op ty lhsCoerced rhsCoerced
     let resultTy := if op.isComparison then .prim .bool else ty
     pure (some (ref, resultTy))
 
@@ -1355,15 +1384,16 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
   | .copy src =>
     match src with
     | .const (.undef ty) =>
-      -- Emit a dummy of the correct type for undef copies
       let llvmTy := convertTy ty
       let ref ← CodegenM.withFuncBuilder do
         if llvmTy == .ptr then
           FuncBuilder.asLocalRef .ptr (.const .null)
         else if llvmTy.isInt then
           FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
-        else
-          FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
+        else do
+          -- Aggregate types (structs, tagged unions): alloca + load to produce undef local
+          let allocaRef ← FuncBuilder.emit (.alloca llvmTy none none)
+          FuncBuilder.emit (.load llvmTy (.local allocaRef) none)
       pure (some (ref, ty))
     | .const (.string idx len) =>
       -- Fat pointer struct: build via insertvalue from undef
@@ -1848,7 +1878,11 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     if llvmIncoming.size == 0 then
       let ref ← CodegenM.withFuncBuilder do
         if llvmTy == .ptr then FuncBuilder.asLocalRef .ptr (.const .null)
-        else FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
+        else if llvmTy.isInt then FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
+        else do
+          -- Dead block with aggregate type: alloca + load undef
+          let allocaRef ← FuncBuilder.emit (.alloca llvmTy none none)
+          FuncBuilder.emit (.load llvmTy (.local allocaRef) none)
       pure (some (ref, ty))
     else if llvmIncoming.size == 1 then
       let (val, _) := llvmIncoming[0]!
@@ -1947,6 +1981,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let _ := line
     CodegenM.withFuncBuilder do
       FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal s!".str.{msgIdx}")]
+    CodegenM.signalNoReturn
     pure none
 
 
@@ -2068,36 +2103,6 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       let ref ← callCFuncStructABI somaStringLLVMTy "soma_int_to_string" llvmArgs
       pure (some (ref, Ty.string))
 
-    | .pureIO =>
-      -- pure_io is identity at runtime (IO is just a newtype wrapper)
-      -- Just return the argument as-is
-      if llvmArgs.size > 0 then
-        let (_, argVal) := llvmArgs[0]!
-        -- Use a no-op bitcast to same type as identity operation
-        let ref ← CodegenM.withFuncBuilder (FuncBuilder.bitcast llvmRetTy llvmRetTy argVal)
-        pure (some (ref, retTy))
-      else
-        pure none
-
-    | .bindIO =>
-      -- io_bind m f = f(m): IO erases, so this is just closure application
-      if llvmArgs.size >= 2 then
-        let (ioTy, ioValRaw) := llvmArgs[0]!
-        let ioArgPtr ← if ioTy == .ptr then pure ioValRaw
-                        else do
-                          let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr ioTy ioValRaw)
-                          pure (.local ref)
-        let (funcTy, funcVal) := llvmArgs[1]!
-        let funcPtr ← if funcTy == .ptr then pure funcVal
-                       else do
-                         let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr funcTy funcVal)
-                         pure (.local ref)
-        let ref ← CodegenM.withFuncBuilder do
-          FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, funcPtr), (.ptr, ioArgPtr)]
-        let ref ← unboxApplyResult ref retTy
-        pure (some (ref, retTy))
-      else
-        pure none
 
   | .callExtern name args retTy =>
     -- External function call: emit regular LLVM call to @name
@@ -2226,7 +2231,14 @@ def lowerTerminator (term : Terminator) (retTy : ClosedTy) (llvmRetOverride : Op
       | ty => CodegenM.withFuncBuilder (FuncBuilder.ret ty (intVal 0 (ty.intBits.getD 32)))
     else
       let (llvmValTy, valRef) ← convertOperandWithTy val
-      if llvmValTy == actualRetTy then
+      if llvmRetOverride == some .i32 && llvmValTy == .ptr then
+        -- IO action: call soma_apply(action, null_world) to execute it
+        let nullWorld ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .ptr (.const .null))
+        let ioResult ← CodegenM.withFuncBuilder
+          (FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, valRef), (.ptr, .local nullWorld)])
+        -- Return 0 (success) since the IO action's side effects have been executed
+        CodegenM.withFuncBuilder (FuncBuilder.ret .i32 (intVal 0 32))
+      else if llvmValTy == actualRetTy then
         CodegenM.withFuncBuilder (FuncBuilder.ret actualRetTy valRef)
       else
         let coerced ← coerceValue llvmValTy actualRetTy valRef
@@ -2280,18 +2292,30 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Optio
   -- Get the Alloy Func to look up local types
   let func? ← CodegenM.getCurrentFunc
 
-  -- Detect tail-call pattern: last call stmt whose result is directly returned
-  let tailCallResultId : Option Nat := do
-    match block.terminator with
-    | .ret (.local retId) =>
+  let callerActualRetTy := llvmRetOverride.getD (func?.map (fun f => convertRetTy f.sig.retTy) |>.getD .void)
+  let tailCallResultId ← if llvmRetOverride.isSome then pure none else match block.terminator with
+    | .ret (.local retId) => do
+      let mut result : Option Nat := none
       for i in (List.range block.stmts.size).reverse do
+        if result.isSome then break
         if let some stmt := block.stmts[i]? then
           if stmt.result == some retId then
             match stmt.inst with
-            | .call _ _ _ => return retId.id
-            | _ => failure
-      none
-    | _ => none
+            | .call funcId _ _ | .callPoly funcId _ _ _ =>
+              let calleeSig ← CodegenM.getFuncSig funcId.id
+              match calleeSig with
+              | some sig =>
+                let calleeActualRetTy := convertRetTy sig.retTy
+                if callerActualRetTy == calleeActualRetTy then
+                  result := some retId.id
+              | none => pure ()
+            | .callExtern _ _ callRetTy | .callExternPoly _ _ _ callRetTy =>
+              let calleeActualRetTy := convertRetTy callRetTy
+              if callerActualRetTy == calleeActualRetTy then
+                result := some retId.id
+            | _ => pure ()
+      pure result
+    | _ => pure none
 
   for stmt in block.stmts do
     if let some tcId := tailCallResultId then
@@ -2322,8 +2346,9 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Optio
           FuncBuilder.asLocalRef .ptr (.const .null)
         else if llvmTy.isInt then
           FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
-        else
-          FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
+        else do
+          let allocaRef ← FuncBuilder.emit (.alloca llvmTy none none)
+          FuncBuilder.emit (.load llvmTy (.local allocaRef) none)
       CodegenM.mapLocal alloyLocal.id dummyRef tyFromAlloy
 
     if (← CodegenM.consumeNoReturn) then
@@ -2383,6 +2408,10 @@ def lowerFuncWithName (func : ClosedFunc) (name : String) : CodegenM LLVMFunc :=
 
     -- Lower all blocks
     let blockOrder := cfg.reversePostorder
+    let reachable : Std.HashSet Nat := blockOrder.foldl (fun s bid => s.insert bid.id) {}
+    for block in cfg.allBlocks do
+      if !reachable.contains block.id.id then
+        CodegenM.markBlockDead block.id.id
     for blockId in blockOrder do
       if let some block := cfg.getBlock blockId then
         lowerBlock block func.sig.retTy (if isMain then some .i32 else none)

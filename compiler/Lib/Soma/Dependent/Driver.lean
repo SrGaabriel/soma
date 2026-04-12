@@ -19,6 +19,78 @@ open Soma.Syntax
 open Soma.Core (Value Level PrimOp FFIOp Intrinsic)
 open Soma (UniqueSupply)
 
+/-- Replace dangling bvar references in fvar type annotations with stable
+    sentinel fvar references that preserve de Bruijn level identity -/
+partial def resolveErasedTypeBvars (e : Soma.Core.Expr)
+    (depth : Nat) (erasedParams : Array (Nat × String)) : Soma.Core.Expr :=
+  match e with
+  | .fvar u tyExpr =>
+    .fvar u (resolveTyExpr tyExpr depth erasedParams)
+  | .app f a =>
+    .app (resolveErasedTypeBvars f depth erasedParams)
+         (resolveErasedTypeBvars a depth erasedParams)
+  | .lam i n d b =>
+    .lam i n (resolveTyExpr d depth erasedParams)
+             (resolveErasedTypeBvars b (depth + 1) erasedParams)
+  | .let_ n t v b =>
+    .let_ n (resolveTyExpr t depth erasedParams)
+            (resolveErasedTypeBvars v depth erasedParams)
+            (resolveErasedTypeBvars b (depth + 1) erasedParams)
+  | .«case» scruts arms rty =>
+    .«case» (scruts.map (resolveErasedTypeBvars · depth erasedParams))
+            (arms.map fun arm =>
+              let binds := arm.patterns.foldl (fun a p => a + p.bindingCount) 0
+              Soma.Core.Arm.mk arm.patterns (resolveErasedTypeBvars arm.body (depth + binds) erasedParams))
+            (resolveTyExpr rty depth erasedParams)
+  | .if_ c t el =>
+    .if_ (resolveErasedTypeBvars c depth erasedParams)
+         (resolveErasedTypeBvars t depth erasedParams)
+         (resolveErasedTypeBvars el depth erasedParams)
+  | .construct qn tag args rty =>
+    .construct qn tag (args.map (resolveErasedTypeBvars · depth erasedParams))
+                      (resolveTyExpr rty depth erasedParams)
+  | .inject l args rty =>
+    .inject l (args.map (resolveErasedTypeBvars · depth erasedParams))
+              (resolveTyExpr rty depth erasedParams)
+  | .record fields =>
+    .record (fields.map fun (n, e') => (n, resolveErasedTypeBvars e' depth erasedParams))
+  | .pair f s =>
+    .pair (resolveErasedTypeBvars f depth erasedParams)
+          (resolveErasedTypeBvars s depth erasedParams)
+  | .array es ety =>
+    .array (es.map (resolveErasedTypeBvars · depth erasedParams))
+           (resolveTyExpr ety depth erasedParams)
+  | .closure n caps =>
+    .closure n (caps.map (resolveErasedTypeBvars · depth erasedParams))
+  | .ann x t =>
+    .ann (resolveErasedTypeBvars x depth erasedParams) (resolveTyExpr t depth erasedParams)
+  | other => other
+where
+  /-- Replace bvar references to erased type params in a type expression -/
+  resolveTyExpr (te : Soma.Core.Expr) (d : Nat) (params : Array (Nat × String))
+      : Soma.Core.Expr :=
+    match te with
+    | .bvar idx =>
+      -- A param at de Bruijn level L has bvar index (d - L - 1) at depth d
+      let found := params.find? fun (level, _) => d > level && idx == d - level - 1
+      match found with
+      | some (level, name) => .fvar ⟨level, "__tyvar", name⟩ (.sort .zero)
+      | none => te
+    | .pi q bi n dom cod =>
+      .pi q bi n (resolveTyExpr dom d params) (resolveTyExpr cod (d + 1) params)
+    | .app f a => .app (resolveTyExpr f d params) (resolveTyExpr a d params)
+    | .sigma q bi n f s =>
+      .sigma q bi n (resolveTyExpr f d params) (resolveTyExpr s (d + 1) params)
+    | .dataTy uid ps => .dataTy uid (ps.map (resolveTyExpr · d params))
+    | .fvar u ty => .fvar u (resolveTyExpr ty d params)
+    | .rowExtend l ft t =>
+      .rowExtend (resolveTyExpr l d params) (resolveTyExpr ft d params) (resolveTyExpr t d params)
+    | .recordTy r => .recordTy (resolveTyExpr r d params)
+    | .variantTy r => .variantTy (resolveTyExpr r d params)
+    | .eqTy lv t l r =>
+      .eqTy lv (resolveTyExpr t d params) (resolveTyExpr l d params) (resolveTyExpr r d params)
+    | other => other
+
 /-- Convert TCError to Diagnostic -/
 def tcErrorToDiagnostic (e : TCError) : Diagnostic :=
   e.toDiagnostic
@@ -112,12 +184,12 @@ partial def extractParamTypes (ty : Value) (numParams : Nat) : TCM (Array Value 
       -- Not a Pi type, return remaining as result
       return (#[], ty')
 
-/-- Extract a binder telescope prefix from a Pi type -/
+/-- Extract a binder telescope prefix from a Pi type, preserving QTT quantities -/
 partial def extractSignaturePrefix (ty : Value) (numExplicit : Nat)
-    : TCM (Array (String × Value × Soma.Core.BinderInfo) × Value) := do
+    : TCM (Array (String × Value × Soma.Core.BinderInfo × Soma.Core.Quantity) × Value) := do
   let ty' ← force ty
   match ty' with
-  | .vPi _qty binder name dom cod =>
+  | .vPi qty binder name dom cod =>
     -- Once we consumed all explicit term parameters, stop before the next explicit binder
     if numExplicit == 0 && !binder.isImplicit then
       return (#[], ty')
@@ -126,7 +198,7 @@ partial def extractSignaturePrefix (ty : Value) (numExplicit : Nat)
     let codTy ← applyClosure cod dummyArg
     let remainingExplicit := if binder.isImplicit then numExplicit else numExplicit - 1
     let (restParams, resultTy) ← extractSignaturePrefix codTy remainingExplicit
-    return (#[(name, dom, binder)] ++ restParams, resultTy)
+    return (#[(name, dom, binder, qty)] ++ restParams, resultTy)
   | _ =>
     return (#[], ty')
 
@@ -152,35 +224,63 @@ def withFunctionParams (params : Array String) (paramTypes : Array Value)
 
 /-- Extend the context with a signature telescope prefix, then run an action.
   Explicit binders in the prefix are renamed to the concrete function parameter names.
+  QTT quantities from the type signature are preserved in the binding context.
   Returns generated Unique×String pairs for those explicit term parameters. -/
-def withSignaturePrefixBindings (allParams : Array (String × Value × Soma.Core.BinderInfo))
+def withSignaturePrefixBindings (allParams : Array (String × Value × Soma.Core.BinderInfo × Soma.Core.Quantity))
     (explicitParams : Array String)
     (span : Span) (action : TCM α) : TCM (Array (Soma.Unique × String) × α) := do
   -- Pre-generate all local ids to collect them
   let mut explicitBindings : Array (Soma.Unique × String) := #[]
-  let mut allBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo) := #[]
+  let mut allBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo × Soma.Core.Quantity) := #[]
   let mut eIdx : Nat := 0
-  for (name, _, binder) in allParams do
+  for (name, _, binder, qty) in allParams do
     if binder.isImplicit then
       let bindingId ← TCM.freshLocalId name
-      allBindings := allBindings.push (bindingId, name, binder)
+      allBindings := allBindings.push (bindingId, name, binder, qty)
     else
       let paramName := if h : eIdx < explicitParams.size then explicitParams[eIdx] else name
       let bindingId ← TCM.freshLocalId paramName
-      allBindings := allBindings.push (bindingId, paramName, .explicit)
+      allBindings := allBindings.push (bindingId, paramName, .explicit, qty)
       explicitBindings := explicitBindings.push (bindingId, paramName)
       eIdx := eIdx + 1
-  -- Now bind them all
+  -- Now bind them all, using the quantity from the type signature
   let rec go (idx : Nat) : TCM α := do
     if idx >= allBindings.size then
       action
     else
-      let (bindingId, paramName, binder) := allBindings[idx]!
-      let (_, ty, _) := allParams[idx]!
-      TCM.withBinding paramName bindingId ty .omega binder span do
+      let (bindingId, paramName, binder, qty) := allBindings[idx]!
+      let (_, ty, _, _) := allParams[idx]!
+      TCM.withBinding paramName bindingId ty qty binder span do
         go (idx + 1)
   let result ← go 0
   return (explicitBindings, result)
+
+/-- Elaborate a function type signature with implicit quantification of free type variables -/
+def elaborateFunctionType (sigSyntax : Syntax.TypeExpr) : TCM Value := do
+  -- Find all free type variables in the function signature
+  let freeVarNames := sigSyntax.freeVars.map (·.name)
+  let freeVarNamesUnique := freeVarNames.toList.eraseDups
+
+  -- Create an elaboration environment with all free type variables bound
+  let mut elabEnv := Elaborate.ElabEnv.empty
+  for varName in freeVarNamesUnique do
+    elabEnv := elabEnv.extend varName (.vType .zero)
+
+  -- Elaborate the function type body
+  let fnBodyType ← Elaborate.elaborateType elabEnv sigSyntax
+
+  -- Wrap in implicit foralls for all free type variables (right to left)
+  let mut fnType := fnBodyType
+  for varName in freeVarNamesUnique.reverse do
+    let outerEnv : Elaborate.ElabEnv := {
+      tyVars := elabEnv.tyVars.tail!
+      level := elabEnv.level - 1
+    }
+    let codClosure ← Elaborate.mkDependentClosure varName fnType outerEnv
+    fnType := Value.vPi .omega .implicit varName (.vType .zero) codClosure
+    elabEnv := outerEnv
+
+  return fnType
 
 /-- Type check a single function using dependent types.
     Returns (fnType, typedBody, generatedParams) where generatedParams contains local ids. -/
@@ -192,19 +292,21 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     match fn.declaredTypeSyntax with
     | some typeSyntax =>
       let declaredType ← TCM.recoverWithM
-        (Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax)
+        (elaborateFunctionType typeSyntax)
         (TCM.typePlaceholder span)
       let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
-      return (declaredType, placeholderBody, #[])
+      -- Expand abbreviations in intrinsic/extern types too
+      let declaredType' ← expandAbbrevValue declaredType
+      return (declaredType', placeholderBody, #[])
     | none =>
       let ty ← TCM.freshMetaVal (.vType .zero)
       let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
       return (ty, placeholderBody, #[])
   match fn.declaredTypeSyntax with
   | some typeSyntax =>
-    -- Elaborate the declared type signature
+    -- Elaborate the declared type signature with implicit quantification
     let declaredType ← TCM.recoverWithM
-      (Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax)
+      (elaborateFunctionType typeSyntax)
       (TCM.typePlaceholder span)
     -- Split declared signature into:
     --   1) telescope prefix needed to check this function's term parameters
@@ -221,7 +323,20 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     let declaredType' ← zonkValue declaredType
     reportUnsolvedMetas declaredType' span
     let typedBody' ← zonkExpr typedBody
-    return (declaredType', typedBody', generatedParams)
+    -- Resolve dangling bvar references to erased type params in fvar type annotations
+    let mut erasedParams : Array (Nat × String) := #[]
+    for i in [:allParams.size] do
+      let (name, _, binder, _) := allParams[i]!
+      let isErased := match binder with
+        | .implicit | .strictImplicit => true
+        | _ => false
+      if isErased then
+        erasedParams := erasedParams.push (i, name)
+    let typedBody'' := if erasedParams.isEmpty then typedBody'
+      else resolveErasedTypeBvars typedBody' allParams.size erasedParams
+    -- Expand parameterized type abbreviations so downstream passes see real types
+    let declaredType'' ← expandAbbrevValue declaredType'
+    return (declaredType'', typedBody'', generatedParams)
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
@@ -234,7 +349,9 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     let inferredType' ← zonkValue inferredType
     reportUnsolvedMetas inferredType' span
     let typedBody' ← zonkExpr typedBody
-    return (inferredType', typedBody', generatedParams)
+    -- Expand parameterized type abbreviations so downstream passes see real types
+    let inferredType'' ← expandAbbrevValue inferredType'
+    return (inferredType'', typedBody', generatedParams)
 
 /-- Elaborate a constructor type: fields -> DataType params -/
 def elaborateCtorType (typeName : Soma.Core.QualifiedName) (typeVarNames : Array String)
@@ -313,37 +430,6 @@ def elaborateIndexedCtorType (_typeName : Soma.Core.QualifiedName) (_typeVarName
     elabEnv := outerEnv
 
   return ctorType
-
-/-- Elaborate a function type signature, properly handling free type variables.
-    Free type variables in the signature become implicit forall-bound parameters.
-    For example, `a -> [a] -> [a]` becomes `forall {a : Type}. a -> [a] -> [a]` -/
-def elaborateFunctionType (sigSyntax : Syntax.TypeExpr) : TCM Value := do
-  -- Find all free type variables in the function signature
-  let freeVarNames := sigSyntax.freeVars.map (·.name)
-  let freeVarNamesUnique := freeVarNames.toList.eraseDups
-
-  -- Create an elaboration environment with all free type variables bound
-  let mut elabEnv := Elaborate.ElabEnv.empty
-
-  -- Bind all free variables from the signature
-  for varName in freeVarNamesUnique do
-    elabEnv := elabEnv.extend varName (.vType .zero)
-
-  -- Elaborate the function type body
-  let fnBodyType ← Elaborate.elaborateType elabEnv sigSyntax
-
-  -- Wrap in implicit foralls for all free type variables
-  let mut fnType := fnBodyType
-  for varName in freeVarNamesUnique.reverse do
-    let outerEnv : Elaborate.ElabEnv := {
-      tyVars := elabEnv.tyVars.tail!
-      level := elabEnv.level - 1
-    }
-    let codClosure ← Elaborate.mkDependentClosure varName fnType outerEnv
-    fnType := Value.vPi .omega .implicit varName (.vType .zero) codClosure
-    elabEnv := outerEnv
-
-  return fnType
 
 private def registerWiredRoleFromAttrs
     (globals : Globals)
@@ -774,11 +860,21 @@ def elaborateAbbrev (typeAbbrev : Soma.Core.TypeAbbrev) : TCM AbbrevInfo := do
     -- Elaborate the expansion body in the parameter context
     let bodyVal ← Elaborate.elaborateType elabEnv typeAbbrev.expansion
 
-    -- Wrap in Pi types (right to left) to create: forall p1 p2 ... pn. body
-    let mut expansion := bodyVal
-    for paramName in typeAbbrev.params.reverse do
-      let closure ← TCM.mkConstClosure paramName expansion
-      expansion := Value.vPi .omega .explicit paramName (Value.vType Level.zero) closure
+    -- Build a proper dependent closure that substitutes parameters when applied
+    let numParams := typeAbbrev.params.size
+    let bodyExpr := Soma.Core.quoteExpr ⟨numParams⟩ bodyVal
+
+    -- Wrap all params except the outermost (first) in nested Expr.pi from inside out
+    let mut innerExpr := bodyExpr
+    for i in List.range (numParams - 1) |>.reverse do
+      let paramIdx := i + 1
+      let paramName := typeAbbrev.params[paramIdx]!
+      innerExpr := Soma.Core.Expr.pi .omega .explicit paramName (Soma.Core.Expr.sort Level.zero) innerExpr
+
+    -- Create the outermost closure with empty env
+    let outerName := typeAbbrev.params[0]!
+    let closure := Soma.Core.Closure.term outerName (Soma.Core.Env.mk [] 0) innerExpr
+    let expansion := Value.vLam outerName closure
 
     return { abbrevId := abbrevUnique, arity, expansion, span := typeAbbrev.span }
 

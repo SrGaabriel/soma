@@ -1,0 +1,111 @@
+hvm:
+  type: web
+  title: "HVM: A Massively Parallel Optimal Functional Runtime"
+  author: HigherOrderCo
+  url: https://github.com/HigherOrderCO/HVM
+  date: 2024
+
+vine:
+  type: web
+  title: "Vine: A Functional Programming Language with Interaction Net Evaluation"
+  author: Vine Contributors
+  url: https://github.com/vine-lang/vine
+  date: 2024
+
+lafont90:
+  type: article
+  title: "Interaction Nets"
+  author: Lafont, Yves
+  date: 1990
+  parent:
+    type: proceedings
+    title: "Proceedings of the 17th ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages"
+  page-range: 95-108
+  doi: "10.1145/96709.96718"
+
+lafont97:
+  type: article
+  title: "Interaction Combinators"
+  author: Lafont, Yves
+  date: 1997
+  parent:
+    type: periodical
+    title: "Information and Computation"
+    volume: 137
+    issue: 1
+  page-range: 69-101
+  doi: "10.1006/inco.1997.2643"
+
+atkey18:
+  type: article
+  title: "Syntax and Semantics of Quantitative Type Theory"
+  author: Atkey, Robert
+  date: 2018
+  parent:
+    type: proceedings
+    title: "Proceedings of the 33rd Annual ACM/IEEE Symposium on Logic in Computer Science (LICS)"
+  page-range: 56-65
+  doi: "10.1145/3209108.3209189"
+
+mcbride16:
+  type: article
+  title: "I Got Plenty o' Nuttin'"
+  author: McBride, Conor
+  date: 2016
+  parent:
+    type: book
+    title: "A List of Successes That Can Change the World"
+    publisher: Springer
+  page-range: 207-233
+
+lean:
+  type: article
+  title: "The Lean 4 Theorem Prover and Programming Language"
+  author:
+    - Moura, Leonardo de
+    - Ullrich, Sebastian
+  date: 2021
+  parent:
+    type: proceedings
+    title: "Automated Deduction -- CADE 28"
+    publisher: Springer
+  page-range: 625-635
+  doi: "10.1007/978-3-030-79876-5_37"
+
+koka:
+  type: article
+  title: "Perceus: Garbage Free Reference Counting with Reuse"
+  author:
+    - Reinking, Alex
+    - Xie, Ningning
+    - de Moura, Leonardo
+    - Leijen, Daan
+  date: 2021
+  parent:
+    type: proceedings
+    title: "Proceedings of the 42nd ACM SIGPLAN International Conference on Programming Language Design and Implementation (PLDI)"
+  page-range: 96-111
+  doi: "10.1145/3453483.3454032"
+
+idris2:
+  type: article
+  title: "Idris 2: Quantitative Type Theory in Practice"
+  author: Brady, Edwin
+  date: 2021
+  parent:
+    type: proceedings
+    title: "35th European Conference on Object-Oriented Programming (ECOOP)"
+  doi: "10.4230/LIPIcs.ECOOP.2021.9"
+
+chase05:
+  type: article
+  title: "Dynamic Circular Work-Stealing Deque"
+  author:
+    - Chase, David
+    - Lev, Yosef
+  date: 2005
+  parent:
+    type: proceedings
+    title: "Proceedings of the 17th Annual ACM Symposium on Parallelism in Algorithms and Architectures (SPAA)"
+  page-range: 21-28
+  doi: "10.1145/1073970.1073974"

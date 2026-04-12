@@ -250,8 +250,13 @@ def asLocalRef (ty : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
   | _ =>
     if ty == .ptr then
       emit (.bitcast .ptr .ptr val)
-    else
+    else if ty.isInt then
       emit (.add false false ty val (.const (.int 0 (ty.intBits.getD 64))))
+    else
+      -- Aggregate types: identity via alloca + store + load
+      emit (.alloca ty none none) >>= fun allocaRef =>
+      emit (.store ty val (.local allocaRef) none) *>
+      emit (.load ty (.local allocaRef) none)
 
 /-- Add two integers -/
 def add (ty : LLVMType) (lhs rhs : LLVMValue) (nuw nsw : Bool := false)

@@ -113,7 +113,7 @@ partial def readbackNode (nid : NodeId) (ctx : ReadbackCtx) (depth : Nat := 0)
   | .proj _ => return .stuck (.stuckProjection nid)
   | .alo refId => do
     let def_ ← ReduceM.getDefinition refId
-    if def_.isExternal then
+    if def_.reducibility != .reducible then
       return .stuck (.externalFunction def_.name.display refId)
     else
       return .stuck (.stuckApplication nid)

@@ -19,6 +19,8 @@ structure FunctionAttrs where
   wiredIn : Option String := none
   /-- Whether this function is marked as total (must terminate) -/
   total : Bool := false
+  /-- Whether this function is irreducible (opaque to the interaction net reducer) -/
+  irreducible : Bool := false
   deriving BEq, Inhabited
 
 namespace FunctionAttrs

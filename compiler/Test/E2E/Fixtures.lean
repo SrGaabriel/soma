@@ -24,6 +24,8 @@ structure TestCase where
   expectedExitCode : UInt32
   /-- Required library dependencies -/
   requiredDeps : Array String := #[]
+  /-- Per-test execution timeout in milliseconds -/
+  runTimeout : Option Nat := none
   deriving Repr
 
 namespace TestCase
@@ -84,12 +86,20 @@ def loadFromDir (dir : System.FilePath) : IO TestCase := do
   -- Read dependency requirements
   let requiredDeps ← parseDepsFile (dir / "deps")
 
+  let timeoutPath := dir / "expected.timeout"
+  let runTimeout ← if ← timeoutPath.pathExists then
+    let content ← IO.FS.readFile timeoutPath
+    pure (content.trimAscii.toString.toNat?)
+  else
+    pure none
+
   return {
     name
     source := .directory dir
     expectedStdout
     expectedExitCode
     requiredDeps
+    runTimeout
   }
 
 /-- Load a test case from a single .soma file -/

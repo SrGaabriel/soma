@@ -141,6 +141,8 @@ structure CheckedModule where
   typedFunctions : Std.HashMap String Soma.Core.TypedFunction := {}
   /-- Usage counts from type checking -/
   usages : Std.HashMap Soma.Unique Nat := {}
+  /-- Metavariable solutions from type checking -/
+  metas : Soma.Core.MetaState := .empty
   /-- Final unique ID counter from elaboration (for lambda lifting) -/
   uniqueNextId : Nat := 0
 
@@ -652,14 +654,6 @@ def typeCheckModule
         (Soma.Dependent.Specialize.specializeFunction methodRegistry fn)
     mergedTypedFns := specializedFns
 
-  let reverseIntrinsics := Soma.Dependent.Specialize.buildReverseIntrinsicMap
-    globalsResult.globals.intrinsics
-  let ioNames? := Soma.Dependent.Specialize.resolveIONames? reverseIntrinsics
-  let mut inlinedFns : Std.HashMap String Soma.Core.TypedFunction := {}
-  for (name, fn) in mergedTypedFns.toList do
-    inlinedFns := inlinedFns.insert name
-      (Soma.Dependent.Specialize.inlineIOBindsFunction ioNames? fn)
-  mergedTypedFns := inlinedFns
   mergedTypedFns := Soma.Dependent.Fusion.fuseAll mergedTypedFns globalsResult.globals
 
   return {
@@ -806,6 +800,26 @@ def extractPublicSymbols
                 addedNames := addedNames.insert accessorName
               | none => pure ()
             | none => pure ()
+
+  for typeAbbrev in untypedModule.abbreviations do
+    let abbrevName := typeAbbrev.name
+    if shouldExport abbrevName then
+      match globals.resolve moduleNs #[] abbrevName with
+      | some qn =>
+        match globals.getDef qn with
+        | some info =>
+          let abbrevSym : Symbol := {
+            unique := qn.id
+            name := abbrevName
+            kind := .type
+            module := moduleName
+            package := packageName
+            span := typeAbbrev.span
+          }
+          acc := acc.insert abbrevSym info.type
+          addedNames := addedNames.insert abbrevName
+        | none => pure ()
+      | none => pure ()
 
   -- Extract type class methods
   for typeClass in untypedModule.typeClasses do
@@ -1015,6 +1029,7 @@ def checkModule
     incrementalState := tcResult.incrementalState
     typedFunctions := tcResult.typedFunctions
     usages := tcResult.usages
+    metas := tcResult.metas
     uniqueNextId := tcResult.uniqueNextId
   }
 
@@ -1104,6 +1119,7 @@ def checkModuleIncremental
     incrementalState := tcResult.incrementalState
     typedFunctions := tcResult.typedFunctions
     usages := tcResult.usages
+    metas := tcResult.metas
     uniqueNextId := tcResult.uniqueNextId
   }
 

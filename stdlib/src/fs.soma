@@ -43,7 +43,7 @@ def c_ftell : Ptr Unit -> IO CLong
 def c_fread : Ptr Word8 -> CLong -> CLong -> Ptr Unit -> IO CLong
 
 @[extern "calloc"]
-def c_calloc : CLong -> CLong -> Ptr Word8
+def c_calloc : CLong -> CLong -> IO (Ptr Word8)
 
 @[extern "remove"]
 def c_remove : CString -> IO CInt
@@ -72,7 +72,7 @@ def read_to_string : FileHandle -> IO String
         c_fseek ptr (0 :: Int64) (2 :: Int32)
         bind size <- c_ftell ptr
         c_fseek ptr (0 :: Int64) (0 :: Int32)
-        let buf = c_calloc (add64 size (1 :: Int64)) (1 :: Int64)
+        bind buf <- c_calloc (add64 size (1 :: Int64)) (1 :: Int64)
         c_fread buf (1 :: Int64) size ptr
         pure_io (from_cstring buf)
 

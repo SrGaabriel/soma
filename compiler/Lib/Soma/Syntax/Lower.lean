@@ -1464,16 +1464,26 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                     let nameNode? := kids.find? fun (c, _) => isTokenKind c .lowerIdent
                     let typeNode? := kids.find? fun (c, _) =>
                       match c.syntaxKind? with
+                      | some .typeQuantity => false
                       | some sk => sk.isType
                       | none => false
                     let isImplicit := v.children.any fun c => isTokenKind c .leftBrace
+                    let quantityOpt? := kids.find? fun (c, _) => c.syntaxKind? == some .typeQuantity
+                    let quantity? ← match quantityOpt? with
+                      | some (qNode, qOffset) =>
+                        let qText ← getGreenTokenText (firstGreenChild qNode |>.getD qNode) qOffset
+                        pure (some (match qText with
+                          | "0" => Soma.Core.Quantity.zero
+                          | "1" => Soma.Core.Quantity.one
+                          | _ => Soma.Core.Quantity.omega))
+                      | none => pure none
                     match nameNode? with
                     | some (nameNode, nameOffset) =>
                         let nameText ← getGreenTokenText nameNode nameOffset
                         let tyOpt ← match typeNode? with
                           | some (tyNode, tyOffset) => some <$> lowerTypeExpr tyNode tyOffset
                           | none => pure none
-                        pure { name := ⟨#[], nameText, vspan⟩, type? := tyOpt, isImplicit, span := vspan }
+                        pure { name := ⟨#[], nameText, vspan⟩, type? := tyOpt, isImplicit, quantity? := quantity?, span := vspan }
                     | none =>
                         lowerError "field missing name" vspan
                         pure { name := ⟨#[], "_error", vspan⟩, type? := none, span := vspan }
@@ -1508,8 +1518,11 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                 let fullSig := typedParams.foldr (init := retTy) fun param accTy =>
                   if param.isImplicit then
                     TypeExpr.forall_ #[TypeVarBinder.mk param.name param.type?] accTy span
-                  else
-                    TypeExpr.arrow (param.type?.getD accTy) accTy span
+                  else match param.quantity? with
+                    | some qty =>
+                      TypeExpr.pi qty param.name (param.type?.getD accTy) accTy span
+                    | none =>
+                      TypeExpr.arrow (param.type?.getD accTy) accTy span
                 pure (some fullSig)
 
           let clauseNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .defClause
