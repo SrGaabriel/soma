@@ -67,6 +67,7 @@ inductive PrimTy where
   | f32 | f64
   | bool
   | unit
+  | world
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace PrimTy
@@ -77,7 +78,7 @@ def bitWidth : PrimTy → Nat
   | .i32 | .u32 | .f32 => 32
   | .i64 | .u64 | .f64 => 64
   | .bool => 1
-  | .unit => 0
+  | .unit | .world => 0
 
 def isSigned : PrimTy → Bool
   | .i8 | .i16 | .i32 | .i64 => true
@@ -87,6 +88,12 @@ def isFloat : PrimTy → Bool
   | .f32 | .f64 => true
   | _ => false
 
+/-- True iff this primitive has zero runtime representation -/
+def isZeroWidth : PrimTy → Bool
+  | .world => true
+  | .unit => true
+  | _ => false
+
 instance : ToString PrimTy where
   toString
     | .i8 => "i8" | .i16 => "i16" | .i32 => "i32" | .i64 => "i64"
@@ -94,6 +101,7 @@ instance : ToString PrimTy where
     | .f32 => "f32" | .f64 => "f64"
     | .bool => "bool"
     | .unit => "unit"
+    | .world => "world"
 
 end PrimTy
 
@@ -195,11 +203,32 @@ def string : Ty n := .struct #[("data", .rawPtr), ("len", .prim .i64)]
 /-- Array-backed list: { data: ptr, len: u32, offset: u32 } -/
 def somaList : Ty n := .struct #[("data", .rawPtr), ("len", .prim .u32), ("offset", .prim .u32)]
 
+/-- True iff this type has zero runtime representation -/
+partial def isZeroWidth (ty : Ty n) : Bool :=
+  match ty with
+  | .prim p => p.isZeroWidth
+  | .struct fields => fields.all fun (_, t) => isZeroWidth t
+  | .array elem _ => isZeroWidth elem
+  | _ => false
+
 /-- Whether this type supports LLVM arithmetic instructions -/
 def isArithmetic (ty : Ty n) : Bool :=
   match ty with
   | .prim _ => true
   | _ => false
+
+/-- Drop zero-width fields from a struct, collapsing it to its non-zero-width elements -/
+partial def collapseZeroWidth (ty : Ty n) : Ty n :=
+  match ty with
+  | .struct fields =>
+    let kept := fields.filter fun (_, t) => !isZeroWidth t
+    let kept := kept.map fun (name, t) => (name, collapseZeroWidth t)
+    if kept.size == 0 then .prim .unit  -- empty struct is unit
+    else if kept.size == 1 then kept[0]!.2  -- single field collapses to its type
+    else .struct kept
+  | .ptr inner => .ptr (collapseZeroWidth inner)
+  | .array elem n => .array (collapseZeroWidth elem) n
+  | _ => ty
 
 /-- Alignment in bytes -/
 partial def alignment (ty : Ty n) (ptrBytes : Nat) : Nat :=

@@ -18,23 +18,21 @@ def getFuncParamCount (m : Module) (fid : FuncId) : Nat :=
   | some f => f.sig.params.size
   | none => 0
 
-/-- Check if a type represents unit/erased (empty closure env) -/
-def isUnitTy : ClosedTy → Bool
-  | .prim .unit => true
-  | _ => false
+/-- Check if a type represents an empty closure env -/
+def isUnitTy (ty : ClosedTy) : Bool := Ty.isZeroWidth ty
 
 /-- Check if an operand is a unit constant -/
 def isUnitOperand : Operand → Bool
   | .const .unit => true
   | _ => false
 
-/-- Check if an operand represents a unit value, using type info -/
+/-- Check if an operand represents a zero-width value, using type info -/
 def isUnitEnv (op : Operand) (localTypes : Std.HashMap Nat ClosedTy) : Bool :=
   match op with
   | .const .unit => true
-  | .const (.undef (.prim .unit)) => true
+  | .const (.undef ty) => Ty.isZeroWidth ty
   | .local lid => match localTypes.get? lid.id with
-    | some (.prim .unit) => true
+    | some ty => Ty.isZeroWidth ty
     | _ => false
   | _ => false
 

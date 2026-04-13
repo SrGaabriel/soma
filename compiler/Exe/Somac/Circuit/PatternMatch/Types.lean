@@ -1,4 +1,5 @@
 import Soma.Core.Value
+import Soma.Core.Eval
 import Std.Data.HashMap
 
 namespace Somac.Circuit.PatternMatch
@@ -41,23 +42,21 @@ def lookup (reg : ConstructorTypeRegistry) (unique : Unique) (tag : Nat)
     : Option ConstructorTypeInfo :=
   reg.get? ⟨unique, tag⟩
 
-/-- Extract field types from an elaborated constructor type. -/
-def extractFieldTypes (ctorType : Value) : Array Value × Value :=
-  go ctorType #[]
+/-- Extract field types from an elaborated constructor type -/
+partial def extractFieldTypes (ctorType : Value) : Array Value × Value :=
+  go ctorType 0 #[]
 where
-  go (ty : Value) (acc : Array Value) : Array Value × Value :=
+  go (ty : Value) (level : Nat) (acc : Array Value) : Array Value × Value :=
     match ty with
-    | .vPi _qty binder _name dom cod =>
+    | .vPi _qty binder name dom cod =>
+      let levelVar : Value := .vNeutral dom (.nVar ⟨name, ⟨level⟩⟩)
+      let nextTy : Value := match cod with
+        | .const _ t => t
+        | .term _ _ _ => cod.applyPure levelVar
       if binder.isImplicit then
-        -- Skip implicit parameters
-        match cod with
-        | .const _ nextTy => go nextTy acc
-        | .term _ _ _ => (acc, ty)
+        go nextTy (level + 1) acc
       else
-        -- Explicit parameter = constructor field
-        match cod with
-        | .const _ nextTy => go nextTy (acc.push dom)
-        | .term _ _ _ => (acc.push dom, ty)
+        go nextTy (level + 1) (acc.push dom)
     | resultTy => (acc, resultTy)
 
 /-- Build constructor type info from an elaborated constructor type -/

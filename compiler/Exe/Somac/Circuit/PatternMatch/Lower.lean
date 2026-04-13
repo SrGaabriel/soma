@@ -160,10 +160,16 @@ def getFieldType (registry : ConstructorTypeRegistry) (parentType : Value)
       | .const _ v => v
       | .term _ _ _ => unitTy -- Can't evaluate dependent closure without argument
 
-  | .vDataType _unique _params =>
-    -- todo: look up field types from registry (requires tag, which we don't have here)
-    let fieldTypes := fallbackFieldTypes parentType (fieldIdx + 1)
-    fieldTypes[fieldIdx]?.getD unitTy
+  | .vDataType unique params =>
+    let matchingCtors := registry.fold (init := (#[] : Array ConstructorTypeInfo))
+      fun acc key info => if key.unique == unique then acc.push info else acc
+    if matchingCtors.size == 1 then
+      let info := matchingCtors[0]!
+      let instantiated := instantiateFieldTypes info.fieldTypes params.toArray unique
+      instantiated[fieldIdx]?.getD unitTy
+    else
+      let fieldTypes := fallbackFieldTypes parentType (fieldIdx + 1)
+      fieldTypes[fieldIdx]?.getD unitTy
 
   | .vRecord row =>
     -- Record types: extract from row

@@ -104,15 +104,19 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
 /-- Lower a single checked module to Alloy IR -/
 def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
     (_globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {}) : IO Alloy.Module := do
-  -- Lambda lifting (with pre-lift inlining of io_bind / pure_io to avoid the
-  -- dictionary-specialization meta-sharing pitfall
   let ioBindName? := globals.wiredIn.getUnique? .bindIO |>.map (·.name)
   let pureIOName? := globals.wiredIn.getUnique? .pureIO |>.map (·.name)
+  let pairCtorInfo? := globals.wiredIn.getUnique? .pair
+  let pairCtorName? := pairCtorInfo?.map (·.name)
+  let pairCtorTag := pairCtorInfo?.map (·.ctorTag) |>.getD 0
+  let worldUnique? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id)
+  let pairUnique? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id)
   let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name
     cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv)
     (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv) cm.metas ioBindName? pureIOName?
+    worldUnique? pairCtorName? pairCtorTag pairUnique?
 
-  -- Lower to Circuit IR (IO is erased inline)
+  -- Lower to Circuit IR
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas) (abbrevEnv := cm.abbrevEnv)
 
   -- Partial evaluation propagates knowledge through the graph
