@@ -169,7 +169,7 @@ def tryPrune (m : MetaId) (spine : List Value) (rhs : Value) : TCM (Option MetaI
       let solutionVal ← evalPruneSolution solutionTerm
 
       -- Solve the old meta with this solution
-      TCM.solveMeta m solutionVal
+      TCM.solveMeta m solutionVal (callerTag := "Pruning.pruneMeta")
 
       return some newMetaId
 
@@ -251,7 +251,7 @@ def tryFlexFlexIntersection (m1 : MetaId) (spine1 : List Value)
     let appTerm1 := buildFilteredApplication newMetaId intersectionIndices1 paramCount1
     let solution1 := buildLambdasFromNames paramNames1 appTerm1
     let solution1Val ← evalPruneSolution solution1
-    TCM.solveMeta m1 solution1Val
+    TCM.solveMeta m1 solution1Val (callerTag := "Pruning.m1")
 
     -- Build solution for m2: λspine2. ?W (intersection args from spine2)
     let allParamTypes2 ← extractMetaParamTypes info2.type
@@ -261,7 +261,7 @@ def tryFlexFlexIntersection (m1 : MetaId) (spine1 : List Value)
     let appTerm2 := buildFilteredApplication newMetaId intersectionIndices2 paramCount2
     let solution2 := buildLambdasFromNames paramNames2 appTerm2
     let solution2Val ← evalPruneSolution solution2
-    TCM.solveMeta m2 solution2Val
+    TCM.solveMeta m2 solution2Val (callerTag := "Pruning.m2")
 
     return true
   | _, _ => return false

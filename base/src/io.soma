@@ -2,12 +2,10 @@ use base::prim::{IO, World, Pair}
 use base::core::{Functor, Applicative, Monad, >>=}
 
 @[wired_in "io.pure"]
-@[irreducible]
 def pure_io (x : a) : IO a
     | w => Pair::Mk w x
 
 @[wired_in "io.bind"]
-@[irreducible]
 def io_bind (m : IO a) (f : a -> IO b) : IO b
     | w => match m w
         | Pair::Mk w1 val => f val w1

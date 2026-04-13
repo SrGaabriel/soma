@@ -435,7 +435,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
         | _ => pure false
       if allUnsolvedMetas then
         -- Decompose: solve ?m = T (unapplied) and unify spine with params
-        TCM.solveMeta m unapplied
+        TCM.solveMeta m unapplied (callerTag := "Solve.decompose")
         for (spineArg, param) in spine.zip params do
           unify spineArg param
         return

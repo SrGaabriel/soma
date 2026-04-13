@@ -1337,7 +1337,8 @@ def freshMetaVal (ty : Value) : TCM Value := do
   return .vNeutral ty (.nMeta id)
 
 /-- Solve a metavariable -/
-def solveMeta (id : MetaId) (v : Value) : TCM Unit := do
+def solveMeta (id : MetaId) (v : Value) (callerTag : String := "?") : TCM Unit := do
+  let _ := callerTag  -- reserved for targeted tracing
   modifyState (·.solveMeta id v)
 
 /-- Clear a metavariable's solution, making it unsolved again -/

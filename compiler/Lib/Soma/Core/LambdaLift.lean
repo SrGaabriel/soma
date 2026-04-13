@@ -3,6 +3,7 @@ import Soma.Core.Module
 import Soma.Core.Value
 import Soma.Core.Expr
 import Soma.Core.Eval
+import Soma.Core.Quote
 import Std.Data.HashMap
 import Std.Data.HashSet
 
@@ -21,6 +22,10 @@ structure LiftState where
   unfoldTy : Value → Value := id
   typeParamEnv : Soma.Core.Env := .empty
   metas : Soma.Core.MetaState := .empty
+  /-- Qualified name of `io_bind` (when known) for pre-lift inlining -/
+  ioBindName? : Option QualifiedName := none
+  /-- Qualified name of `pure_io` (when known) for pre-lift inlining -/
+  pureIOName? : Option QualifiedName := none
   deriving Inhabited
 
 abbrev LiftM := StateM LiftState
@@ -30,8 +35,11 @@ namespace LiftM
 def run (m : LiftM α) (moduleName : String) (globalNames : HashSet QualifiedName)
     (startId : Nat := 0) (globalEnv : Soma.Core.GlobalEnv := .empty)
     (unfoldTy : Value → Value := id)
-    (metas : Soma.Core.MetaState := .empty) : α × LiftState :=
-  StateT.run m { moduleName, globalNames, nextId := startId, globalEnv, unfoldTy, metas }
+    (metas : Soma.Core.MetaState := .empty)
+    (ioBindName? : Option QualifiedName := none)
+    (pureIOName? : Option QualifiedName := none) : α × LiftState :=
+  StateT.run m { moduleName, globalNames, nextId := startId, globalEnv, unfoldTy, metas,
+                 ioBindName?, pureIOName? }
 
 def freshId : LiftM Nat := do
   let st ← get
@@ -68,6 +76,108 @@ def buildFnType (paramTypes : Array Value) (resultType : Value) : Value :=
   paramTypes.foldr (init := resultType) fun paramTy acc =>
     Value.vPi Soma.Core.Quantity.omega Soma.Core.BinderInfo.explicit "_" paramTy
       (Soma.Core.Closure.const "_" acc)
+
+partial def inlineIOBind (ioBindName? : Option QualifiedName)
+    (pureIOName? : Option QualifiedName) (e : Soma.Core.Expr) : Soma.Core.Expr :=
+  match e with
+  | .app .. =>
+    let (head, args) := Soma.Core.Expr.collectAppSpine e
+    let args := args.map (inlineIOBind ioBindName? pureIOName?)
+    match head with
+    | .const qn _ =>
+      let isPureIO := pureIOName?.any (· == qn)
+      let isIOBind := ioBindName?.any (· == qn)
+      let explicit := args.filter (!·.isTypeLevelExpr)
+      if isPureIO && explicit.size == 1 then
+        explicit[0]!
+      else if isIOBind && explicit.size == 2 then
+        let m := explicit[0]!
+        let f := explicit[1]!
+        match f with
+        | .lam _ name domTy innerBody =>
+          -- Inline as `let name : domTy = m in innerBody`
+          let letExpr := Soma.Core.Expr.let_ name domTy m innerBody
+          inlineIOBind ioBindName? pureIOName? letExpr
+        | _ =>
+          Soma.Core.Expr.rebuildAppSpine head args
+      else
+        Soma.Core.Expr.rebuildAppSpine head args
+    | _ =>
+      let head' := inlineIOBind ioBindName? pureIOName? head
+      Soma.Core.Expr.rebuildAppSpine head' args
+
+  | .lam info name domain body =>
+    .lam info name (inlineIOBind ioBindName? pureIOName? domain)
+      (inlineIOBind ioBindName? pureIOName? body)
+  | .let_ name ty val body =>
+    .let_ name (inlineIOBind ioBindName? pureIOName? ty)
+      (inlineIOBind ioBindName? pureIOName? val)
+      (inlineIOBind ioBindName? pureIOName? body)
+  | .pi q info name dom cod =>
+    .pi q info name (inlineIOBind ioBindName? pureIOName? dom)
+      (inlineIOBind ioBindName? pureIOName? cod)
+  | .sigma q info name f s =>
+    .sigma q info name (inlineIOBind ioBindName? pureIOName? f)
+      (inlineIOBind ioBindName? pureIOName? s)
+  | .pair f s =>
+    .pair (inlineIOBind ioBindName? pureIOName? f)
+      (inlineIOBind ioBindName? pureIOName? s)
+  | .projFst x => .projFst (inlineIOBind ioBindName? pureIOName? x)
+  | .projSnd x => .projSnd (inlineIOBind ioBindName? pureIOName? x)
+  | .construct n t args rty =>
+    .construct n t (args.map (inlineIOBind ioBindName? pureIOName?))
+      (inlineIOBind ioBindName? pureIOName? rty)
+  | .«case» scruts arms rty =>
+    .«case» (scruts.map (inlineIOBind ioBindName? pureIOName?))
+      (arms.map fun arm =>
+        Soma.Core.Arm.mk arm.patterns (inlineIOBind ioBindName? pureIOName? arm.body))
+      (inlineIOBind ioBindName? pureIOName? rty)
+  | .record fields =>
+    .record (fields.map fun (n, x) => (n, inlineIOBind ioBindName? pureIOName? x))
+  | .recordUpdate base updates =>
+    .recordUpdate (inlineIOBind ioBindName? pureIOName? base)
+      (updates.map fun (n, x) => (n, inlineIOBind ioBindName? pureIOName? x))
+  | .fieldAccess x f i =>
+    .fieldAccess (inlineIOBind ioBindName? pureIOName? x) f i
+  | .inject l args rty =>
+    .inject l (args.map (inlineIOBind ioBindName? pureIOName?))
+      (inlineIOBind ioBindName? pureIOName? rty)
+  | .if_ c t el =>
+    .if_ (inlineIOBind ioBindName? pureIOName? c)
+      (inlineIOBind ioBindName? pureIOName? t)
+      (inlineIOBind ioBindName? pureIOName? el)
+  | .closure n caps =>
+    .closure n (caps.map (inlineIOBind ioBindName? pureIOName?))
+  | .array es ety =>
+    .array (es.map (inlineIOBind ioBindName? pureIOName?))
+      (inlineIOBind ioBindName? pureIOName? ety)
+  | .tuple es => .tuple (es.map (inlineIOBind ioBindName? pureIOName?))
+  | .rowExtend l f t =>
+    .rowExtend (inlineIOBind ioBindName? pureIOName? l)
+      (inlineIOBind ioBindName? pureIOName? f)
+      (inlineIOBind ioBindName? pureIOName? t)
+  | .recordTy r => .recordTy (inlineIOBind ioBindName? pureIOName? r)
+  | .variantTy r => .variantTy (inlineIOBind ioBindName? pureIOName? r)
+  | .dataTy id ps =>
+    .dataTy id (ps.map (inlineIOBind ioBindName? pureIOName?))
+  | .eqTy lv t l r =>
+    .eqTy lv (inlineIOBind ioBindName? pureIOName? t)
+      (inlineIOBind ioBindName? pureIOName? l)
+      (inlineIOBind ioBindName? pureIOName? r)
+  | .refl t x =>
+    .refl (inlineIOBind ioBindName? pureIOName? t)
+      (inlineIOBind ioBindName? pureIOName? x)
+  | .transport lv t m l r ep b =>
+    .transport lv (inlineIOBind ioBindName? pureIOName? t)
+      (inlineIOBind ioBindName? pureIOName? m)
+      (inlineIOBind ioBindName? pureIOName? l)
+      (inlineIOBind ioBindName? pureIOName? r)
+      (inlineIOBind ioBindName? pureIOName? ep)
+      (inlineIOBind ioBindName? pureIOName? b)
+  | .ann x t =>
+    .ann (inlineIOBind ioBindName? pureIOName? x)
+      (inlineIOBind ioBindName? pureIOName? t)
+  | _ => e
 
 /-- Collect free variables with their type expressions from an expression tree -/
 partial def collectFVarsWithTypes (e : Soma.Core.Expr) : HashMap Soma.Unique Soma.Core.Expr :=
@@ -294,7 +404,10 @@ def liftTypedFunction (fn : TypedFunction) : LiftM TypedFunction := do
         cont := false
     | _ => cont := false
   modify fun st => { st with typeParamEnv := tyParamEnv }
-  let coreBody' ← liftCoreExpr fn.body
+  let st ← get
+  -- Pre-lift pass: inline `io_bind` and `pure_io` before lifting lambdas
+  let inlinedBody := inlineIOBind st.ioBindName? st.pureIOName? fn.body
+  let coreBody' ← liftCoreExpr inlinedBody
   pure { fn with body := coreBody' }
 
 abbrev TypedFunctionMap := Std.HashMap String TypedFunction
@@ -302,6 +415,8 @@ abbrev TypedFunctionMap := Std.HashMap String TypedFunction
 def liftTypedFunctions (typedFunctions : TypedFunctionMap) (moduleName : String) (startId : Nat)
     (globalEnv : Soma.Core.GlobalEnv) (unfoldTy : Value → Value := id)
     (metas : Soma.Core.MetaState := .empty)
+    (ioBindName? : Option QualifiedName := none)
+    (pureIOName? : Option QualifiedName := none)
     : TypedFunctionMap × Array TypedFunction := Id.run do
   let globalNames : HashSet QualifiedName := typedFunctions.fold (init := {}) fun acc _ fn =>
     acc.insert fn.name
@@ -312,14 +427,17 @@ def liftTypedFunctions (typedFunctions : TypedFunctionMap) (moduleName : String)
       let fn' ← liftTypedFunction fn
       result := result.insert fnName fn'
     pure result
-  ) moduleName globalNames startId globalEnv unfoldTy metas
+  ) moduleName globalNames startId globalEnv unfoldTy metas ioBindName? pureIOName?
 
   (liftedFunctions, finalState.liftedFunctions)
 
 def liftAll (typedFunctions : TypedFunctionMap) (moduleName : String) (startId : Nat)
     (globalEnv : Soma.Core.GlobalEnv) (unfoldTy : Value → Value := id)
-    (metas : Soma.Core.MetaState := .empty) : TypedFunctionMap :=
-  let (lifted, generated) := liftTypedFunctions typedFunctions moduleName startId globalEnv unfoldTy metas
+    (metas : Soma.Core.MetaState := .empty)
+    (ioBindName? : Option QualifiedName := none)
+    (pureIOName? : Option QualifiedName := none) : TypedFunctionMap :=
+  let (lifted, generated) := liftTypedFunctions typedFunctions moduleName startId globalEnv
+    unfoldTy metas ioBindName? pureIOName?
   generated.foldl (init := lifted) fun acc fn =>
     acc.insert fn.name.display fn
 

@@ -494,7 +494,7 @@ private def buildConstraintDictSubst
         let placeholderVal := Value.vNeutral dictTy
           (.nConst ⟨entry.dictUnique.id, entry.dictUnique.module, entry.dictUnique.original⟩
                    dictTy)
-        TCM.solveMeta p.metaId placeholderVal
+        TCM.solveMeta p.metaId placeholderVal (callerTag := "TraitElaborate.placeholder")
         break
   return subst
 
