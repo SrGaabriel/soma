@@ -968,23 +968,31 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       ReduceM.trackPeakNodes
       whnf demandPort
 
-  -- Strict evaluation (USE): force the term for side effects, return continuation.
-  -- USE implements CBV sequencing: evaluate the term to WHNF (executing any side
-  -- effects), then discard the term and return the continuation's value.
-  -- If the term is stuck, USE remains in the graph so the Alloy lowering can emit the call before the continuation.
   | .use => do
     ReduceM.consumeFuel
-    -- Force the term to WHNF
-    let termId ← whnf ⟨nid, ⟨1⟩⟩
-    let termEntry ← ReduceM.getNode termId
-    match termEntry.node with
-    | .num _ _ | .num64 _ _ _ | .era | .ctor _ _ | .record _ | .string | .array _ | .lam _ | .sup _ =>
+    let _ ← whnf ⟨nid, ⟨1⟩⟩
+    let nodeAfterWhnf ← ReduceM.getNode nid
+    let termConn := nodeAfterWhnf.getPort ⟨1⟩
+    let reachesPrincipalValue : Bool ← do
+      match termConn with
+      | none => pure false
+      | some tp =>
+        if !tp.port.isPrincipal then
+          pure false
+        else
+          let termNodeEntry ← ReduceM.getNode tp.node
+          pure (match termNodeEntry.node with
+            | .num _ _ | .num64 _ _ _ | .era | .ctor _ _ | .record _
+            | .string | .array _ | .lam _ | .sup _ => true
+            | _ => false)
+    if reachesPrincipalValue then
       ReduceM.modifyStats (·.incUse)
       erasePort ⟨nid, ⟨1⟩⟩
       ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨2⟩⟩
       ReduceM.removeNode nid
       whnf demandPort
-    | _ => pure nid
+    else
+      pure nid
 
   -- DUP at principal shouldn't be reached in demand-driven evaluation
   -- (we always arrive at DUP from its auxiliary ports)

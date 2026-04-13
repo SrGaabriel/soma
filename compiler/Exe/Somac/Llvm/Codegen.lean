@@ -24,11 +24,20 @@ def convertPrimTy : PrimTy → LLVMType
   | .f32 => .float
   | .f64 => .double
   | .bool => .i1
-  | .unit => .i8 -- here unit is i8 so it can be used as a value but wherever it's important it's void
+  | .unit => .i8 -- defensive fallback
+  | .world => .i8 -- defensive fallback
 
 /-- Check if a primitive type is a floating point type -/
 def primTyIsFloat : PrimTy → Bool
   | .f32 | .f64 => true
+  | _ => false
+
+/-- True iff this Alloy closed type has zero LLVM representation and should
+    be elided from function signatures, struct fields and return values -/
+partial def isZeroWidthLLVM : ClosedTy → Bool
+  | .prim p => p.isZeroWidth
+  | .struct fields => fields.all fun (_, t) => isZeroWidthLLVM t
+  | .array elem _ => isZeroWidthLLVM elem
   | _ => false
 
 /-- Convert Alloy closed type to LLVM type -/
@@ -37,9 +46,11 @@ partial def convertTy : ClosedTy → LLVMType
   | .ptr _ => .ptr
   | .rawPtr => .ptr
   | .funcPtr args ret =>
-    .func (convertTy ret) (args.map convertTy) false
+    let keptArgs := args.filter (!isZeroWidthLLVM ·)
+    .func (convertTy ret) (keptArgs.map convertTy) false
   | .struct fields =>
-    .struct false (fields.map fun (_, t) => convertTy t)
+    let kept := fields.filter fun (_, t) => !isZeroWidthLLVM t
+    .struct false (kept.map fun (_, t) => convertTy t)
   | .array elem size =>
     .array size (convertTy elem)
   | .tagged _ _ =>
@@ -48,15 +59,15 @@ partial def convertTy : ClosedTy → LLVMType
     .ptr
   | .var i => nomatch i -- impossible
 
-/-- Check if an Alloy type is unit -/
-def isUnitTy : ClosedTy → Bool
-  | .prim .unit => true
-  | _ => false
+/-- Check if an Alloy type has no runtime representation -/
+def isUnitTy : ClosedTy → Bool := isZeroWidthLLVM
 
 /-- Convert Alloy type to LLVM type for function return types -/
 partial def convertRetTy : ClosedTy → LLVMType
   | .prim .unit => .void
-  | other => convertTy other
+  | ty =>
+    if isZeroWidthLLVM ty then .void
+    else convertTy ty
 
 /-- Runtime closure object pointer type -/
 def closureTy : LLVMType := .ptr
@@ -1211,19 +1222,22 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
   -- Split args into direct params (up to function arity) and over-applied extras
   let directArgs := if args.size > paramCount then args.extract 0 paramCount else args
   let extraArgs := if args.size > paramCount then args.extract paramCount args.size else #[]
-  let llvmArgs ← directArgs.mapIdxM fun i arg => do
-    let argVal ← convertOperand arg
+  let mut llvmArgs : Array (LLVMType × LLVMValue) := #[]
+  for h : i in [:directArgs.size] do
+    let arg := directArgs[i]
     let actualTy ← operandTy arg
-    let actualLLVMTy := convertTy actualTy
     let expectedTy ← match maybeSig with
       | some sig =>
-        if h : i < sig.params.size then pure sig.params[i].ty
+        if hi : i < sig.params.size then pure sig.params[i].ty
         else pure actualTy
       | none => pure actualTy
+    if isZeroWidthLLVM actualTy || isZeroWidthLLVM expectedTy then continue
+    let argVal ← convertOperand arg
+    let actualLLVMTy := convertTy actualTy
     let expectedLLVMTy := convertTy expectedTy
     let coercedVal ← if actualLLVMTy == expectedLLVMTy then pure argVal
                       else coerceValue actualLLVMTy expectedLLVMTy argVal
-    pure (expectedLLVMTy, coercedVal)
+    llvmArgs := llvmArgs.push (expectedLLVMTy, coercedVal)
   -- Call function with its declared parameters
   let callRetTy := if extraArgs.isEmpty then llvmRetTy else .ptr
   let isTailCall := (← get).emitAsTailCall
@@ -1290,8 +1304,8 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
   let funcName ← CodegenM.getFuncName funcId.id
   let (envLLVMTy, envVal) ← convertOperandWithTy env
   let envAlloTy ← operandTy env
-  -- Detect empty env (unit/erased)
-  let isEmptyEnv := envAlloTy == .prim .unit
+  -- Detect empty env
+  let isEmptyEnv := isZeroWidthLLVM envAlloTy
   let envFieldCount : Nat := if isEmptyEnv then 0
     else match envLLVMTy with
       | .struct _ fields => if fields.size > 1 then fields.size else 1
@@ -1523,19 +1537,30 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .structLit fields ty =>
     let llvmTy := convertTy ty
-    -- Build struct via insertvalue chain (pure register ops, no memory round-trip)
-    let mut agg : LLVMValue := .const (.undef llvmTy)
-    for i in [:fields.size] do
-      if h : i < fields.size then
-        let fieldOp := fields[i]
-        let (_, fieldVal) ← convertOperandWithTy fieldOp
+    let mut keptFieldVals : Array (LLVMType × LLVMValue) := #[]
+    for fieldOp in fields do
+      let fieldAlloyTy ← operandTy fieldOp
+      if isZeroWidthLLVM fieldAlloyTy then continue
+      let (fieldLlvmTy, fieldVal) ← convertOperandWithTy fieldOp
+      keptFieldVals := keptFieldVals.push (fieldLlvmTy, fieldVal)
+    if keptFieldVals.isEmpty then
+      let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
+      pure (some (unitRef, ty))
+    else if keptFieldVals.size == 1 then
+      let (fieldLlvmTy, fieldVal) := keptFieldVals[0]!
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef fieldLlvmTy fieldVal)
+      pure (some (ref, ty))
+    else
+      let mut agg : LLVMValue := .const (.undef llvmTy)
+      for h : i in [:keptFieldVals.size] do
+        let (_, fieldVal) := keptFieldVals[i]
         let ref ← CodegenM.withFuncBuilder do
           FuncBuilder.insertvalue llvmTy agg fieldVal #[i]
         agg := .local ref
-    let finalRef ← match agg with
-      | .local r => pure r
-      | _ => CodegenM.withFuncBuilder (FuncBuilder.asLocalRef llvmTy agg)
-    pure (some (finalRef, ty))
+      let finalRef ← match agg with
+        | .local r => pure r
+        | _ => CodegenM.withFuncBuilder (FuncBuilder.asLocalRef llvmTy agg)
+      pure (some (finalRef, ty))
 
   | .arrayLit elems elemTy =>
     let llvmElemTy := convertTy elemTy
@@ -1617,9 +1642,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     match valTy with
     | .struct _ =>
       panic! s!"CODEGEN BUG: getPayload on struct {valTy} — should use extractField via PROJ optimization"
-    | .prim .unit =>
-      panic! s!"CODEGEN BUG: getPayload on unit — should be eliminated by single-constructor MAT optimization"
-    | _ =>
+    | ty =>
+      if isZeroWidthLLVM ty then
+        panic! s!"CODEGEN BUG: getPayload on zero-width {ty} — should be eliminated by single-constructor MAT optimization"
     -- Tagged union: extract payload pointer first
     let payloadPtr ← match valTy with
         | .rawPtr | .ptr _ =>
@@ -2106,16 +2131,15 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .callExtern name args retTy =>
     -- External function call: emit regular LLVM call to @name
-    let llvmRetTy := convertTy retTy
+    let llvmRetTy := convertRetTy retTy
 
-    -- TODO: review workaround
     let isSomaRuntime := name.startsWith "soma_"
     let mut llvmArgs : Array (LLVMType × LLVMValue) := #[]
     for arg in args do
       let argAlloTy ← operandTy arg
+      if isZeroWidthLLVM argAlloTy then continue
       let (argLLVMTy, argVal) ← convertOperandWithTy arg
       if argAlloTy == Ty.string && !isSomaRuntime then
-        -- Fat pointer → C string: extract data pointer (field 0)
         let cstr ← CodegenM.withFuncBuilder
           (FuncBuilder.extractvalue argLLVMTy argVal #[0])
         llvmArgs := llvmArgs.push (.ptr, .local cstr)
@@ -2148,20 +2172,26 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         let ref ← callCFuncStructABI llvmRetTy name llvmArgs
         pure (some (ref, retTy))
     else
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
-      if isUnitTy retTy then
+      if llvmRetTy == .void then
+        CodegenM.withFuncBuilder (FuncBuilder.callNamedVoid name llvmArgs)
         let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
         pure (some (unitRef, retTy))
       else
-        pure (some (ref, retTy))
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
+        if isUnitTy retTy then
+          let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
+          pure (some (unitRef, retTy))
+        else
+          pure (some (ref, retTy))
 
   | .callExternPoly name _typeArgs args retTy =>
-    let llvmRetTy := convertTy retTy
+    let llvmRetTy := convertRetTy retTy
 
     let isSomaRuntime := name.startsWith "soma_"
     let mut llvmArgs : Array (LLVMType × LLVMValue) := #[]
     for arg in args do
       let argAlloTy ← operandTy arg
+      if isZeroWidthLLVM argAlloTy then continue
       let (argLLVMTy, argVal) ← convertOperandWithTy arg
       if argAlloTy == Ty.string && !isSomaRuntime then
         let cstr ← CodegenM.withFuncBuilder
@@ -2194,12 +2224,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         let ref ← callCFuncStructABI llvmRetTy name llvmArgs
         pure (some (ref, retTy))
     else
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
-      if isUnitTy retTy then
+      if llvmRetTy == .void then
+        CodegenM.withFuncBuilder (FuncBuilder.callNamedVoid name llvmArgs)
         let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
         pure (some (unitRef, retTy))
       else
-        pure (some (ref, retTy))
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
+        if isUnitTy retTy then
+          let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
+          pure (some (unitRef, retTy))
+        else
+          pure (some (ref, retTy))
 
 /-- Lower an Alloy terminator to LLVM -/
 def lowerTerminator (term : Terminator) (retTy : ClosedTy) (llvmRetOverride : Option LLVMType := none) : CodegenM Unit := do
@@ -2368,17 +2403,21 @@ def lowerFuncWithName (func : ClosedFunc) (name : String) : CodegenM LLVMFunc :=
     let localRef ← CodegenM.withFuncBuilder FuncBuilder.freshLocal
     CodegenM.mapLocal param.id.id localRef param.ty
 
-  -- Convert parameters using numeric names matching the LocalRef IDs
+  -- Convert parameters
   let funcBorrowInfo := (← get).borrowInfo.get? func.id.id
-  let llvmParams : Array LLVMParam ← func.sig.params.mapIdxM fun i p => do
+  let mut llvmParams : Array LLVMParam := #[]
+  for h : i in [:func.sig.params.size] do
+    let p := func.sig.params[i]
+    if isZeroWidthLLVM p.ty then continue
     let llvmTy := convertTy p.ty
     let attrs := match funcBorrowInfo with
       | some borrowed =>
         if borrowed.getD i false && llvmTy == .ptr then #["nocapture", "readonly"] else #[]
       | none => #[]
-    match ← CodegenM.getLocal p.id.id with
-    | some ref => pure { name := s!"v{ref.id}", ty := llvmTy, attrs }
-    | none => pure { name := p.name, ty := llvmTy, attrs }
+    let param ← match ← CodegenM.getLocal p.id.id with
+      | some ref => pure ({ name := s!"v{ref.id}", ty := llvmTy, attrs } : LLVMParam)
+      | none => pure ({ name := p.name, ty := llvmTy, attrs } : LLVMParam)
+    llvmParams := llvmParams.push param
 
   -- Convert return type
   let isMain := name == "soma_main"

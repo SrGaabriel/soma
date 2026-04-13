@@ -537,7 +537,7 @@ def solvePendingInstances : TCM (Array InstanceFailure) := do
     let result ← resolveInstance p.classId forcedArgs
     match result with
     | .found value _ =>
-      TCM.solveMeta p.metaId value
+      TCM.solveMeta p.metaId value (callerTag := "Instance.solvePendingA")
     | .notFound classId args reason =>
       failures := failures.push {
         metaId := p.metaId
@@ -581,7 +581,7 @@ def solvePendingInstancesOrFail : TCM Unit := do
         let result ← resolveInstance classId forcedArgs.toArray
         match result with
         | .found value _ =>
-          TCM.solveMeta metaId value
+          TCM.solveMeta metaId value (callerTag := "Instance.solvePendingB")
         | .notFound _ _ _ =>
           TCM.addError (.noInstance classId forcedArgs.toArray span #[] #[])
         | .cycle classId _ =>

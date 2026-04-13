@@ -206,6 +206,6 @@ def evalSolutionTerm (t : Soma.Core.Expr) : TCM Value := do
 def installSolution (m : MetaId) (spineLevels : List DeBruijnLvl) (body : Soma.Core.Expr) : TCM Unit := do
   let solution := buildLambdaSolution spineLevels body
   let solutionVal ← evalSolutionTerm solution
-  TCM.solveMeta m solutionVal
+  TCM.solveMeta m solutionVal (callerTag := "Pattern.installSolution")
 
 end Soma.Dependent

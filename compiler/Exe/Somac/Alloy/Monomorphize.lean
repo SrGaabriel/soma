@@ -41,7 +41,7 @@ partial def mangleTy (ty : ClosedTy) : String :=
       match p with
       | .i8 => "i8" | .i16 => "i16" | .i32 => "i32" | .i64 => "i64"
       | .u8 => "u8" | .u16 => "u16" | .u32 => "u32" | .u64 => "u64"
-      | .f32 => "f32" | .f64 => "f64" | .bool => "b" | .unit => "u"
+      | .f32 => "f32" | .f64 => "f64" | .bool => "b" | .unit => "u" | .world => "w"
   | .ptr t => s!"P{mangleTy t}"
   | .rawPtr => "Pv"
   | .funcPtr args ret =>

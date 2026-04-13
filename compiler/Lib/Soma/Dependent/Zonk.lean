@@ -522,19 +522,16 @@ partial def expandAbbrevValue (v : Value) : TCM Value := do
     return .vEq l ty' lhs' rhs'
   | _ => return v
 where
-  /-- Expand abbreviations inside a closure by applying to a fresh var, expanding, and rebuilding -/
+  /-- Expand abbreviations inside a closure -/
   expandAbbrevClosure (clos : Closure) : TCM Closure := do
     match clos with
     | .const name val =>
       let val' ← expandAbbrevValue val
       return .const name val'
     | .term name env body =>
-      -- Apply the closure to a fresh variable, expand abbreviations in the result,
-      -- then rebuild the closure via quote.
-      let freshVar := Value.vNeutral (.vType .zero) (.nVar ⟨name, env.level⟩)
-      let applied := Closure.applyPure clos freshVar
-      let expanded ← expandAbbrevValue applied
-      let bodyExpr := Soma.Core.quoteExpr env.level.succ expanded
-      return .term name env bodyExpr
+      let values' ← env.values.mapM fun (n, v) => do
+        let v' ← expandAbbrevValue v
+        return (n, v')
+      return .term name (Env.mk values' env.size) body
 
 end Soma.Dependent

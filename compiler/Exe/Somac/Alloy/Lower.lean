@@ -444,6 +444,13 @@ partial def isTypeLevelValue : Value → Bool
     else false
   | _ => false
 
+/-- Apply a list of concrete type arguments to a ctor's polymorphic type -/
+partial def applyCtorTypeArgs (ty : Value) (args : List Value) : Value :=
+  match args, ty with
+  | [], _ => ty
+  | a :: rest, .vPi _ _ _ _ cod => applyCtorTypeArgs (cod.applyPure a) rest
+  | _, _ => ty
+
 partial def extractCtorFieldTypes (ty : Value) (ctx : TypeConvCtx n) : Array (Ty n) :=
   match ty with
   | Value.vPi qty _ _ dom cod =>
@@ -472,7 +479,7 @@ partial def convertPrimToAlloyTy (prim : PrimType) (params : List Value) (ctx : 
   | .word8 => .prim .u8
   | .word16 => .prim .u16
   | .word64 => .prim .u64
-  | .world => .prim .unit
+  | .world => .prim .world
   | .list => .somaList
   | .array | .ref | .ptr => .rawPtr
 
@@ -543,14 +550,18 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
     | none =>
       match ctx.inductives.get? ⟨dId⟩ with
       | some indInfo =>
-        if indInfo.kind == .record && indInfo.ctors.size == 1 then
+        if indInfo.ctors.size == 1 then
           let ctor := indInfo.ctors[0]!
-          let fields := extractCtorFieldTypes ctor.type ctx
+          let instantiatedTy := applyCtorTypeArgs ctor.type params
+          let fields := extractCtorFieldTypes instantiatedTy ctx
           let fieldNames := indInfo.fieldNames
           let namedFields := fields.mapIdx fun i ty =>
             let name := if h : i < fieldNames.size then fieldNames[i] else s!"field{i}"
             (name, ty)
-          .struct namedFields
+          let kept := namedFields.filter fun (_, ty) => !Ty.isZeroWidth ty
+          if kept.isEmpty then .prim .unit
+          else if kept.size == 1 then kept[0]!.2
+          else .struct kept
         else
           let variants := indInfo.ctors.map fun ctor =>
             let fields := extractCtorFieldTypes ctor.type ctx
@@ -1187,9 +1198,37 @@ def lowerString (stringIdx : Nat) (len : Nat) : LowerM n LocalId := do
 /-- Emit a constructor or record value, dispatching by target type -/
 partial def emitCtorOrRecord (tag : Nat) (fieldVals : Array LocalId) (ty : Ty n)
     : StateT (NodeState n) (LowerM n) LocalId := do
+  let findMatch : StateT (NodeState n) (LowerM n) (Option LocalId) := do
+    let ls ← StateT.lift get
+    let idx? := fieldVals.findIdx? fun lid =>
+      match ls.func.getLocalType lid with
+      | some fty => fty == ty
+      | none => false
+    pure (idx?.map fun i => fieldVals[i]!)
   match ty with
-  | .struct _ => StateT.lift (lowerNestedStructLit fieldVals ty)
-  | _ => StateT.lift (lowerCtor tag fieldVals.size fieldVals ty)
+  | .struct _ =>
+    -- Try the single-field collapse first: if one ctor arg's type already
+    -- matches `ty`, the other args were zero-width and elided during type
+    -- conversion, so return the survivor directly. Otherwise emit a real
+    -- struct literal from all fields
+    match (← findMatch) with
+    | some lid => pure lid
+    | none => StateT.lift (lowerNestedStructLit fieldVals ty)
+  | .tagged _ variants =>
+    if variants.isEmpty then
+      match (← findMatch) with
+      | some lid => pure lid
+      | none => StateT.lift (lowerCtor tag fieldVals.size fieldVals ty)
+    else
+      StateT.lift (lowerCtor tag fieldVals.size fieldVals ty)
+  | .prim .unit =>
+    StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .u8))) (.prim .unit))
+  | _ =>
+    -- Collapsed single-ctor inductive (for ex Pair-of-World-X => X)
+    match (← findMatch) with
+    | some lid => pure lid
+    | none =>
+      StateT.lift (lowerCtor tag fieldVals.size fieldVals ty)
 
 /-- Mapping from Circuit book index to Alloy FuncId -/
 abbrev FuncIdMap := Std.HashMap Nat FuncId
@@ -1579,8 +1618,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           else
             -- Regular constructor at base of APP chain.
             -- The CTOR creates a value from its fields. The chain args are
-            -- either additional CTOR fields (standard) or io_bind continuations
-            -- that should be called with the CTOR result (after IOErasure).
+            -- either additional CTOR fields (standard) or continuation
+            -- applications layered on top of the constructed value.
             let mut fieldVals : Array LocalId := #[]
             for i in [:arity] do
               match chain.baseEntry.getPort ⟨i + 1⟩ with
@@ -1726,7 +1765,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               let val ← lowerOperandWithMap graph argPort funcIdMap
               argVals := argVals.push val
             let argOps := argVals.map fun v => Operand.local v
-            -- External functions not in local graph: apply IO erasure for C-level return type
+            -- External function not in local graph: extract the raw return type from the REF's Pi spine
             let callRetTy := extractReturnTypeWithMapping chain.baseEntry.ty ctx
             let ls ← StateT.lift get
             let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
@@ -1973,8 +2012,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | _ =>
               -- Regular closure call: lower the function and use callClosure
               let fnNodeTy := getNodeTypeWithMapping fnEntry ctx
-              if fnNodeTy == .prim .unit then
-                -- Erased function → produce undef
+              if Ty.isZeroWidth fnNodeTy then
                 let erasedTy := (← get).expectedResultTy.getD nodeTy
                 StateT.lift (LowerM.emitInst (.copy (.const (.undef erasedTy.close))) erasedTy)
               else
@@ -2000,8 +2038,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         | none => StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
       modify fun s => { s with expectedResultTy := savedExpectedTy }
 
-      -- Check if environment (port 2) is ERA since after IOErasure, the World env
-      -- is erased but some closures still need to be called for IO side effects
+      -- Check if environment (port 2) is ERA since closures with an ERA env and
+      -- arity 0 are IO thunks waiting to be demanded
       let isEraEnv := match entry.getPort ⟨2⟩ with
         | some envPort =>
           match graph.getNode envPort.node with
@@ -2050,7 +2088,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs (.local envVal)) .rawPtr)
           | none =>
             StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) .rawPtr)
-          -- After IOErasure, closures with ERA env and arity 0 need immediate calling
+          -- ERA env + arity 0 signals an IO thunk that must be demanded here
           let wrappedArity := match graph.getDefinition refId with
             | some def_ => def_.arity
             | none => 1
@@ -2075,9 +2113,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           | none =>
             StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local unitEnv)) .rawPtr)
           -- If the env port connects to a real value (not ERA), partially apply it.
-          -- After IOErasure, closures wrapping IO thunks (arity 0 after World param
-          -- removal) need to be called immediately for side effects. Pure closures
-          -- (arity ≥ 1) and closures with captured values are returned as values.
+          -- ERA env + arity 0 marks an IO thunk that must be demanded now
           let wrappedArity := match graph.getDefinition bookIdx with
             | some def_ => def_.arity
             | none => 1
@@ -2190,15 +2226,17 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       else
         StateT.lift (LowerM.emitPanic nodeTy)
     else
-    -- Check if record is struct or tagged union
-    match recordTy with
-    | .struct fields =>
-      -- Use extractField for struct types
-      let fieldTy := if h : fieldIdx < fields.size then fields[fieldIdx].snd else nodeTy
-      StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) fieldTy)
-    | _ =>
-      -- Tagged unions and other types
-      StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
+    if Ty.isZeroWidth nodeTy then
+      StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .u8))) (.prim .unit))
+    else if recordTy == nodeTy then
+      pure recordVal
+    else
+      match recordTy with
+      | .struct fields =>
+        let fieldTy := if h : fieldIdx < fields.size then fields[fieldIdx].snd else nodeTy
+        StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) fieldTy)
+      | _ =>
+        StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
 
   | .record numFields => do
     let mut fieldVals : Array LocalId := #[]
@@ -2226,10 +2264,24 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     do
 
     let scrutTy := getPortType 1
+    let scrutSourceIsSingleCtor : Bool :=
+      match entry.getPort ⟨1⟩ with
+      | some targetPort =>
+        match graph.getNode targetPort.node with
+        | some targetEntry =>
+          match targetEntry.ty with
+          | .vDataType uid _ =>
+            match ns.inductives.get? ⟨uid⟩ with
+            | some indInfo => indInfo.ctors.size == 1
+            | none => false
+          | _ => false
+        | none => false
+      | none => false
     let isSingleCtor := match scrutTy with
       | .struct _ => true
       | .tagged _ variants => variants.size == 1
-      | _ => false
+      | .prim _ => scrutSourceIsSingleCtor
+      | _ => scrutSourceIsSingleCtor || true
 
     let (_, _thenBlock, elseBlock) ← if scrutIsArray then
       -- Array-backed list: check list.len field (index 1) for Nil/Cons
@@ -2638,7 +2690,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     else { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param n }
   let retTy := extractReturnTypeWithMapping def_.ty ctx
   let sig : Signature n := { name := def_.name.symbolName, typeParamNames, params, retTy }
-  let returnsUnit := sig.retTy == .prim .unit
+  let returnsZeroWidth := Ty.isZeroWidth sig.retTy
 
   let (_, func) := LowerM.run' funcId sig intrinsics panicMsgIdx do
     -- Normal lowering path: compile the Circuit IR body
@@ -2651,8 +2703,11 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     -- Reconcile return type: the body's lowered type is ground truth
     let s ← get
     let resultTy := s.func.localTypes.get? result.id
-    if resultTy == some (.prim .unit) then do
-      if !returnsUnit then
+    let resultIsZeroWidth := match resultTy with
+      | some t => Ty.isZeroWidth t
+      | none => false
+    if resultIsZeroWidth then do
+      if !returnsZeroWidth then
         modify fun s => { s with func := { s.func with sig := { s.func.sig with retTy := .prim .unit } } }
       LowerM.terminate .retUnit
     else LowerM.terminate (.ret (.local result))

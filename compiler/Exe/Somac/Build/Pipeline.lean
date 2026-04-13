@@ -4,9 +4,9 @@ import Soma.Project.Check
 import Soma.Core.LambdaLift
 import Soma.Driver.Target
 import Somac.Circuit
-import Somac.Circuit.IOErasure
 import Somac.Alloy
 import Somac.Alloy.Merge
+import Somac.Alloy.Pretty
 import Somac.Alloy.Serialize
 import Somac.Llvm
 
@@ -103,62 +103,34 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
 
 /-- Lower a single checked module to Alloy IR -/
 def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
-    (globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {}) : IO Alloy.Module := do
-  -- Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv) (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv) cm.metas
+    (_globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {}) : IO Alloy.Module := do
+  let ioBindName? := globals.wiredIn.getUnique? .bindIO |>.map (·.name)
+  let pureIOName? := globals.wiredIn.getUnique? .pureIO |>.map (·.name)
+  let pairCtorInfo? := globals.wiredIn.getUnique? .pair
+  let pairCtorName? := pairCtorInfo?.map (·.name)
+  let pairCtorTag := pairCtorInfo?.map (·.ctorTag) |>.getD 0
+  let worldUnique? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id)
+  let pairUnique? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id)
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name
+    cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv)
+    (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv) cm.metas ioBindName? pureIOName?
+    worldUnique? pairCtorName? pairCtorTag pairUnique?
 
   -- Lower to Circuit IR
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas) (abbrevEnv := cm.abbrevEnv)
 
-  let mkIOCtx (g : Circuit.Graph.Graph) : Circuit.IOErasure.IOErasureCtx := {
-    worldUid? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id.id)
-    pairUid? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id.id)
-    ioBindBookIdx? := globals.wiredIn.getUnique? .bindIO |>.bind fun info =>
-      g.findDefinition info.name |>.map (·.1)
-    pureIOBookIdx? := globals.wiredIn.getUnique? .pureIO |>.bind fun info =>
-      g.findDefinition info.name |>.map (·.1)
-    abbrevEnv := Id.run do
-      let mut merged := cm.abbrevEnv
-      for (k, v) in globalAbbrevEnv.toList do
-        if !merged.contains k then
-          merged := merged.insert k v
-      merged
-  }
-
-  let ioBindName? := globals.wiredIn.getUnique? .bindIO |>.map (·.name)
-  let pureIOName? := globals.wiredIn.getUnique? .pureIO |>.map (·.name)
-
-  let definesIOPrimitives :=
-    graph.book.any fun d =>
-      (ioBindName?.any (· == d.name)) && d.reducibility != .external
-
-  let g ← if definesIOPrimitives then do
-    -- Simple pipeline for the IO runtime module
-    let (optimized, _) ← Circuit.partialEval graph (abbrevEnv := cm.abbrevEnv)
-    let resolved := Circuit.Lower.resolveGraphMetas optimized cm.metas
-    let (erased, erasureCount) ← Circuit.IOErasure.eraseIO resolved (mkIOCtx resolved)
-    pure erased
-  else do
-    -- Step 1: partial eval with io_bind/pure_io preserved as irreducible
-    let setIrreducible (g : Circuit.Graph.Graph) : Circuit.Graph.Graph := Id.run do
-      let mut graph := g
-      for i in [:graph.book.size] do
-        if let some d := graph.book[i]? then
-          let isIOPrim := (ioBindName?.any (· == d.name)) || (pureIOName?.any (· == d.name))
-          if isIOPrim then
-            graph := graph.setReducibility i .irreducible
-      graph
-    let (optimized, _) ← Circuit.partialEval (setIrreducible graph) (abbrevEnv := cm.abbrevEnv)
-    -- Step 2: resolve all metas so IOErasure and Alloy see clean types
-    let resolved := Circuit.Lower.resolveGraphMetas optimized cm.metas
-    -- Step 3: IOErasure detects and erases io_bind/pure_io patterns
-    let (erased, erasureCount) ← Circuit.IOErasure.eraseIO resolved (mkIOCtx resolved)
-    pure erased
+  -- Partial evaluation propagates knowledge through the graph
+  let (optimized, _) ← Circuit.partialEval graph (abbrevEnv := cm.abbrevEnv)
+  -- Resolve metavariables for downstream passes
+  let g := Circuit.Lower.resolveGraphMetas optimized cm.metas
 
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
   let wiredFuncs := Alloy.Lower.buildWiredFuncRegistry globals.wiredIn
   let alloyMod := Alloy.Lower.lower g cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas)
+  if (← IO.getEnv "SOMA_DUMP_ALLOY").isSome then
+    IO.println s!"\n=== Alloy module for {cm.name} ==="
+    IO.println (Somac.Alloy.Pretty.pp alloyMod)
   return alloyMod
 
 /-- Result of compilation pipeline -/
