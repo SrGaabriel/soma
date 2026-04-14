@@ -1,0 +1,10 @@
+// expect: error non-exhaustive
+
+inductive Traffic where
+    | Red
+    | Yellow
+    | Green
+
+def describe : Traffic -> Int32
+    | Traffic::Red => 0
+    | Traffic::Green => 2

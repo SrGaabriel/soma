@@ -1,0 +1,5 @@
+// expect: error non-exhaustive
+
+def color_rank : < Red::Unit | Green::Unit | Blue::Unit > -> Int32
+    | .Red _ => 1
+    | .Green _ => 2

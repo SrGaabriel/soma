@@ -1,0 +1,4 @@
+// expect: error linear
+
+def dup_linear : (1 x : Int32) -> Pair Int32 Int32
+    | x => Pair::MkPair x x

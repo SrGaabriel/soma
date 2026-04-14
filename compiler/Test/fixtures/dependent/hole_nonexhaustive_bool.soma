@@ -1,0 +1,4 @@
+// expect: error non-exhaustive
+
+def not_bool : Bool -> Bool
+    | Bool::True => Bool::False

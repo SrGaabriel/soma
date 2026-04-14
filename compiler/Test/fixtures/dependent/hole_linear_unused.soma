@@ -1,0 +1,4 @@
+// expect: error linear
+
+def drop_linear : (1 x : Int32) -> Int32
+    | _ => 0

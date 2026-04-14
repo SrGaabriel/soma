@@ -1,0 +1,4 @@
+// expect: error positivity
+
+inductive Bad where
+    | Fix : (Bad -> Bool) -> Bad

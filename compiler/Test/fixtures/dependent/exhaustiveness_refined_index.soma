@@ -1,0 +1,12 @@
+// expect: success
+
+inductive Nat where
+    | Zero : Nat
+    | Succ : Nat -> Nat
+
+inductive Vec (n : Nat) (a : Type) where
+    | Nil : Vec Nat::Zero a
+    | Cons : a -> Vec m a -> Vec (Nat::Succ m) a
+
+def safe_head {n : Nat} {a : Type} : Vec (Nat::Succ n) a -> a
+    | Vec::Cons x _ => x
