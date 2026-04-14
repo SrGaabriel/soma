@@ -560,16 +560,48 @@ where
 def rebuildAppSpine (fn : Expr) (args : Array Expr) : Expr :=
   args.foldl (init := fn) fun acc arg => .app acc arg
 
+/-- Count occurrences of bvar(depth) in an expression -/
+partial def countBVar (e : Expr) (depth : Nat := 0) : Nat :=
+  match e with
+  | .bvar i => if i == depth then 1 else 0
+  | .app f a => countBVar f depth + countBVar a depth
+  | .lam _ _ d b => countBVar d depth + countBVar b (depth + 1)
+  | .let_ _ t v b => countBVar t depth + countBVar v depth + countBVar b (depth + 1)
+  | .«case» scruts arms _ =>
+    let s := scruts.foldl (fun acc e => acc + countBVar e depth) 0
+    let a := arms.foldl (fun acc arm =>
+      acc + countBVar arm.body (depth + arm.patterns.foldl (fun n p => n + p.bindingCount) 0)) 0
+    s + a
+  | .if_ c t el => countBVar c depth + countBVar t depth + countBVar el depth
+  | .construct _ _ args _ => args.foldl (fun acc e => acc + countBVar e depth) 0
+  | .pair f s => countBVar f depth + countBVar s depth
+  | .projFst x => countBVar x depth
+  | .projSnd x => countBVar x depth
+  | .fieldAccess x _ _ => countBVar x depth
+  | .closure _ caps => caps.foldl (fun acc e => acc + countBVar e depth) 0
+  | .fvar _ _ => 0
+  | .const _ _ => 0
+  | _ => 0
+
 /-- Exhaustive beta-reduction: reduces `app (lam ...) arg` redexes.
     When `stripTypeArgs` is true, type-level arguments applied to non-lambda
-    heads are dropped (useful after dictionary specialization). -/
+    heads are dropped (useful after dictionary specialization)
+
+    Sharing-preserving: if the binder is `.explicit` and the bound variable
+    is used more than once in the body, we emit `.let_` rather than
+    substitute `arg'` at every use site -/
 partial def betaReduce (e : Expr) (stripTypeArgs : Bool := false) : Expr :=
   match e with
   | .app fn arg =>
     let fn' := betaReduce fn stripTypeArgs
     let arg' := betaReduce arg stripTypeArgs
     match fn' with
-    | .lam _ _ _ body => betaReduce (body.instantiate arg') stripTypeArgs
+    | .lam info name domain body =>
+      let uses := body.countBVar 0
+      if uses <= 1 || info != .explicit then
+        betaReduce (body.instantiate arg') stripTypeArgs
+      else
+        .let_ name (betaReduce domain stripTypeArgs) arg' (betaReduce body stripTypeArgs)
     | _ =>
       if stripTypeArgs && isTypeLevelExpr arg' then fn'
       else .app fn' arg'
@@ -601,29 +633,6 @@ partial def betaReduce (e : Expr) (stripTypeArgs : Bool := false) : Expr :=
   | .tuple es => .tuple (es.map (betaReduce · stripTypeArgs))
   | .ann x t => .ann (betaReduce x stripTypeArgs) (betaReduce t stripTypeArgs)
   | _ => e
-
-/-- Count occurrences of bvar(target) at the given depth -/
-partial def countBVar (e : Expr) (depth : Nat := 0) : Nat :=
-  match e with
-  | .bvar i => if i == depth then 1 else 0
-  | .app f a => countBVar f depth + countBVar a depth
-  | .lam _ _ d b => countBVar d depth + countBVar b (depth + 1)
-  | .let_ _ t v b => countBVar t depth + countBVar v depth + countBVar b (depth + 1)
-  | .«case» scruts arms _ =>
-    let s := scruts.foldl (fun acc e => acc + countBVar e depth) 0
-    let a := arms.foldl (fun acc arm =>
-      acc + countBVar arm.body (depth + arm.patterns.foldl (fun n p => n + p.bindingCount) 0)) 0
-    s + a
-  | .if_ c t el => countBVar c depth + countBVar t depth + countBVar el depth
-  | .construct _ _ args _ => args.foldl (fun acc e => acc + countBVar e depth) 0
-  | .pair f s => countBVar f depth + countBVar s depth
-  | .projFst x => countBVar x depth
-  | .projSnd x => countBVar x depth
-  | .fieldAccess x _ _ => countBVar x depth
-  | .closure _ caps => caps.foldl (fun acc e => acc + countBVar e depth) 0
-  | .fvar _ _ => 0  -- type annotation is erased, skip
-  | .const _ _ => 0  -- type annotation is erased, skip
-  | _ => 0
 
 /-- Count the number of occurrences of a specific free variable in an expression -/
 partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
