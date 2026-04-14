@@ -355,6 +355,11 @@ def Config.forPartialEval : Config :=
 def Config.forTotalEval : Config :=
   { mode := .totalEval, effectHandler := .builtins }
 
+/-- Whether reduction should preserve runtime sharing by deferring DUP
+    commutations through compound values -/
+@[inline] def Config.preserveSharing (c : Config) : Bool :=
+  c.mode == .partialEval
+
 /-- Reducer state -/
 structure ReduceState where
   /-- The interaction net graph -/
@@ -367,6 +372,8 @@ structure ReduceState where
   config : Config
   /-- Definitions currently being normalized by nf (recursion guard) -/
   normalizingDefs : Std.HashSet Nat := {}
+  /-- DUP nodes currently being resolved -/
+  resolvingDups : Std.HashSet Nat := {}
   deriving Inhabited
 
 /-- The reduction monad -/
@@ -572,6 +579,18 @@ def addNormalizingDef (refId : Nat) : ReduceM Unit :=
 /-- Remove a definition from the normalizing set -/
 def removeNormalizingDef (refId : Nat) : ReduceM Unit :=
   modify fun s => { s with normalizingDefs := s.normalizingDefs.erase refId }
+
+/-- Check if a DUP is currently on the resolution stack -/
+def isResolvingDup (nid : NodeId) : ReduceM Bool := do
+  return (← get).resolvingDups.contains nid.id
+
+/-- Mark a DUP as currently being resolved -/
+def addResolvingDup (nid : NodeId) : ReduceM Unit :=
+  modify fun s => { s with resolvingDups := s.resolvingDups.insert nid.id }
+
+/-- Remove a DUP from the resolving set -/
+def removeResolvingDup (nid : NodeId) : ReduceM Unit :=
+  modify fun s => { s with resolvingDups := s.resolvingDups.erase nid.id }
 
 end ReduceM
 

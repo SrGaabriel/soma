@@ -2412,16 +2412,13 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         }
         pure inputVal
       else if nodeTy.isSomaList then
-        let srcTy := (← StateT.lift get).func.getLocalType inputVal |>.getD .somaList
-        let dupElemSz := listElemSizeFromValueType entry.ty ctx (← get).ptrBytes
-        let (copy0, copy1) ← emitListDup inputVal srcTy label.id graph nodeId dupElemSz
+        -- Tier 2: emit a lazy SUP wrapping the list
+        let supVal ← StateT.lift
+          (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)
         modify fun ns => { ns with
-          results := ns.results.insert (nodeId.id * 1000 + 1) copy0
-                     |>.insert (nodeId.id * 1000 + 2) copy1
           listTypedLocals := ns.listTypedLocals.insert inputVal.id
-            |>.insert copy0.id |>.insert copy1.id
         }
-        pure inputVal
+        pure supVal
       else if nodeTy == .rawPtr then
         let ns ← get
         let rec traceDupSource (portOpt : Option CPortId) (fuel : Nat) : Bool :=

@@ -105,33 +105,18 @@ private def defProcessingOrder (g : Graph) : Array Nat := Id.run do
   result
 
 /-- Run one pass of partial evaluation over all definitions -/
-private def partialEvalPass (graph : Graph) (fuel : Nat)
-    (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
-    (forceNF : Bool := false) : IO (Graph × Stats) := do
+private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) := do
   let order := defProcessingOrder graph
   let mut g := graph
   let mut stats : Stats := {}
   for i in order do
     if let some def_ := g.book[i]? then
       if def_.reducibility == .reducible then
-        let isIO := Id.run do
-          let mut ty := Somac.Circuit.Lower.unfoldValue def_.ty abbrevEnv
-          for _ in [:30] do
-            match ty with
-            | .vPi _ _ _ dom cod =>
-              if match dom with | .vPrimTy .world => true | _ => false then
-                return true
-              ty := match cod with
-                | .const _ body => Somac.Circuit.Lower.unfoldValue body abbrevEnv
-                | .term _ _ _ => cod.applyPure (Soma.Core.Value.vNeutral dom (.nVar ⟨"_", ⟨0⟩⟩))
-            | _ => break
-          false
         let (result, state) ← ReduceM.run (do
           let era ← ReduceM.addNode .era
           ReduceM.connect (PortId.principal era) (PortId.principal def_.root)
           ReduceM.addNormalizingDef i
-          let useWhnf := isIO && !forceNF
-          let resultId ← if useWhnf then whnf (PortId.principal era) else nf (PortId.principal era)
+          let resultId ← nf (PortId.principal era)
           ReduceM.removeNormalizingDef i
           if resultId != def_.root then
             ReduceM.updateDefinitionRoot i resultId
@@ -147,15 +132,13 @@ private def partialEvalPass (graph : Graph) (fuel : Nat)
   return (g, stats)
 
 /-- Partially evaluate each definition in the graph's book -/
-def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8)
-    (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
-    (forceNF : Bool := false) : IO (Graph × Stats) := do
+def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8) : IO (Graph × Stats) := do
   let mut g := graph
   let mut totalStats : Stats := {}
   let mut remainingFuel := fuel
   for _ in [:maxPasses] do
     if remainingFuel == 0 then break
-    let (g', passStats) ← partialEvalPass g remainingFuel abbrevEnv forceNF
+    let (g', passStats) ← partialEvalPass g remainingFuel
     totalStats := totalStats.merge passStats
     if passStats.totalSteps == 0 then
       g := g'

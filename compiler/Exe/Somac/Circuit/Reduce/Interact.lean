@@ -161,6 +161,7 @@ mutual
 partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
     : ReduceM NodeId := do
   ReduceM.consumeFuel
+  let preserveSharing := (← ReduceM.getConfig).preserveSharing
   -- Evaluate the value connected to DUP's principal port
   let valId ← whnf (PortId.principal dupId)
   let valEntry ← ReduceM.getNode valId
@@ -261,6 +262,9 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
       ReduceM.removeNode dupId
       ReduceM.removeNode valId
       whnf demandPort
+    else if preserveSharing then
+      -- Defer DUP-SUP different-label: preserve the shared sharing
+      pure dupId
     else
       -- DUP-SUP different-label commutation:
       -- DUP^L1(SUP^L2(a, b)) → (SUP^L2(DUP^L1(a)₀, DUP^L1(b)₀),
@@ -311,6 +315,9 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
       ReduceM.removeNode dupId
       ReduceM.removeNode valId
       whnf demandPort
+    else if preserveSharing then
+      -- Defer DUP-DUP different-label: keep the lazy sharing for runtime
+      pure dupId
     else
       -- DUP-DUP different-label commutation:
       -- DUP^L1(DUP^L2(a, b)) → (DUP^L2(DUP^L1(a)₀, DUP^L1(b)₀),
@@ -365,6 +372,12 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
       ReduceM.removeNode valId
       ReduceM.trackPeakNodes
       whnf demandPort
+    else if preserveSharing then
+      -- Defer DUP-NOD over compound values (CTOR, RECORD, ARRAY, STRING,
+      -- SLICE, USE, INDEX, OP1, OP2, MAT, PROJ, APP, …). The shared compound
+      -- stays in the graph as a live DUP so Alloy lowering emits a lazy SUP
+      -- and the runtime decides when (or whether) to clone each branch
+      pure dupId
     else
       -- N-arity node: duplicate the node, DUP each auxiliary port.
       -- Each field DUP gets the field's type (from the connected node)
@@ -454,6 +467,10 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       whnf demandPort
 
     | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        -- Defer APP-SUP: leave the shared function value for runtime
+        pure nid
+      else
       -- APP-SUP: (&L{f,g} a) → !A &L = a; &L{(f A₀),(g A₁)}
       -- Distribute application through both branches of the superposition
       ReduceM.modifyStats (·.incSupCommutation)
@@ -551,6 +568,10 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       ReduceM.removeNode leftId
       whnf demandPort
     | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        -- Defer OP2-SUP (left): keep the shared left operand for runtime
+        pure nid
+      else
       -- OP2-SUP (left): (op &L{a,b} y) → !Y &L = y; &L{(op a Y₀),(op b Y₁)}
       ReduceM.modifyStats (·.incSupCommutation)
       let dupRight ← ReduceM.addNode (.dup supLabel) entry.ty
@@ -590,6 +611,10 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
         ReduceM.removeNode rightId
         whnf demandPort
       | .sup supLabel =>
+        if (← ReduceM.getConfig).preserveSharing then
+          -- Defer OP2-NUM-SUP (right): keep the shared right operand for runtime
+          pure nid
+        else
         -- OP2-NUM-SUP (right): (op #x &L{a,b}) → &L{(op #x a),(op #x b)}
         -- NUM is flat: create two copies instead of DUP
         ReduceM.modifyStats (·.incSupCommutation)
@@ -691,6 +716,10 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       ReduceM.removeNode operandId
       whnf demandPort
     | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        -- Defer OP1-SUP: keep the shared operand for runtime
+        pure nid
+      else
       -- OP1-SUP: (op &L{a,b}) → &L{(op a),(op b)}
       ReduceM.modifyStats (·.incSupCommutation)
       let op0 ← ReduceM.addNode (.op1 op) entry.ty
@@ -738,6 +767,10 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       ReduceM.removeNode scrutId
       whnf demandPort
     | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        -- Defer MAT-SUP: keep the shared scrutinee for runtime
+        pure nid
+      else
       -- MAT-SUP: (mat &L{a,b} hit miss) → !H &L = hit; !M &L = miss;
       --          &L{(mat a H₀ M₀),(mat b H₁ M₁)}
       ReduceM.modifyStats (·.incSupCommutation)
@@ -832,6 +865,10 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       ReduceM.removeNode recId
       whnf demandPort
     | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        -- Defer PROJ-SUP: keep the shared record for runtime
+        pure nid
+      else
       -- PROJ-SUP: (proj_i &L{a,b}) → &L{(proj_i a),(proj_i b)}
       ReduceM.modifyStats (·.incSupCommutation)
       let proj0 ← ReduceM.addNode (.proj fieldIdx) entry.ty

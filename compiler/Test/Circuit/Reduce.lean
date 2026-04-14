@@ -43,11 +43,11 @@ private def buildTestGraph (builder : GraphM PortId) : Graph :=
 
 /-- Evaluate a test graph to a ReadbackValue -/
 private def evalGraph (g : Graph) : IO ReadbackValue :=
-  eval g .forPartialEval
+  eval g .forTotalEval
 
 /-- Evaluate and return the full ReduceResult (with stats) -/
 private def reduceGraph (g : Graph) : IO ReduceResult :=
-  reduce g .forPartialEval
+  reduce g .forTotalEval
 
 /-- Check that a ReadbackValue is a number with the expected value -/
 private def expectNum (result : ReadbackValue) (expected : UInt32) : IO TestResult := do
@@ -729,7 +729,7 @@ def testCtorReadback : IO TestResult := do
     GraphM.connect ⟨ctor, ⟨1⟩⟩ (PortId.principal f0)
     GraphM.connect ⟨ctor, ⟨2⟩⟩ (PortId.principal f1)
     return PortId.principal ctor
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .ctor 1 fields =>
     if fields.size != 2 then
@@ -801,7 +801,7 @@ def testAppSup : IO TestResult := do
     GraphM.connect ⟨app, ⟨1⟩⟩ (PortId.principal sup)
     GraphM.connect ⟨app, ⟨2⟩⟩ (PortId.principal ten)
     return PortId.principal app
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .sup _ v0 v1 =>
     match v0, v1 with
@@ -834,7 +834,7 @@ def testOp2SupLeft : IO TestResult := do
     GraphM.connect ⟨op, ⟨1⟩⟩ (PortId.principal sup)
     GraphM.connect ⟨op, ⟨2⟩⟩ (PortId.principal n10)
     return PortId.principal op
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .sup _ (.num _ 13) (.num _ 17) => return .passed
   | other => return .failed s!"expected sup(13, 17), got {other}"
@@ -853,7 +853,7 @@ def testOp2SupRight : IO TestResult := do
     GraphM.connect ⟨op, ⟨1⟩⟩ (PortId.principal n10)
     GraphM.connect ⟨op, ⟨2⟩⟩ (PortId.principal sup)
     return PortId.principal op
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .sup _ (.num _ 13) (.num _ 17) => return .passed
   | other => return .failed s!"expected sup(13, 17), got {other}"
@@ -892,7 +892,7 @@ def testOp1Sup : IO TestResult := do
     let op ← GraphM.addNode (.op1 .not) testTy
     GraphM.connect ⟨op, ⟨1⟩⟩ (PortId.principal sup)
     return PortId.principal op
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .sup _ (.num _ 1) (.num _ 0) => return .passed
   | other => return .failed s!"expected sup(1, 0), got {other}"
@@ -925,7 +925,7 @@ def testMatSup : IO TestResult := do
     GraphM.connect ⟨mat, ⟨2⟩⟩ (PortId.principal hit)
     GraphM.connect ⟨mat, ⟨3⟩⟩ (PortId.principal miss)
     return PortId.principal mat
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .sup _ (.num _ 100) (.num _ 200) => return .passed
   | other => return .failed s!"expected sup(100, 200), got {other}"
@@ -967,7 +967,7 @@ def testProjSup : IO TestResult := do
     let proj ← GraphM.addNode (.proj 0) testTy
     GraphM.connect ⟨proj, ⟨1⟩⟩ (PortId.principal sup)
     return PortId.principal proj
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .sup _ (.num _ 10) (.num _ 30) => return .passed
   | other => return .failed s!"expected sup(10, 30), got {other}"
@@ -1007,7 +1007,7 @@ def testDupLamApplyBoth : IO TestResult := do
     GraphM.connect ⟨pair, ⟨1⟩⟩ (PortId.principal app0)
     GraphM.connect ⟨pair, ⟨2⟩⟩ (PortId.principal app1)
     return PortId.principal pair
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .ctor 0 fields =>
     match (fields[0]? : Option ReadbackValue), (fields[1]? : Option ReadbackValue) with
@@ -1126,7 +1126,7 @@ def testDupCtor : IO TestResult := do
     -- Simpler test: just sum both copies' principal results via readback
     -- Use reduceNF to check we get two ctors
     return ⟨dup, ⟨1⟩⟩
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .ctor 1 fields =>
     if fields.size != 2 then return .failed s!"expected 2 fields, got {fields.size}"
@@ -1303,7 +1303,7 @@ def testDupCtorFieldAccess : IO TestResult := do
     -- Actually let's use the same pattern but readback both copies separately
     -- and check that both are ctor(0, [3, 7])
     return ⟨dup, ⟨1⟩⟩
-  let result ← reduceNF g .forPartialEval
+  let result ← reduceNF g .forTotalEval
   match result.value with
   | .ctor 0 fields =>
     if fields.size != 2 then return .failed s!"expected 2 fields, got {fields.size}"

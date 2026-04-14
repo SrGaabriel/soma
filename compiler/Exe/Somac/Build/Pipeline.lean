@@ -117,10 +117,10 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
     worldUnique? pairCtorName? pairCtorTag pairUnique?
 
   -- Lower to Circuit IR
-  let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas) (abbrevEnv := cm.abbrevEnv)
+  let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas)
 
   -- Partial evaluation propagates knowledge through the graph
-  let (optimized, _) ← Circuit.partialEval graph (abbrevEnv := cm.abbrevEnv)
+  let (optimized, _) ← Circuit.partialEval graph
   -- Resolve metavariables for downstream passes
   let g := Circuit.Lower.resolveGraphMetas optimized cm.metas
 
