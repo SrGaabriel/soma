@@ -559,6 +559,54 @@ static inline int is_heap_sup(SomaValue value) {
     return (pad_val & 0x00FFFFFFu) == SOMA_SUP_MAGIC_U32;
 }
 
+/* Forward declaration: soma_proj_impl and soma_sup_commute are mutually
+   recursive — the commutation helper builds a fresh DUP_L(w) and projects
+   both of its sides, which recurses back through soma_proj_impl. */
+static inline SomaValue soma_proj_impl(SomaValue sup_val, int proj_idx);
+
+/*
+ * Different-label DUP-SUP commutation.
+ *
+ * Given `outer` is a DUP at label L whose `value` field points to `inner`,
+ * itself a DUP at label M (M ≠ L) of some underlying value w, the
+ * interaction rule produces two new DUP_M cells that share w through a
+ * fresh DUP_L(w):
+ *
+ *     outer{c1,c2}(inner(w))                  c1 = DUP_M(w1)
+ *                                     →       c2 = DUP_M(w2)
+ *                                             (w1, w2) = DUP_L(w)
+ *
+ * The two results are stored into `outer->proj0` and `outer->proj1`
+ * slots up-front and the tag is advanced to BOTH. Subsequent projections
+ * hit the cached slot. `inner` is consumed here (its role is absorbed
+ * into the two new DUP_M cells).
+ *
+ * Without this rule, the fallback clones the inner value entirely —
+ * losing the SUP structure and the sharing benefits that DUP-SUP
+ * commutation is supposed to preserve on deeply nested share chains.
+ */
+SOMA_HOT
+static SomaValue soma_sup_commute(SomaSup* outer, SomaSup* inner, int proj_idx) {
+    SomaValue w = (SomaValue)inner->value;
+    uint32_t inner_label = inner->label;
+    SomaTypeDesc* inner_td = inner->type_desc;
+
+    SomaValue dup_L_w = soma_dup_typed(outer->label, w, inner_td);
+    SomaValue w1 = soma_proj_impl(dup_L_w, 0);
+    SomaValue w2 = soma_proj_impl(dup_L_w, 1);
+
+    SomaValue r0 = soma_dup_typed(inner_label, w1, inner_td);
+    SomaValue r1 = soma_dup_typed(inner_label, w2, inner_td);
+
+    outer->proj0 = (void*)r0;
+    outer->proj1 = (void*)r1;
+    outer->tag = SUP_TAG_BOTH;
+
+    soma_pool_free_sup(inner);
+
+    return (proj_idx == 0) ? r0 : r1;
+}
+
 SOMA_HOT
 static inline SomaValue soma_proj_impl(SomaValue sup_val, int proj_idx) {
     if (!SOMA_IS_PTR(sup_val) || sup_val == 0) return sup_val;
@@ -583,6 +631,7 @@ static inline SomaValue soma_proj_impl(SomaValue sup_val, int proj_idx) {
                 soma_pool_free_sup(inner);
                 return result;
             }
+            return soma_sup_commute(sup, inner, proj_idx);
         }
 
         *my_slot = (void*)value;
@@ -607,6 +656,7 @@ static inline SomaValue soma_proj_impl(SomaValue sup_val, int proj_idx) {
                 soma_pool_free_sup(inner);
                 return result;
             }
+            return soma_sup_commute(sup, inner, proj_idx);
         }
 
         SomaValue cloned;

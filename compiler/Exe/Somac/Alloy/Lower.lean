@@ -2648,9 +2648,10 @@ def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
     visited := visited.insert current.id
     if let some entry := graph.getNode current then
       match entry.node with
-      | .lam _ =>
-        lamParams := lamParams.insert current.id paramIdx
-        paramIdx := paramIdx + 1
+      | .lam erased =>
+        if !erased && paramIdx < maxParams then
+          lamParams := lamParams.insert current.id paramIdx
+          paramIdx := paramIdx + 1
         if let some bodyPort := entry.getPort ⟨2⟩ then
           current := bodyPort.node
       | _ => break

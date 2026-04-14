@@ -61,42 +61,48 @@ def algebraicSimplify? (op : Op2Code) (val : UInt32) (constIsLeft : Bool)
   | .shr => if val == 0 && !constIsLeft then some .identity else none
   | _ => none
 
-mutual
-
-/-- Connect an ERA node to whatever is connected to the given port, consuming that subgraph -/
-partial def erasePort (port : PortId) : ReduceM Unit := do
-  match ← ReduceM.getConnection port with
-  | none => pure ()
-  | some target =>
-    ReduceM.disconnect port
-    -- Create an ERA and connect it to the target
-    let era ← ReduceM.addNode .era
-    ReduceM.connect (PortId.principal era) target
-    -- Eagerly propagate ERA through the target if it's a value node
-    propagateEra era target
-
-/-- Eagerly propagate an ERA through the node it's connected to -/
-partial def propagateEra (eraId : NodeId) (target : PortId) : ReduceM Unit := do
-  let entry ← ReduceM.getNode target.node
-  if !target.port.isPrincipal then return
-  let arity := entry.node.numAuxPorts
-  match entry.node with
-  | .lam erased =>
-    if arity > 0 then ReduceM.modifyStats (·.incEraPropagation)
-    if !erased then
-      erasePort ⟨target.node, ⟨1⟩⟩
+/-- Iteratively erase everything reachable from `initialPort` through principal-port interactions -/
+partial def erasePort (initialPort : PortId) : ReduceM Unit := do
+  let firstTarget? ← ReduceM.getConnection initialPort
+  let some firstTarget := firstTarget? | return
+  ReduceM.disconnect initialPort
+  let mut queue : Array PortId := #[firstTarget]
+  while !queue.isEmpty do
+    let peer := queue.back!
+    queue := queue.pop
+    if !peer.port.isPrincipal then
+      -- Peer is a binder slot or consumer aux: ERA stays stuck
+      let era ← ReduceM.addNode .era
+      ReduceM.connect (PortId.principal era) peer
     else
-      ReduceM.disconnect ⟨target.node, ⟨1⟩⟩
-    erasePort ⟨target.node, ⟨2⟩⟩
-  | _ =>
-    if arity > 0 then ReduceM.modifyStats (·.incEraPropagation)
-    for i in [:arity] do
-      erasePort ⟨target.node, ⟨i + 1⟩⟩
-  ReduceM.disconnect (PortId.principal eraId)
-  ReduceM.removeNode eraId
-  ReduceM.removeNode target.node
-
-end
+      -- Active pair ERA-X: fire X-specific erase by severing each aux port from its own peer
+      let entry ← ReduceM.getNode peer.node
+      let arity := entry.node.numAuxPorts
+      match entry.node with
+      | .lam erased =>
+        if arity > 0 then ReduceM.modifyStats (·.incEraPropagation)
+        if erased then
+          ReduceM.disconnect ⟨peer.node, ⟨1⟩⟩
+        else
+          match ← ReduceM.getConnection ⟨peer.node, ⟨1⟩⟩ with
+          | some auxPeer =>
+            ReduceM.disconnect ⟨peer.node, ⟨1⟩⟩
+            queue := queue.push auxPeer
+          | none => pure ()
+        match ← ReduceM.getConnection ⟨peer.node, ⟨2⟩⟩ with
+        | some auxPeer =>
+          ReduceM.disconnect ⟨peer.node, ⟨2⟩⟩
+          queue := queue.push auxPeer
+        | none => pure ()
+      | _ =>
+        if arity > 0 then ReduceM.modifyStats (·.incEraPropagation)
+        for i in [:arity] do
+          match ← ReduceM.getConnection ⟨peer.node, ⟨i + 1⟩⟩ with
+          | some auxPeer =>
+            ReduceM.disconnect ⟨peer.node, ⟨i + 1⟩⟩
+            queue := queue.push auxPeer
+          | none => pure ()
+      ReduceM.removeNode peer.node
 
 /-- Deep-copy a definition's subgraph, returning the principal port of the copy's root -/
 partial def copySubgraph (rootId : NodeId) : ReduceM PortId := do
@@ -155,827 +161,60 @@ partial def copySubgraph (rootId : NodeId) : ReduceM PortId := do
   | some newRoot => pure (PortId.principal newRoot)
   | none => throw (.malformedGraph s!"root {rootId} not in reachable set during instantiation")
 
+/-- One step of the iterative WHNF driver's control flow. -/
+inductive StepResult where
+  /-- A WHNF value has been reached for the current demand -/
+  | done (nid : NodeId)
+  /-- Continue reducing at this new demand port without pushing a frame -/
+  | demand (port : PortId)
+  /-- Push this frame onto the resumption stack and reduce toward the given port next -/
+  | demandFrame (frame : WhnfFrame) (port : PortId)
+
 mutual
 
-/-- Resolve a DUP node by evaluating the value it duplicates -/
-partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
-    : ReduceM NodeId := do
-  ReduceM.consumeFuel
-  let preserveSharing := (← ReduceM.getConfig).preserveSharing
-  -- Evaluate the value connected to DUP's principal port
-  let valId ← whnf (PortId.principal dupId)
-  let valEntry ← ReduceM.getNode valId
-  match valEntry.node with
-  | .num pt v =>
-    ReduceM.modifyStats (·.incDupCommutation)
-    let copy0 ← ReduceM.addNode (.num pt v) valEntry.ty
-    let copy1 ← ReduceM.addNode (.num pt v) valEntry.ty
-    ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal copy0)
-    ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal copy1)
-    ReduceM.disconnect (PortId.principal dupId)
-    ReduceM.removeNode dupId
-    ReduceM.removeNode valId
-    ReduceM.trackPeakNodes
-    whnf demandPort
-  | .num64 pt lo hi =>
-    ReduceM.modifyStats (·.incDupCommutation)
-    let copy0 ← ReduceM.addNode (.num64 pt lo hi) valEntry.ty
-    let copy1 ← ReduceM.addNode (.num64 pt lo hi) valEntry.ty
-    ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal copy0)
-    ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal copy1)
-    ReduceM.disconnect (PortId.principal dupId)
-    ReduceM.removeNode dupId
-    ReduceM.removeNode valId
-    ReduceM.trackPeakNodes
-    whnf demandPort
-
-  | .era =>
-    -- DUP-ERA: value is erased, both consumers get ERA
-    ReduceM.modifyStats (·.incDupEraAnnihilation)
-    let era0 ← ReduceM.addNode .era
-    let era1 ← ReduceM.addNode .era
-    ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal era0)
-    ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal era1)
-    ReduceM.disconnect (PortId.principal dupId)
-    ReduceM.removeNode dupId
-    ReduceM.removeNode valId
-    whnf demandPort
-
-  | .lam erased =>
-    -- DUP-LAM commutation: create two LAMs, DUP their components
-    ReduceM.modifyStats (·.incDupCommutation)
-    let lam0 ← ReduceM.addNode (.lam erased) valEntry.ty
-    let lam1 ← ReduceM.addNode (.lam erased) valEntry.ty
-
-    let varTy := valEntry.ty.piDomain?.getD valEntry.ty
-    let bodyTy := match valEntry.ty with
-      | .vPi _ _ name dom cod =>
-        match cod with
-        | .const _ value => value
-        | .term _ env _ =>
-          let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
-          cod.applyPure dummyArg
-      | _ => valEntry.ty
-
-    if !erased then
-      -- DUP the variable binding (domain type)
-      let dupVar ← ReduceM.addNode (.dup label) varTy
-      -- DUP_var.principal ← whatever LAM.var was connected to
-      ReduceM.rewirePort ⟨valId, ⟨1⟩⟩ (PortId.principal dupVar)
-      -- DUP_var.aux0 ← LAM0.var, DUP_var.aux1 ← LAM1.var
-      ReduceM.connect ⟨dupVar, ⟨1⟩⟩ ⟨lam0, ⟨1⟩⟩
-      ReduceM.connect ⟨dupVar, ⟨2⟩⟩ ⟨lam1, ⟨1⟩⟩
-    else
-      -- Both vars are erased; connect ERA to each
-      let eraVar0 ← ReduceM.addNode .era
-      let eraVar1 ← ReduceM.addNode .era
-      ReduceM.connect (PortId.principal eraVar0) ⟨lam0, ⟨1⟩⟩
-      ReduceM.connect (PortId.principal eraVar1) ⟨lam1, ⟨1⟩⟩
-      ReduceM.disconnect ⟨valId, ⟨1⟩⟩
-
-    -- DUP the body (codomain type)
-    let dupBody ← ReduceM.addNode (.dup label) bodyTy
-    ReduceM.rewirePort ⟨valId, ⟨2⟩⟩ (PortId.principal dupBody)
-    ReduceM.connect ⟨dupBody, ⟨1⟩⟩ ⟨lam0, ⟨2⟩⟩
-    ReduceM.connect ⟨dupBody, ⟨2⟩⟩ ⟨lam1, ⟨2⟩⟩
-
-    -- Wire copies to DUP's consumers
-    ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal lam0)
-    ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal lam1)
-    -- Clean up original DUP and LAM
-    ReduceM.disconnect (PortId.principal dupId)
-    ReduceM.removeNode dupId
-    ReduceM.removeNode valId
-    ReduceM.trackPeakNodes
-    whnf demandPort
-
-  | .sup supLabel =>
-    if label == supLabel then
-      -- DUP-SUP same-label annihilation: O(1), zero copies
-      -- DUP^L(SUP^L(a, b)) → (a, b)
-      -- Both DUP and SUP ports have existing connections: use link
-      ReduceM.modifyStats (·.incDupSupAnnihilation)
-      -- SUP.val0 → DUP.copy0's consumer, SUP.val1 → DUP.copy1's consumer
-      ReduceM.link ⟨dupId, ⟨1⟩⟩ ⟨valId, ⟨1⟩⟩
-      ReduceM.link ⟨dupId, ⟨2⟩⟩ ⟨valId, ⟨2⟩⟩
-      ReduceM.disconnect (PortId.principal dupId)
-      ReduceM.removeNode dupId
-      ReduceM.removeNode valId
-      whnf demandPort
-    else if preserveSharing then
-      -- Defer DUP-SUP different-label: preserve the shared sharing
-      pure dupId
-    else
-      -- DUP-SUP different-label commutation:
-      -- DUP^L1(SUP^L2(a, b)) → (SUP^L2(DUP^L1(a)₀, DUP^L1(b)₀),
-      --                           SUP^L2(DUP^L1(a)₁, DUP^L1(b)₁))
-      ReduceM.modifyStats (·.incDupSupCommutation)
-      -- Get field types from connected nodes rather than the parent SUP type
-      let tyA ← match valEntry.getPort ⟨1⟩ with
-        | some p => pure (← ReduceM.getNode p.node).ty
-        | none => pure valEntry.ty
-      let tyB ← match valEntry.getPort ⟨2⟩ with
-        | some p => pure (← ReduceM.getNode p.node).ty
-        | none => pure valEntry.ty
-      let dupA ← ReduceM.addNode (.dup label) tyA
-      let dupB ← ReduceM.addNode (.dup label) tyB
-      let sup0 ← ReduceM.addNode (.sup supLabel) valEntry.ty
-      let sup1 ← ReduceM.addNode (.sup supLabel) valEntry.ty
-      -- Wire DUP_A to value a (SUP.val0): fresh dupA replaces SUP.val0's endpoint
-      ReduceM.rewirePort ⟨valId, ⟨1⟩⟩ (PortId.principal dupA)
-      -- Wire DUP_B to value b (SUP.val1): fresh dupB replaces SUP.val1's endpoint
-      ReduceM.rewirePort ⟨valId, ⟨2⟩⟩ (PortId.principal dupB)
-      -- Wire DUP_A outputs to SUP0.val0 and SUP1.val0
-      ReduceM.connect ⟨dupA, ⟨1⟩⟩ ⟨sup0, ⟨1⟩⟩
-      ReduceM.connect ⟨dupA, ⟨2⟩⟩ ⟨sup1, ⟨1⟩⟩
-      -- Wire DUP_B outputs to SUP0.val1 and SUP1.val1
-      ReduceM.connect ⟨dupB, ⟨1⟩⟩ ⟨sup0, ⟨2⟩⟩
-      ReduceM.connect ⟨dupB, ⟨2⟩⟩ ⟨sup1, ⟨2⟩⟩
-      -- Wire new SUPs to DUP's consumers
-      ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal sup0)
-      ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal sup1)
-      ReduceM.disconnect (PortId.principal dupId)
-      ReduceM.removeNode dupId
-      ReduceM.removeNode valId
-      ReduceM.trackPeakNodes
-      whnf demandPort
-
-  | .dup innerLabel =>
-    -- DUP-DUP interaction: structurally identical to DUP-SUP.
-    -- This arises when DUP-LAM commutation on an identity function (λx.x where
-    -- var ↔ body) produces two DUP nodes connected principal-to-principal.
-    if label == innerLabel then
-      -- DUP-DUP same-label annihilation: O(1), zero copies
-      -- DUP^L(DUP^L(a, b)) → (a, b)
-      -- Both DUP ports have existing connections: use link
-      ReduceM.modifyStats (·.incDupSupAnnihilation)
-      ReduceM.link ⟨dupId, ⟨1⟩⟩ ⟨valId, ⟨1⟩⟩
-      ReduceM.link ⟨dupId, ⟨2⟩⟩ ⟨valId, ⟨2⟩⟩
-      ReduceM.disconnect (PortId.principal dupId)
-      ReduceM.removeNode dupId
-      ReduceM.removeNode valId
-      whnf demandPort
-    else if preserveSharing then
-      -- Defer DUP-DUP different-label: keep the lazy sharing for runtime
-      pure dupId
-    else
-      -- DUP-DUP different-label commutation:
-      -- DUP^L1(DUP^L2(a, b)) → (DUP^L2(DUP^L1(a)₀, DUP^L1(b)₀),
-      --                           DUP^L2(DUP^L1(a)₁, DUP^L1(b)₁))
-      ReduceM.modifyStats (·.incDupSupCommutation)
-      -- Get field types from connected nodes
-      let tyA ← match valEntry.getPort ⟨1⟩ with
-        | some p => pure (← ReduceM.getNode p.node).ty
-        | none => pure valEntry.ty
-      let tyB ← match valEntry.getPort ⟨2⟩ with
-        | some p => pure (← ReduceM.getNode p.node).ty
-        | none => pure valEntry.ty
-      let dupA ← ReduceM.addNode (.dup label) tyA
-      let dupB ← ReduceM.addNode (.dup label) tyB
-      let dup0 ← ReduceM.addNode (.dup innerLabel) tyA
-      let dup1 ← ReduceM.addNode (.dup innerLabel) tyB
-      -- Wire DUP_A to value a (inner DUP.copy0): fresh dupA replaces inner's endpoint
-      ReduceM.rewirePort ⟨valId, ⟨1⟩⟩ (PortId.principal dupA)
-      -- Wire DUP_B to value b (inner DUP.copy1): fresh dupB replaces inner's endpoint
-      ReduceM.rewirePort ⟨valId, ⟨2⟩⟩ (PortId.principal dupB)
-      -- Wire DUP_A outputs to DUP0.copy0 and DUP1.copy0
-      ReduceM.connect ⟨dupA, ⟨1⟩⟩ ⟨dup0, ⟨1⟩⟩
-      ReduceM.connect ⟨dupA, ⟨2⟩⟩ ⟨dup1, ⟨1⟩⟩
-      -- Wire DUP_B outputs to DUP0.copy1 and DUP1.copy1
-      ReduceM.connect ⟨dupB, ⟨1⟩⟩ ⟨dup0, ⟨2⟩⟩
-      ReduceM.connect ⟨dupB, ⟨2⟩⟩ ⟨dup1, ⟨2⟩⟩
-      -- Wire new DUPs to outer DUP's consumers
-      ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal dup0)
-      ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal dup1)
-      ReduceM.disconnect (PortId.principal dupId)
-      ReduceM.removeNode dupId
-      ReduceM.removeNode valId
-      ReduceM.trackPeakNodes
-      whnf demandPort
-
-  | other =>
-    -- DUP-NOD: generic duplication for any node with auxiliary ports.
-    -- Creates two copies of the node and recursively DUPs each aux port.
-    -- Handles: CTOR, RECORD, STRING, ARRAY, SLICE, APP, OP1, OP2, MAT, PROJ,
-    -- USE, INDEX, and any future node types with fields.
-    -- Nodes with 0 aux ports (REF, ALO) are treated as flat copies.
-    let arity := other.numAuxPorts
-    if arity == 0 then
-      -- Zero-arity node: flat copy (same as DUP-NUM but for REF/ALO)
-      ReduceM.modifyStats (·.incDupCommutation)
-      let copy0 ← ReduceM.addNode other valEntry.ty
-      let copy1 ← ReduceM.addNode other valEntry.ty
-      ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal copy0)
-      ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal copy1)
-      ReduceM.disconnect (PortId.principal dupId)
-      ReduceM.removeNode dupId
-      ReduceM.removeNode valId
-      ReduceM.trackPeakNodes
-      whnf demandPort
-    else if preserveSharing then
-      -- Defer DUP-NOD over compound values (CTOR, RECORD, ARRAY, STRING,
-      -- SLICE, USE, INDEX, OP1, OP2, MAT, PROJ, APP, …). The shared compound
-      -- stays in the graph as a live DUP so Alloy lowering emits a lazy SUP
-      -- and the runtime decides when (or whether) to clone each branch
-      pure dupId
-    else
-      -- N-arity node: duplicate the node, DUP each auxiliary port.
-      -- Each field DUP gets the field's type (from the connected node)
-      -- rather than the parent's type, so the Alloy lowering uses the
-      -- correct memory management strategy for each field.
-      ReduceM.modifyStats (·.incDupCommutation)
-      let node0 ← ReduceM.addNode other valEntry.ty
-      let node1 ← ReduceM.addNode other valEntry.ty
-      for i in [:arity] do
-        -- Get the field's type from whatever node is connected to this aux port.
-        -- Falls back to the parent's type if no connection exists.
-        let fieldTy ← do
-          match valEntry.getPort ⟨i + 1⟩ with
-          | some fieldPort =>
-            let fieldEntry ← ReduceM.getNode fieldPort.node
-            pure fieldEntry.ty
-          | none => pure valEntry.ty
-        let dupField ← ReduceM.addNode (.dup label) fieldTy
-        ReduceM.rewirePort ⟨valId, ⟨i + 1⟩⟩ (PortId.principal dupField)
-        ReduceM.connect ⟨dupField, ⟨1⟩⟩ ⟨node0, ⟨i + 1⟩⟩
-        ReduceM.connect ⟨dupField, ⟨2⟩⟩ ⟨node1, ⟨i + 1⟩⟩
-      ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal node0)
-      ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal node1)
-      ReduceM.disconnect (PortId.principal dupId)
-      ReduceM.removeNode dupId
-      ReduceM.removeNode valId
-      ReduceM.trackPeakNodes
-      whnf demandPort
-
-/-- Evaluate a port to weak head normal form.
-    Returns the NodeId of the value node in WHNF.
-    May modify the graph through interaction rules (β-reduction, etc.). -/
-partial def whnf (demandPort : PortId) : ReduceM NodeId := do
-  ReduceM.consumeFuel
-  let target ← ReduceM.follow demandPort
-  let entry ← ReduceM.getNode target.node
-  if target.port.isPrincipal then
-    whnfAtPrincipal target.node entry demandPort
-  else
-    whnfAtAuxiliary target.node entry target.port demandPort
-
-/-- Handle evaluation when we arrive at a node's principal port.
-    The node is "in head position" producing a value. -/
-partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : PortId)
-    : ReduceM NodeId := do
+/-- Classify a node reached at its principal port during WHNF -/
+partial def stepAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : PortId)
+    : ReduceM StepResult := do
   match entry.node with
   -- Value nodes: already in WHNF
   | .num _ _ | .num64 _ _ _ | .lam _ | .ctor _ _ | .record _ | .string | .array _
   | .sup _ | .slice | .era =>
-    pure nid
+    return .done nid
 
-  -- Application: evaluate function and possibly β-reduce
-  | .app => do
+  | .app =>
     ReduceM.consumeFuel
-    -- Evaluate the function (APP.aux0 = port 1)
-    let fnId ← whnf ⟨nid, ⟨1⟩⟩
-    let fnEntry ← ReduceM.getNode fnId
-    match fnEntry.node with
-    | .lam erased =>
-      let argPort ← ReduceM.getConnection ⟨nid, ⟨2⟩⟩
-      let argEntry ← match argPort with
-        | some p => ReduceM.getNode p.node
-        | none => ReduceM.getNode nid
-      let isWorldArg := match argEntry.ty with
-        | .vPrimTy .world => true
-        | _ => false
-      if isWorldArg then
-        pure nid
-      else
-      -- β-reduction: APP-LAM annihilation
-      ReduceM.modifyStats (·.incBeta)
-      if !erased then
-        -- Bind argument to variable: APP.arg ↔ LAM.var
-        ReduceM.link ⟨nid, ⟨2⟩⟩ ⟨fnId, ⟨1⟩⟩
-      else
-        -- Argument is unused: erase it
-        erasePort ⟨nid, ⟨2⟩⟩
-        ReduceM.disconnect ⟨fnId, ⟨1⟩⟩
-      -- Link result to body: APP.principal ↔ LAM.body
-      ReduceM.link ⟨nid, .principal⟩ ⟨fnId, ⟨2⟩⟩
-      -- Clean up the APP-LAM connection
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode fnId
-      ReduceM.trackPeakNodes
-      -- Re-evaluate: the body may need further reduction
-      whnf demandPort
+    return .demandFrame (WhnfFrame.appFun nid entry.ty demandPort) ⟨nid, ⟨1⟩⟩
 
-    | .sup supLabel =>
-      if (← ReduceM.getConfig).preserveSharing then
-        -- Defer APP-SUP: leave the shared function value for runtime
-        pure nid
-      else
-      -- APP-SUP: (&L{f,g} a) → !A &L = a; &L{(f A₀),(g A₁)}
-      -- Distribute application through both branches of the superposition
-      ReduceM.modifyStats (·.incSupCommutation)
-      -- Create a DUP to clone the argument for both branches.
-      -- Use the argument's type (from the connected node), not the function's type.
-      let argTy ← match entry.getPort ⟨2⟩ with
-        | some p => pure (← ReduceM.getNode p.node).ty
-        | none => pure entry.ty
-      let dupArg ← ReduceM.addNode (.dup supLabel) argTy
-      ReduceM.rewirePort ⟨nid, ⟨2⟩⟩ (PortId.principal dupArg)
-      -- Create two APP nodes: one for each SUP branch
-      let app0 ← ReduceM.addNode .app entry.ty
-      let app1 ← ReduceM.addNode .app entry.ty
-      -- Wire SUP.val0 → APP0.fun, SUP.val1 → APP1.fun
-      ReduceM.rewirePort ⟨fnId, ⟨1⟩⟩ ⟨app0, ⟨1⟩⟩
-      ReduceM.rewirePort ⟨fnId, ⟨2⟩⟩ ⟨app1, ⟨1⟩⟩
-      -- Wire DUP copies → APP args
-      ReduceM.connect ⟨dupArg, ⟨1⟩⟩ ⟨app0, ⟨2⟩⟩
-      ReduceM.connect ⟨dupArg, ⟨2⟩⟩ ⟨app1, ⟨2⟩⟩
-      -- Create result SUP and wire APP results into it
-      let resSup ← ReduceM.addNode (.sup supLabel) entry.ty
-      ReduceM.connect (PortId.principal app0) ⟨resSup, ⟨1⟩⟩
-      ReduceM.connect (PortId.principal app1) ⟨resSup, ⟨2⟩⟩
-      -- Wire result SUP to APP's consumer
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resSup)
-      -- Clean up original APP and SUP
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode fnId
-      ReduceM.trackPeakNodes
-      whnf demandPort
-
-    | .era =>
-      -- APP-ERA: (ERA a) → ERA
-      -- Erased function absorbs the application; argument is also erased
-      ReduceM.modifyStats (·.incEraAbsorption)
-      erasePort ⟨nid, ⟨2⟩⟩  -- erase argument
-      -- Replace APP with ERA for its consumer
-      let eraResult ← ReduceM.addNode .era
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal eraResult)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode fnId
-      whnf demandPort
-
-    | .ctor tag 2 =>
-      if tag == 0xFFFE then
-        -- APP-CLOSURE: apply a closure by extracting fn (port 1) and env (port 2)
-        let envIsEra ← do
-          match fnEntry.getPort ⟨2⟩ with
-          | some envPort =>
-            let envEntry ← ReduceM.getNode envPort.node
-            pure (match envEntry.node with | .era => true | _ => false)
-          | none => pure true
-        if envIsEra then
-          -- Link APP.fn ↔ CTOR.fn_port (port 1) to connect APP to fn
-          ReduceM.link ⟨nid, ⟨1⟩⟩ ⟨fnId, ⟨1⟩⟩
-          -- ERA the env (already ERA, just disconnect)
-          ReduceM.disconnect ⟨fnId, ⟨2⟩⟩
-          ReduceM.removeNode fnId
-          ReduceM.trackPeakNodes
-          whnf demandPort
-        else
-          -- Has env: APP(APP(fn, env), arg)
-          let innerApp ← ReduceM.addNode .app entry.ty
-          ReduceM.rewirePort ⟨fnId, ⟨1⟩⟩ ⟨innerApp, ⟨1⟩⟩
-          ReduceM.rewirePort ⟨fnId, ⟨2⟩⟩ ⟨innerApp, ⟨2⟩⟩
-          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-          ReduceM.connect ⟨nid, ⟨1⟩⟩ (PortId.principal innerApp)
-          ReduceM.removeNode fnId
-          ReduceM.trackPeakNodes
-          whnf demandPort
-      else
-        pure nid
-
-    | _ =>
-      -- Non-lambda/sup/era/closure in function position: stuck application
-      pure nid
-
-  -- Binary operation: two-phase evaluation (left first, then right)
-  | .op2 op => do
+  | .op2 op =>
     ReduceM.consumeFuel
-    -- Phase 1: evaluate left operand
-    let leftId ← whnf ⟨nid, ⟨1⟩⟩
-    let leftEntry ← ReduceM.getNode leftId
-    match leftEntry.node with
-    | .era =>
-      -- OP2-ERA (left): (op ERA y) → ERA
-      ReduceM.modifyStats (·.incEraAbsorption)
-      erasePort ⟨nid, ⟨2⟩⟩
-      let eraResult ← ReduceM.addNode .era
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal eraResult)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode leftId
-      whnf demandPort
-    | .sup supLabel =>
-      if (← ReduceM.getConfig).preserveSharing then
-        -- Defer OP2-SUP (left): keep the shared left operand for runtime
-        pure nid
-      else
-      -- OP2-SUP (left): (op &L{a,b} y) → !Y &L = y; &L{(op a Y₀),(op b Y₁)}
-      ReduceM.modifyStats (·.incSupCommutation)
-      let dupRight ← ReduceM.addNode (.dup supLabel) entry.ty
-      ReduceM.rewirePort ⟨nid, ⟨2⟩⟩ (PortId.principal dupRight)
-      let op0 ← ReduceM.addNode (.op2 op) entry.ty
-      let op1 ← ReduceM.addNode (.op2 op) entry.ty
-      -- Wire SUP branches to OP2 left operands
-      ReduceM.rewirePort ⟨leftId, ⟨1⟩⟩ ⟨op0, ⟨1⟩⟩
-      ReduceM.rewirePort ⟨leftId, ⟨2⟩⟩ ⟨op1, ⟨1⟩⟩
-      -- Wire DUP copies to OP2 right operands
-      ReduceM.connect ⟨dupRight, ⟨1⟩⟩ ⟨op0, ⟨2⟩⟩
-      ReduceM.connect ⟨dupRight, ⟨2⟩⟩ ⟨op1, ⟨2⟩⟩
-      -- Create result SUP
-      let resSup ← ReduceM.addNode (.sup supLabel) entry.ty
-      ReduceM.connect (PortId.principal op0) ⟨resSup, ⟨1⟩⟩
-      ReduceM.connect (PortId.principal op1) ⟨resSup, ⟨2⟩⟩
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resSup)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode leftId
-      ReduceM.trackPeakNodes
-      whnf demandPort
-    | .num ptL vL =>
-      -- Phase 2: left is NUM, evaluate right operand
-      let rightId ← whnf ⟨nid, ⟨2⟩⟩
-      let rightEntry ← ReduceM.getNode rightId
-      match rightEntry.node with
-      | .era =>
-        -- OP2-ERA (right): (op #x ERA) → ERA
-        ReduceM.modifyStats (·.incEraAbsorption)
-        let eraResult ← ReduceM.addNode .era
-        ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal eraResult)
-        ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-        ReduceM.disconnect ⟨nid, ⟨2⟩⟩
-        ReduceM.removeNode nid
-        ReduceM.removeNode leftId
-        ReduceM.removeNode rightId
-        whnf demandPort
-      | .sup supLabel =>
-        if (← ReduceM.getConfig).preserveSharing then
-          -- Defer OP2-NUM-SUP (right): keep the shared right operand for runtime
-          pure nid
-        else
-        -- OP2-NUM-SUP (right): (op #x &L{a,b}) → &L{(op #x a),(op #x b)}
-        -- NUM is flat: create two copies instead of DUP
-        ReduceM.modifyStats (·.incSupCommutation)
-        let numCopy0 ← ReduceM.addNode (.num ptL vL) leftEntry.ty
-        let numCopy1 ← ReduceM.addNode (.num ptL vL) leftEntry.ty
-        let op0 ← ReduceM.addNode (.op2 op) entry.ty
-        let op1 ← ReduceM.addNode (.op2 op) entry.ty
-        ReduceM.connect (PortId.principal numCopy0) ⟨op0, ⟨1⟩⟩
-        ReduceM.connect (PortId.principal numCopy1) ⟨op1, ⟨1⟩⟩
-        ReduceM.rewirePort ⟨rightId, ⟨1⟩⟩ ⟨op0, ⟨2⟩⟩
-        ReduceM.rewirePort ⟨rightId, ⟨2⟩⟩ ⟨op1, ⟨2⟩⟩
-        let resSup ← ReduceM.addNode (.sup supLabel) entry.ty
-        ReduceM.connect (PortId.principal op0) ⟨resSup, ⟨1⟩⟩
-        ReduceM.connect (PortId.principal op1) ⟨resSup, ⟨2⟩⟩
-        ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resSup)
-        ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-        ReduceM.disconnect ⟨nid, ⟨2⟩⟩
-        ReduceM.removeNode nid
-        ReduceM.removeNode leftId
-        ReduceM.removeNode rightId
-        ReduceM.trackPeakNodes
-        whnf demandPort
-      | .num _ptR vR =>
-        -- OP2-NUM-NUM: both operands are numeric, compute result
-        ReduceM.modifyStats (·.incArithmetic)
-        match computeOp2 op vL vR with
-        | .ok result =>
-          let (resPt, resTy) := match op with
-            | .eq | .ne | .lt | .le | .gt | .ge => (PrimType.bool, Value.vPrimTy .bool)
-            | _ => (ptL, leftEntry.ty)
-          let resultNode ← ReduceM.addNode (.num resPt result) resTy
-          ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resultNode)
-          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-          ReduceM.disconnect ⟨nid, ⟨2⟩⟩
-          ReduceM.removeNode nid
-          ReduceM.removeNode leftId
-          ReduceM.removeNode rightId
-          whnf demandPort
-        | .error e => throw e
-      | _ =>
-        -- Right operand stuck: check algebraic identities with left as constant
-        match algebraicSimplify? op vL true with
-        | some .identity =>
-          ReduceM.modifyStats (·.incArithmetic)
-          ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨2⟩⟩
-          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-          ReduceM.removeNode nid
-          ReduceM.removeNode leftId
-          whnf demandPort
-        | some (.absorb absorbVal) =>
-          ReduceM.modifyStats (·.incArithmetic)
-          erasePort ⟨nid, ⟨2⟩⟩
-          let resultNode ← ReduceM.addNode (.num ptL absorbVal) leftEntry.ty
-          ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resultNode)
-          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-          ReduceM.removeNode nid
-          ReduceM.removeNode leftId
-          whnf demandPort
-        | none => pure nid
-    | _ =>
-      -- Left operand stuck: speculatively evaluate right for algebraic identity
-      let rightId ← whnf ⟨nid, ⟨2⟩⟩
-      let rightEntry ← ReduceM.getNode rightId
-      match rightEntry.node with
-      | .num ptR vR =>
-        match algebraicSimplify? op vR false with
-        | some .identity =>
-          ReduceM.modifyStats (·.incArithmetic)
-          ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨1⟩⟩
-          ReduceM.disconnect ⟨nid, ⟨2⟩⟩
-          ReduceM.removeNode nid
-          ReduceM.removeNode rightId
-          whnf demandPort
-        | some (.absorb absorbVal) =>
-          ReduceM.modifyStats (·.incArithmetic)
-          erasePort ⟨nid, ⟨1⟩⟩
-          let resultNode ← ReduceM.addNode (.num ptR absorbVal) rightEntry.ty
-          ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resultNode)
-          ReduceM.disconnect ⟨nid, ⟨2⟩⟩
-          ReduceM.removeNode nid
-          ReduceM.removeNode rightId
-          whnf demandPort
-        | none => pure nid
-      | _ => pure nid
+    return .demandFrame (WhnfFrame.op2Left nid op entry.ty demandPort) ⟨nid, ⟨1⟩⟩
 
-  -- Unary operation
-  | .op1 op => do
+  | .op1 op =>
     ReduceM.consumeFuel
-    let operandId ← whnf ⟨nid, ⟨1⟩⟩
-    let operandEntry ← ReduceM.getNode operandId
-    match operandEntry.node with
-    | .era =>
-      -- OP1-ERA: (op ERA) → ERA
-      ReduceM.modifyStats (·.incEraAbsorption)
-      let eraResult ← ReduceM.addNode .era
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal eraResult)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode operandId
-      whnf demandPort
-    | .sup supLabel =>
-      if (← ReduceM.getConfig).preserveSharing then
-        -- Defer OP1-SUP: keep the shared operand for runtime
-        pure nid
-      else
-      -- OP1-SUP: (op &L{a,b}) → &L{(op a),(op b)}
-      ReduceM.modifyStats (·.incSupCommutation)
-      let op0 ← ReduceM.addNode (.op1 op) entry.ty
-      let op1 ← ReduceM.addNode (.op1 op) entry.ty
-      ReduceM.rewirePort ⟨operandId, ⟨1⟩⟩ ⟨op0, ⟨1⟩⟩
-      ReduceM.rewirePort ⟨operandId, ⟨2⟩⟩ ⟨op1, ⟨1⟩⟩
-      let resSup ← ReduceM.addNode (.sup supLabel) entry.ty
-      ReduceM.connect (PortId.principal op0) ⟨resSup, ⟨1⟩⟩
-      ReduceM.connect (PortId.principal op1) ⟨resSup, ⟨2⟩⟩
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resSup)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode operandId
-      ReduceM.trackPeakNodes
-      whnf demandPort
-    | .num pt v =>
-      ReduceM.modifyStats (·.incArithmetic)
-      let result := computeOp1 op v
-      let resPt := match op with
-        | .not => PrimType.bool
-        | .neg => pt
-      let resultNode ← ReduceM.addNode (.num resPt result) operandEntry.ty
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resultNode)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode operandId
-      whnf demandPort
-    | _ => pure nid  -- stuck
+    return .demandFrame (WhnfFrame.op1Operand nid op entry.ty demandPort) ⟨nid, ⟨1⟩⟩
 
-  -- Pattern match
-  | .mat expectedTag => do
+  | .mat expectedTag =>
     ReduceM.consumeFuel
-    let scrutId ← whnf ⟨nid, ⟨1⟩⟩
-    let scrutEntry ← ReduceM.getNode scrutId
-    match scrutEntry.node with
-    | .era =>
-      -- MAT-ERA: (mat ERA hit miss) → ERA
-      ReduceM.modifyStats (·.incEraAbsorption)
-      erasePort ⟨nid, ⟨2⟩⟩  -- erase hit
-      erasePort ⟨nid, ⟨3⟩⟩  -- erase miss
-      let eraResult ← ReduceM.addNode .era
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal eraResult)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode scrutId
-      whnf demandPort
-    | .sup supLabel =>
-      if (← ReduceM.getConfig).preserveSharing then
-        -- Defer MAT-SUP: keep the shared scrutinee for runtime
-        pure nid
-      else
-      -- MAT-SUP: (mat &L{a,b} hit miss) → !H &L = hit; !M &L = miss;
-      --          &L{(mat a H₀ M₀),(mat b H₁ M₁)}
-      ReduceM.modifyStats (·.incSupCommutation)
-      -- DUP both hit and miss branches with their own types
-      let hitTy ← match entry.getPort ⟨2⟩ with
-        | some p => pure (← ReduceM.getNode p.node).ty
-        | none => pure entry.ty
-      let missTy ← match entry.getPort ⟨3⟩ with
-        | some p => pure (← ReduceM.getNode p.node).ty
-        | none => pure entry.ty
-      let dupHit ← ReduceM.addNode (.dup supLabel) hitTy
-      let dupMiss ← ReduceM.addNode (.dup supLabel) missTy
-      ReduceM.rewirePort ⟨nid, ⟨2⟩⟩ (PortId.principal dupHit)
-      ReduceM.rewirePort ⟨nid, ⟨3⟩⟩ (PortId.principal dupMiss)
-      -- Create two MAT nodes
-      let mat0 ← ReduceM.addNode (.mat expectedTag) entry.ty
-      let mat1 ← ReduceM.addNode (.mat expectedTag) entry.ty
-      -- Wire SUP branches to MAT scrutinees
-      ReduceM.rewirePort ⟨scrutId, ⟨1⟩⟩ ⟨mat0, ⟨1⟩⟩
-      ReduceM.rewirePort ⟨scrutId, ⟨2⟩⟩ ⟨mat1, ⟨1⟩⟩
-      -- Wire DUP copies to MAT hit/miss
-      ReduceM.connect ⟨dupHit, ⟨1⟩⟩ ⟨mat0, ⟨2⟩⟩
-      ReduceM.connect ⟨dupHit, ⟨2⟩⟩ ⟨mat1, ⟨2⟩⟩
-      ReduceM.connect ⟨dupMiss, ⟨1⟩⟩ ⟨mat0, ⟨3⟩⟩
-      ReduceM.connect ⟨dupMiss, ⟨2⟩⟩ ⟨mat1, ⟨3⟩⟩
-      -- Create result SUP
-      let resSup ← ReduceM.addNode (.sup supLabel) entry.ty
-      ReduceM.connect (PortId.principal mat0) ⟨resSup, ⟨1⟩⟩
-      ReduceM.connect (PortId.principal mat1) ⟨resSup, ⟨2⟩⟩
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resSup)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode scrutId
-      ReduceM.trackPeakNodes
-      whnf demandPort
-    | .ctor tag _arity =>
-      ReduceM.modifyStats (·.incMatch)
-      if tag == expectedTag then
-        ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨2⟩⟩
-        erasePort ⟨nid, ⟨3⟩⟩
-      else
-        ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨3⟩⟩
-        erasePort ⟨nid, ⟨2⟩⟩
-      erasePort ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      whnf demandPort
-    | .num _ v =>
-      ReduceM.modifyStats (·.incMatch)
-      if v.toNat == expectedTag then
-        ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨2⟩⟩
-        erasePort ⟨nid, ⟨3⟩⟩
-      else
-        ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨3⟩⟩
-        erasePort ⟨nid, ⟨2⟩⟩
-      erasePort ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      whnf demandPort
-    | .array _ =>
-      let lenId ← whnf ⟨scrutId, ⟨1⟩⟩
-      let lenEntry ← ReduceM.getNode lenId
-      match lenEntry.node with
-      | .num _ v =>
-        let isHit := if expectedTag == 0 then v.toNat == 0
-                     else if expectedTag == 1 then v.toNat > 0
-                     else false
-        ReduceM.modifyStats (·.incMatch)
-        if isHit then
-          ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨2⟩⟩
-          erasePort ⟨nid, ⟨3⟩⟩
-        else
-          ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨3⟩⟩
-          erasePort ⟨nid, ⟨2⟩⟩
-        erasePort ⟨nid, ⟨1⟩⟩
-        ReduceM.removeNode nid
-        whnf demandPort
-      | _ => pure nid -- dynamic length, stuck
-    | _ => pure nid  -- stuck
+    return .demandFrame (WhnfFrame.matScrutinee nid expectedTag entry.ty demandPort) ⟨nid, ⟨1⟩⟩
 
-  -- Field projection
-  | .proj fieldIdx => do
+  | .proj fieldIdx =>
     ReduceM.consumeFuel
-    let recId ← whnf ⟨nid, ⟨1⟩⟩
-    let recEntry ← ReduceM.getNode recId
-    match recEntry.node with
-    | .era =>
-      -- PROJ-ERA: (proj ERA) → ERA
-      ReduceM.modifyStats (·.incEraAbsorption)
-      let eraResult ← ReduceM.addNode .era
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal eraResult)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode recId
-      whnf demandPort
-    | .sup supLabel =>
-      if (← ReduceM.getConfig).preserveSharing then
-        -- Defer PROJ-SUP: keep the shared record for runtime
-        pure nid
-      else
-      -- PROJ-SUP: (proj_i &L{a,b}) → &L{(proj_i a),(proj_i b)}
-      ReduceM.modifyStats (·.incSupCommutation)
-      let proj0 ← ReduceM.addNode (.proj fieldIdx) entry.ty
-      let proj1 ← ReduceM.addNode (.proj fieldIdx) entry.ty
-      ReduceM.rewirePort ⟨recId, ⟨1⟩⟩ ⟨proj0, ⟨1⟩⟩
-      ReduceM.rewirePort ⟨recId, ⟨2⟩⟩ ⟨proj1, ⟨1⟩⟩
-      let resSup ← ReduceM.addNode (.sup supLabel) entry.ty
-      ReduceM.connect (PortId.principal proj0) ⟨resSup, ⟨1⟩⟩
-      ReduceM.connect (PortId.principal proj1) ⟨resSup, ⟨2⟩⟩
-      ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resSup)
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode recId
-      ReduceM.trackPeakNodes
-      whnf demandPort
-    | .record numFields =>
-      ReduceM.modifyStats (·.incProjection)
-      ReduceM.link ⟨nid, .principal⟩ ⟨recId, ⟨fieldIdx + 1⟩⟩
-      for i in [:numFields] do
-        if i != fieldIdx then
-          erasePort ⟨recId, ⟨i + 1⟩⟩
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode recId
-      whnf demandPort
-    | .ctor _tag arity =>
-      ReduceM.modifyStats (·.incProjection)
-      ReduceM.link ⟨nid, .principal⟩ ⟨recId, ⟨fieldIdx + 1⟩⟩
-      for i in [:arity] do
-        if i != fieldIdx then
-          erasePort ⟨recId, ⟨i + 1⟩⟩
-      ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-      ReduceM.removeNode nid
-      ReduceM.removeNode recId
-      whnf demandPort
-    | .array elemType =>
-      ReduceM.modifyStats (·.incProjection)
-      if fieldIdx == 0 then
-        -- Head: extract first element from backing CTOR(0xFFFD)
-        let dataId ← whnf ⟨recId, ⟨2⟩⟩
-        let dataEntry ← ReduceM.getNode dataId
-        match dataEntry.node with
-        | .ctor _ arity =>
-          -- Link result to CTOR's first field (aux port 1)
-          ReduceM.link ⟨nid, .principal⟩ ⟨dataId, ⟨1⟩⟩
-          -- Erase remaining CTOR fields
-          for i in [1:arity] do
-            erasePort ⟨dataId, ⟨i + 1⟩⟩
-          -- Erase array's length
-          erasePort ⟨recId, ⟨1⟩⟩
-          -- Disconnect ARRAY from CTOR and PROJ from ARRAY
-          ReduceM.disconnect ⟨recId, ⟨2⟩⟩
-          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-          ReduceM.removeNode nid
-          ReduceM.removeNode dataId
-          ReduceM.removeNode recId
-          whnf demandPort
-        | _ => pure nid
-      else if fieldIdx == 1 then
-        -- Tail: create new array with remaining elements (O(1) graph rewiring)
-        let lenId ← whnf ⟨recId, ⟨1⟩⟩
-        let lenEntry ← ReduceM.getNode lenId
-        let dataId ← whnf ⟨recId, ⟨2⟩⟩
-        let dataEntry ← ReduceM.getNode dataId
-        match lenEntry.node, dataEntry.node with
-        | .num pt v, .ctor _ arity =>
-          let newLen := v - 1
-          let newArity := arity - 1
-          -- Create new length NUM
-          let newLenNode ← ReduceM.addNode (.num pt newLen) lenEntry.ty
-          let newDataNode ← ReduceM.addNode (.ctor 0xFFFD newArity) recEntry.ty
-          for i in [:newArity] do
-            ReduceM.rewirePort ⟨dataId, ⟨i + 2⟩⟩ ⟨newDataNode, ⟨i + 1⟩⟩
-          erasePort ⟨dataId, ⟨1⟩⟩
-          -- Create new ARRAY node
-          let newArrayNode ← ReduceM.addNode (.array elemType) recEntry.ty
-          ReduceM.connect ⟨newArrayNode, ⟨1⟩⟩ (PortId.principal newLenNode)
-          ReduceM.connect ⟨newArrayNode, ⟨2⟩⟩ (PortId.principal newDataNode)
-          -- Rewire demand to new array
-          ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal newArrayNode)
-          -- Clean up old nodes
-          ReduceM.disconnect ⟨recId, ⟨1⟩⟩
-          ReduceM.disconnect ⟨recId, ⟨2⟩⟩
-          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-          ReduceM.removeNode nid
-          ReduceM.removeNode dataId
-          ReduceM.removeNode lenId
-          ReduceM.removeNode recId
-          ReduceM.trackPeakNodes
-          whnf demandPort
-        | _, _ => pure nid
-      else pure nid
-    | _ => pure nid  -- stuck
+    return .demandFrame (WhnfFrame.projRecord nid fieldIdx entry.ty demandPort) ⟨nid, ⟨1⟩⟩
 
-  -- Definition instantiation (ALO)
-  | .alo refId => do
+  | .use =>
+    ReduceM.consumeFuel
+    return .demandFrame (WhnfFrame.useTerm nid demandPort) ⟨nid, ⟨1⟩⟩
+
+  | .alo refId =>
     ReduceM.consumeFuel
     let def_ ← ReduceM.getDefinition refId
     if def_.reducibility != .reducible then
-      pure nid
+      return .done nid
     else if (← ReduceM.isNormalizingDef refId) then
-      pure nid
+      return .done nid
     else
       ReduceM.modifyStats (·.incInstantiation)
-      -- Deep-copy the definition's subgraph
       let rootCopy ← copySubgraph def_.root
-      -- Rewire: ALO's consumer now gets the instantiated root
       let aloConsumer ← ReduceM.getConnection (PortId.principal nid)
       ReduceM.disconnect (PortId.principal nid)
       match aloConsumer with
@@ -983,16 +222,16 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       | none => pure ()
       ReduceM.removeNode nid
       ReduceM.trackPeakNodes
-      whnf demandPort
+      ReduceM.addNormalizingDef refId
+      return .demand demandPort
 
-  -- Global reference: convert to ALO for instantiation
-  | .ref refId => do
+  | .ref refId =>
     ReduceM.consumeFuel
     let def_ ← ReduceM.getDefinition refId
     if def_.reducibility != .reducible then
-      pure nid
+      return .done nid
     else if (← ReduceM.isNormalizingDef refId) then
-      pure nid
+      return .done nid
     else
       ReduceM.modifyStats (·.incInstantiation)
       let rootCopy ← copySubgraph def_.root
@@ -1003,13 +242,690 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       | none => pure ()
       ReduceM.removeNode nid
       ReduceM.trackPeakNodes
-      whnf demandPort
+      -- Prevent runaway transitive instantiation
+      ReduceM.addNormalizingDef refId
+      return .demand demandPort
 
-  | .use => do
-    ReduceM.consumeFuel
-    let _ ← whnf ⟨nid, ⟨1⟩⟩
-    let nodeAfterWhnf ← ReduceM.getNode nid
-    let termConn := nodeAfterWhnf.getPort ⟨1⟩
+  -- DUP at principal is not reached in demand-driven evaluation
+  -- INDEX isn't interpreted here
+  | .dup _ | .index =>
+    return .done nid
+
+/-- Classify a node reached at an auxiliary port during WHNF -/
+partial def stepAtAuxiliary (nid : NodeId) (entry : NodeEntry)
+    (_port : PortIdx) (demandPort : PortId) : ReduceM StepResult := do
+  match entry.node with
+  | .dup label =>
+    if ← ReduceM.isResolvingDup nid then
+      return .done nid
+    let preserveSharing := (← ReduceM.getConfig).preserveSharing
+    match ← ReduceM.getConnection (PortId.principal nid) with
+    | none => return .done nid
+    | some partner =>
+      if !partner.port.isPrincipal then
+        let partnerEntry ← ReduceM.getNode partner.node
+        match partnerEntry.node with
+        | .dup _ =>
+          if preserveSharing then
+            return .done nid
+        | _ => return .done nid
+    ReduceM.addResolvingDup nid
+    return .demandFrame
+      (WhnfFrame.dupValue nid label entry.ty demandPort)
+      (PortId.principal nid)
+  | _ =>
+    return .done nid
+
+partial def applyAppFun (appId : NodeId) (demandPort : PortId)
+    (value : NodeId) (valEntry : NodeEntry) : ReduceM StepResult := do
+    match valEntry.node with
+    | .lam erased =>
+      let argPort ← ReduceM.getConnection ⟨appId, ⟨2⟩⟩
+      let argEntry ← match argPort with
+        | some p => ReduceM.getNode p.node
+        | none => ReduceM.getNode appId
+      let isWorldArg := match argEntry.ty with
+        | .vPrimTy .world => true
+        | _ => false
+      if isWorldArg then
+        return .done appId
+      ReduceM.modifyStats (·.incBeta)
+      if !erased then
+        ReduceM.link ⟨appId, ⟨2⟩⟩ ⟨value, ⟨1⟩⟩
+      else
+        erasePort ⟨appId, ⟨2⟩⟩
+        ReduceM.disconnect ⟨value, ⟨1⟩⟩
+      ReduceM.link ⟨appId, .principal⟩ ⟨value, ⟨2⟩⟩
+      ReduceM.disconnect ⟨appId, ⟨1⟩⟩
+      ReduceM.removeNode appId
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        return .done appId
+      let appEntry ← ReduceM.getNode appId
+      ReduceM.modifyStats (·.incSupCommutation)
+      let argTy ← match appEntry.getPort ⟨2⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure appEntry.ty
+      let dupArg ← ReduceM.addNode (.dup supLabel) argTy
+      ReduceM.rewirePort ⟨appId, ⟨2⟩⟩ (PortId.principal dupArg)
+      let app0 ← ReduceM.addNode .app appEntry.ty
+      let app1 ← ReduceM.addNode .app appEntry.ty
+      ReduceM.rewirePort ⟨value, ⟨1⟩⟩ ⟨app0, ⟨1⟩⟩
+      ReduceM.rewirePort ⟨value, ⟨2⟩⟩ ⟨app1, ⟨1⟩⟩
+      ReduceM.connect ⟨dupArg, ⟨1⟩⟩ ⟨app0, ⟨2⟩⟩
+      ReduceM.connect ⟨dupArg, ⟨2⟩⟩ ⟨app1, ⟨2⟩⟩
+      let resSup ← ReduceM.addNode (.sup supLabel) appEntry.ty
+      ReduceM.connect (PortId.principal app0) ⟨resSup, ⟨1⟩⟩
+      ReduceM.connect (PortId.principal app1) ⟨resSup, ⟨2⟩⟩
+      ReduceM.rewirePort ⟨appId, .principal⟩ (PortId.principal resSup)
+      ReduceM.disconnect ⟨appId, ⟨1⟩⟩
+      ReduceM.removeNode appId
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .era =>
+      ReduceM.modifyStats (·.incEraAbsorption)
+      erasePort ⟨appId, ⟨2⟩⟩
+      let eraResult ← ReduceM.addNode .era
+      ReduceM.rewirePort ⟨appId, .principal⟩ (PortId.principal eraResult)
+      ReduceM.disconnect ⟨appId, ⟨1⟩⟩
+      ReduceM.removeNode appId
+      ReduceM.removeNode value
+      return .demand demandPort
+    | .ctor tag 2 =>
+      if tag == 0xFFFE then
+        let envIsEra ← do
+          match valEntry.getPort ⟨2⟩ with
+          | some envPort =>
+            let envEntry ← ReduceM.getNode envPort.node
+            pure (match envEntry.node with | .era => true | _ => false)
+          | none => pure true
+        let appEntry ← ReduceM.getNode appId
+        if envIsEra then
+          ReduceM.link ⟨appId, ⟨1⟩⟩ ⟨value, ⟨1⟩⟩
+          ReduceM.disconnect ⟨value, ⟨2⟩⟩
+          ReduceM.removeNode value
+          ReduceM.trackPeakNodes
+          return .demand demandPort
+        else
+          let innerApp ← ReduceM.addNode .app appEntry.ty
+          ReduceM.rewirePort ⟨value, ⟨1⟩⟩ ⟨innerApp, ⟨1⟩⟩
+          ReduceM.rewirePort ⟨value, ⟨2⟩⟩ ⟨innerApp, ⟨2⟩⟩
+          ReduceM.disconnect ⟨appId, ⟨1⟩⟩
+          ReduceM.connect ⟨appId, ⟨1⟩⟩ (PortId.principal innerApp)
+          ReduceM.removeNode value
+          ReduceM.trackPeakNodes
+          return .demand demandPort
+      else
+        return .done appId
+    | _ =>
+      return .done appId
+
+partial def applyOp2Left (op2Id : NodeId) (op : Op2Code) (demandPort : PortId)
+    (value : NodeId) (valEntry : NodeEntry) : ReduceM StepResult := do
+    match valEntry.node with
+    | .era =>
+      ReduceM.modifyStats (·.incEraAbsorption)
+      erasePort ⟨op2Id, ⟨2⟩⟩
+      let eraResult ← ReduceM.addNode .era
+      ReduceM.rewirePort ⟨op2Id, .principal⟩ (PortId.principal eraResult)
+      ReduceM.disconnect ⟨op2Id, ⟨1⟩⟩
+      ReduceM.removeNode op2Id
+      ReduceM.removeNode value
+      return .demand demandPort
+    | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        return .done op2Id
+      let op2Entry ← ReduceM.getNode op2Id
+      ReduceM.modifyStats (·.incSupCommutation)
+      let dupRight ← ReduceM.addNode (.dup supLabel) op2Entry.ty
+      ReduceM.rewirePort ⟨op2Id, ⟨2⟩⟩ (PortId.principal dupRight)
+      let op0 ← ReduceM.addNode (.op2 op) op2Entry.ty
+      let op1 ← ReduceM.addNode (.op2 op) op2Entry.ty
+      ReduceM.rewirePort ⟨value, ⟨1⟩⟩ ⟨op0, ⟨1⟩⟩
+      ReduceM.rewirePort ⟨value, ⟨2⟩⟩ ⟨op1, ⟨1⟩⟩
+      ReduceM.connect ⟨dupRight, ⟨1⟩⟩ ⟨op0, ⟨2⟩⟩
+      ReduceM.connect ⟨dupRight, ⟨2⟩⟩ ⟨op1, ⟨2⟩⟩
+      let resSup ← ReduceM.addNode (.sup supLabel) op2Entry.ty
+      ReduceM.connect (PortId.principal op0) ⟨resSup, ⟨1⟩⟩
+      ReduceM.connect (PortId.principal op1) ⟨resSup, ⟨2⟩⟩
+      ReduceM.rewirePort ⟨op2Id, .principal⟩ (PortId.principal resSup)
+      ReduceM.disconnect ⟨op2Id, ⟨1⟩⟩
+      ReduceM.removeNode op2Id
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .num ptL vL =>
+      let op2Entry ← ReduceM.getNode op2Id
+      return .demandFrame
+        (WhnfFrame.op2Right op2Id op op2Entry.ty value ptL vL valEntry.ty demandPort)
+        ⟨op2Id, ⟨2⟩⟩
+    | _ =>
+      let rightId ← whnf ⟨op2Id, ⟨2⟩⟩
+      let rightEntry ← ReduceM.getNode rightId
+      match rightEntry.node with
+      | .num ptR vR =>
+        match algebraicSimplify? op vR false with
+        | some .identity =>
+          ReduceM.modifyStats (·.incArithmetic)
+          ReduceM.link ⟨op2Id, .principal⟩ ⟨op2Id, ⟨1⟩⟩
+          ReduceM.disconnect ⟨op2Id, ⟨2⟩⟩
+          ReduceM.removeNode op2Id
+          ReduceM.removeNode rightId
+          return .demand demandPort
+        | some (.absorb absorbVal) =>
+          ReduceM.modifyStats (·.incArithmetic)
+          erasePort ⟨op2Id, ⟨1⟩⟩
+          let resultNode ← ReduceM.addNode (.num ptR absorbVal) rightEntry.ty
+          ReduceM.rewirePort ⟨op2Id, .principal⟩ (PortId.principal resultNode)
+          ReduceM.disconnect ⟨op2Id, ⟨2⟩⟩
+          ReduceM.removeNode op2Id
+          ReduceM.removeNode rightId
+          return .demand demandPort
+        | none => return .done op2Id
+      | _ => return .done op2Id
+
+partial def applyOp2Right (op2Id : NodeId) (op : Op2Code) (leftId : NodeId)
+    (ptL : PrimType) (vL : UInt32) (leftTy : Value) (demandPort : PortId)
+    (value : NodeId) (valEntry : NodeEntry) : ReduceM StepResult := do
+    match valEntry.node with
+    | .era =>
+      ReduceM.modifyStats (·.incEraAbsorption)
+      let eraResult ← ReduceM.addNode .era
+      ReduceM.rewirePort ⟨op2Id, .principal⟩ (PortId.principal eraResult)
+      ReduceM.disconnect ⟨op2Id, ⟨1⟩⟩
+      ReduceM.disconnect ⟨op2Id, ⟨2⟩⟩
+      ReduceM.removeNode op2Id
+      ReduceM.removeNode leftId
+      ReduceM.removeNode value
+      return .demand demandPort
+    | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        return .done op2Id
+      let op2Entry ← ReduceM.getNode op2Id
+      ReduceM.modifyStats (·.incSupCommutation)
+      let numCopy0 ← ReduceM.addNode (.num ptL vL) leftTy
+      let numCopy1 ← ReduceM.addNode (.num ptL vL) leftTy
+      let op0 ← ReduceM.addNode (.op2 op) op2Entry.ty
+      let op1 ← ReduceM.addNode (.op2 op) op2Entry.ty
+      ReduceM.connect (PortId.principal numCopy0) ⟨op0, ⟨1⟩⟩
+      ReduceM.connect (PortId.principal numCopy1) ⟨op1, ⟨1⟩⟩
+      ReduceM.rewirePort ⟨value, ⟨1⟩⟩ ⟨op0, ⟨2⟩⟩
+      ReduceM.rewirePort ⟨value, ⟨2⟩⟩ ⟨op1, ⟨2⟩⟩
+      let resSup ← ReduceM.addNode (.sup supLabel) op2Entry.ty
+      ReduceM.connect (PortId.principal op0) ⟨resSup, ⟨1⟩⟩
+      ReduceM.connect (PortId.principal op1) ⟨resSup, ⟨2⟩⟩
+      ReduceM.rewirePort ⟨op2Id, .principal⟩ (PortId.principal resSup)
+      ReduceM.disconnect ⟨op2Id, ⟨1⟩⟩
+      ReduceM.disconnect ⟨op2Id, ⟨2⟩⟩
+      ReduceM.removeNode op2Id
+      ReduceM.removeNode leftId
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .num _ vR =>
+      ReduceM.modifyStats (·.incArithmetic)
+      match computeOp2 op vL vR with
+      | .ok result =>
+        let (resPt, resTy) := match op with
+          | .eq | .ne | .lt | .le | .gt | .ge => (PrimType.bool, Value.vPrimTy .bool)
+          | _ => (ptL, leftTy)
+        let resultNode ← ReduceM.addNode (.num resPt result) resTy
+        ReduceM.rewirePort ⟨op2Id, .principal⟩ (PortId.principal resultNode)
+        ReduceM.disconnect ⟨op2Id, ⟨1⟩⟩
+        ReduceM.disconnect ⟨op2Id, ⟨2⟩⟩
+        ReduceM.removeNode op2Id
+        ReduceM.removeNode leftId
+        ReduceM.removeNode value
+        return .demand demandPort
+      | .error e => throw e
+    | _ =>
+      match algebraicSimplify? op vL true with
+      | some .identity =>
+        ReduceM.modifyStats (·.incArithmetic)
+        ReduceM.link ⟨op2Id, .principal⟩ ⟨op2Id, ⟨2⟩⟩
+        ReduceM.disconnect ⟨op2Id, ⟨1⟩⟩
+        ReduceM.removeNode op2Id
+        ReduceM.removeNode leftId
+        return .demand demandPort
+      | some (.absorb absorbVal) =>
+        ReduceM.modifyStats (·.incArithmetic)
+        erasePort ⟨op2Id, ⟨2⟩⟩
+        let resultNode ← ReduceM.addNode (.num ptL absorbVal) leftTy
+        ReduceM.rewirePort ⟨op2Id, .principal⟩ (PortId.principal resultNode)
+        ReduceM.disconnect ⟨op2Id, ⟨1⟩⟩
+        ReduceM.removeNode op2Id
+        ReduceM.removeNode leftId
+        return .demand demandPort
+      | none => return .done op2Id
+
+partial def applyOp1Operand (op1Id : NodeId) (op : Op1Code) (demandPort : PortId)
+    (value : NodeId) (valEntry : NodeEntry) : ReduceM StepResult := do
+    match valEntry.node with
+    | .era =>
+      ReduceM.modifyStats (·.incEraAbsorption)
+      let eraResult ← ReduceM.addNode .era
+      ReduceM.rewirePort ⟨op1Id, .principal⟩ (PortId.principal eraResult)
+      ReduceM.disconnect ⟨op1Id, ⟨1⟩⟩
+      ReduceM.removeNode op1Id
+      ReduceM.removeNode value
+      return .demand demandPort
+    | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        return .done op1Id
+      let op1Entry ← ReduceM.getNode op1Id
+      ReduceM.modifyStats (·.incSupCommutation)
+      let op0 ← ReduceM.addNode (.op1 op) op1Entry.ty
+      let op1 ← ReduceM.addNode (.op1 op) op1Entry.ty
+      ReduceM.rewirePort ⟨value, ⟨1⟩⟩ ⟨op0, ⟨1⟩⟩
+      ReduceM.rewirePort ⟨value, ⟨2⟩⟩ ⟨op1, ⟨1⟩⟩
+      let resSup ← ReduceM.addNode (.sup supLabel) op1Entry.ty
+      ReduceM.connect (PortId.principal op0) ⟨resSup, ⟨1⟩⟩
+      ReduceM.connect (PortId.principal op1) ⟨resSup, ⟨2⟩⟩
+      ReduceM.rewirePort ⟨op1Id, .principal⟩ (PortId.principal resSup)
+      ReduceM.disconnect ⟨op1Id, ⟨1⟩⟩
+      ReduceM.removeNode op1Id
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .num pt v =>
+      ReduceM.modifyStats (·.incArithmetic)
+      let result := computeOp1 op v
+      let resPt := match op with
+        | .not => PrimType.bool
+        | .neg => pt
+      let resultNode ← ReduceM.addNode (.num resPt result) valEntry.ty
+      ReduceM.rewirePort ⟨op1Id, .principal⟩ (PortId.principal resultNode)
+      ReduceM.disconnect ⟨op1Id, ⟨1⟩⟩
+      ReduceM.removeNode op1Id
+      ReduceM.removeNode value
+      return .demand demandPort
+    | _ =>
+      return .done op1Id
+
+partial def applyMatScrutinee (matId : NodeId) (expectedTag : Nat) (demandPort : PortId)
+    (value : NodeId) (valEntry : NodeEntry) : ReduceM StepResult := do
+    match valEntry.node with
+    | .era =>
+      ReduceM.modifyStats (·.incEraAbsorption)
+      erasePort ⟨matId, ⟨2⟩⟩
+      erasePort ⟨matId, ⟨3⟩⟩
+      let eraResult ← ReduceM.addNode .era
+      ReduceM.rewirePort ⟨matId, .principal⟩ (PortId.principal eraResult)
+      ReduceM.disconnect ⟨matId, ⟨1⟩⟩
+      ReduceM.removeNode matId
+      ReduceM.removeNode value
+      return .demand demandPort
+    | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        return .done matId
+      let matEntry ← ReduceM.getNode matId
+      ReduceM.modifyStats (·.incSupCommutation)
+      let hitTy ← match matEntry.getPort ⟨2⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure matEntry.ty
+      let missTy ← match matEntry.getPort ⟨3⟩ with
+        | some p => pure (← ReduceM.getNode p.node).ty
+        | none => pure matEntry.ty
+      let dupHit ← ReduceM.addNode (.dup supLabel) hitTy
+      let dupMiss ← ReduceM.addNode (.dup supLabel) missTy
+      ReduceM.rewirePort ⟨matId, ⟨2⟩⟩ (PortId.principal dupHit)
+      ReduceM.rewirePort ⟨matId, ⟨3⟩⟩ (PortId.principal dupMiss)
+      let mat0 ← ReduceM.addNode (.mat expectedTag) matEntry.ty
+      let mat1 ← ReduceM.addNode (.mat expectedTag) matEntry.ty
+      ReduceM.rewirePort ⟨value, ⟨1⟩⟩ ⟨mat0, ⟨1⟩⟩
+      ReduceM.rewirePort ⟨value, ⟨2⟩⟩ ⟨mat1, ⟨1⟩⟩
+      ReduceM.connect ⟨dupHit, ⟨1⟩⟩ ⟨mat0, ⟨2⟩⟩
+      ReduceM.connect ⟨dupHit, ⟨2⟩⟩ ⟨mat1, ⟨2⟩⟩
+      ReduceM.connect ⟨dupMiss, ⟨1⟩⟩ ⟨mat0, ⟨3⟩⟩
+      ReduceM.connect ⟨dupMiss, ⟨2⟩⟩ ⟨mat1, ⟨3⟩⟩
+      let resSup ← ReduceM.addNode (.sup supLabel) matEntry.ty
+      ReduceM.connect (PortId.principal mat0) ⟨resSup, ⟨1⟩⟩
+      ReduceM.connect (PortId.principal mat1) ⟨resSup, ⟨2⟩⟩
+      ReduceM.rewirePort ⟨matId, .principal⟩ (PortId.principal resSup)
+      ReduceM.disconnect ⟨matId, ⟨1⟩⟩
+      ReduceM.removeNode matId
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .ctor tag _arity =>
+      ReduceM.modifyStats (·.incMatch)
+      if tag == expectedTag then
+        ReduceM.link ⟨matId, .principal⟩ ⟨matId, ⟨2⟩⟩
+        erasePort ⟨matId, ⟨3⟩⟩
+      else
+        ReduceM.link ⟨matId, .principal⟩ ⟨matId, ⟨3⟩⟩
+        erasePort ⟨matId, ⟨2⟩⟩
+      erasePort ⟨matId, ⟨1⟩⟩
+      ReduceM.removeNode matId
+      return .demand demandPort
+    | .num _ v =>
+      ReduceM.modifyStats (·.incMatch)
+      if v.toNat == expectedTag then
+        ReduceM.link ⟨matId, .principal⟩ ⟨matId, ⟨2⟩⟩
+        erasePort ⟨matId, ⟨3⟩⟩
+      else
+        ReduceM.link ⟨matId, .principal⟩ ⟨matId, ⟨3⟩⟩
+        erasePort ⟨matId, ⟨2⟩⟩
+      erasePort ⟨matId, ⟨1⟩⟩
+      ReduceM.removeNode matId
+      return .demand demandPort
+    | .array _ =>
+      let lenId ← whnf ⟨value, ⟨1⟩⟩
+      let lenEntry ← ReduceM.getNode lenId
+      match lenEntry.node with
+      | .num _ v =>
+        let isHit := if expectedTag == 0 then v.toNat == 0
+                     else if expectedTag == 1 then v.toNat > 0
+                     else false
+        ReduceM.modifyStats (·.incMatch)
+        if isHit then
+          ReduceM.link ⟨matId, .principal⟩ ⟨matId, ⟨2⟩⟩
+          erasePort ⟨matId, ⟨3⟩⟩
+        else
+          ReduceM.link ⟨matId, .principal⟩ ⟨matId, ⟨3⟩⟩
+          erasePort ⟨matId, ⟨2⟩⟩
+        erasePort ⟨matId, ⟨1⟩⟩
+        ReduceM.removeNode matId
+        return .demand demandPort
+      | _ => return .done matId
+    | _ => return .done matId
+
+partial def applyProjRecord (projId : NodeId) (fieldIdx : Nat) (demandPort : PortId)
+    (value : NodeId) (valEntry : NodeEntry) : ReduceM StepResult := do
+    match valEntry.node with
+    | .era =>
+      ReduceM.modifyStats (·.incEraAbsorption)
+      let eraResult ← ReduceM.addNode .era
+      ReduceM.rewirePort ⟨projId, .principal⟩ (PortId.principal eraResult)
+      ReduceM.disconnect ⟨projId, ⟨1⟩⟩
+      ReduceM.removeNode projId
+      ReduceM.removeNode value
+      return .demand demandPort
+    | .sup supLabel =>
+      if (← ReduceM.getConfig).preserveSharing then
+        return .done projId
+      let projEntry ← ReduceM.getNode projId
+      ReduceM.modifyStats (·.incSupCommutation)
+      let proj0 ← ReduceM.addNode (.proj fieldIdx) projEntry.ty
+      let proj1 ← ReduceM.addNode (.proj fieldIdx) projEntry.ty
+      ReduceM.rewirePort ⟨value, ⟨1⟩⟩ ⟨proj0, ⟨1⟩⟩
+      ReduceM.rewirePort ⟨value, ⟨2⟩⟩ ⟨proj1, ⟨1⟩⟩
+      let resSup ← ReduceM.addNode (.sup supLabel) projEntry.ty
+      ReduceM.connect (PortId.principal proj0) ⟨resSup, ⟨1⟩⟩
+      ReduceM.connect (PortId.principal proj1) ⟨resSup, ⟨2⟩⟩
+      ReduceM.rewirePort ⟨projId, .principal⟩ (PortId.principal resSup)
+      ReduceM.disconnect ⟨projId, ⟨1⟩⟩
+      ReduceM.removeNode projId
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .record numFields =>
+      ReduceM.modifyStats (·.incProjection)
+      ReduceM.link ⟨projId, .principal⟩ ⟨value, ⟨fieldIdx + 1⟩⟩
+      for i in [:numFields] do
+        if i != fieldIdx then
+          erasePort ⟨value, ⟨i + 1⟩⟩
+      ReduceM.disconnect ⟨projId, ⟨1⟩⟩
+      ReduceM.removeNode projId
+      ReduceM.removeNode value
+      return .demand demandPort
+    | .ctor _tag arity =>
+      ReduceM.modifyStats (·.incProjection)
+      ReduceM.link ⟨projId, .principal⟩ ⟨value, ⟨fieldIdx + 1⟩⟩
+      for i in [:arity] do
+        if i != fieldIdx then
+          erasePort ⟨value, ⟨i + 1⟩⟩
+      ReduceM.disconnect ⟨projId, ⟨1⟩⟩
+      ReduceM.removeNode projId
+      ReduceM.removeNode value
+      return .demand demandPort
+    | .array elemType =>
+      ReduceM.modifyStats (·.incProjection)
+      if fieldIdx == 0 then
+        let dataId ← whnf ⟨value, ⟨2⟩⟩
+        let dataEntry ← ReduceM.getNode dataId
+        match dataEntry.node with
+        | .ctor _ arity =>
+          ReduceM.link ⟨projId, .principal⟩ ⟨dataId, ⟨1⟩⟩
+          for i in [1:arity] do
+            erasePort ⟨dataId, ⟨i + 1⟩⟩
+          erasePort ⟨value, ⟨1⟩⟩
+          ReduceM.disconnect ⟨value, ⟨2⟩⟩
+          ReduceM.disconnect ⟨projId, ⟨1⟩⟩
+          ReduceM.removeNode projId
+          ReduceM.removeNode dataId
+          ReduceM.removeNode value
+          return .demand demandPort
+        | _ => return .done projId
+      else if fieldIdx == 1 then
+        let valTyCur := valEntry.ty
+        let lenId ← whnf ⟨value, ⟨1⟩⟩
+        let lenEntry ← ReduceM.getNode lenId
+        let dataId ← whnf ⟨value, ⟨2⟩⟩
+        let dataEntry ← ReduceM.getNode dataId
+        match lenEntry.node, dataEntry.node with
+        | .num pt v, .ctor _ arity =>
+          let newLen := v - 1
+          let newArity := arity - 1
+          let newLenNode ← ReduceM.addNode (.num pt newLen) lenEntry.ty
+          let newDataNode ← ReduceM.addNode (.ctor 0xFFFD newArity) valTyCur
+          for i in [:newArity] do
+            ReduceM.rewirePort ⟨dataId, ⟨i + 2⟩⟩ ⟨newDataNode, ⟨i + 1⟩⟩
+          erasePort ⟨dataId, ⟨1⟩⟩
+          let newArrayNode ← ReduceM.addNode (.array elemType) valTyCur
+          ReduceM.connect ⟨newArrayNode, ⟨1⟩⟩ (PortId.principal newLenNode)
+          ReduceM.connect ⟨newArrayNode, ⟨2⟩⟩ (PortId.principal newDataNode)
+          ReduceM.rewirePort ⟨projId, .principal⟩ (PortId.principal newArrayNode)
+          ReduceM.disconnect ⟨value, ⟨1⟩⟩
+          ReduceM.disconnect ⟨value, ⟨2⟩⟩
+          ReduceM.disconnect ⟨projId, ⟨1⟩⟩
+          ReduceM.removeNode projId
+          ReduceM.removeNode dataId
+          ReduceM.removeNode lenId
+          ReduceM.removeNode value
+          ReduceM.trackPeakNodes
+          return .demand demandPort
+        | _, _ => return .done projId
+      else return .done projId
+    | _ => return .done projId
+
+partial def applyDupValue (dupId : NodeId) (label : Label) (demandPort : PortId)
+    (value : NodeId) (valEntry : NodeEntry) : ReduceM StepResult := do
+    ReduceM.removeResolvingDup dupId
+    let preserveSharing := (← ReduceM.getConfig).preserveSharing
+    match ← ReduceM.getConnection (PortId.principal dupId) with
+    | none => return .done dupId
+    | some partner =>
+      unless partner.port.isPrincipal do
+        return .done dupId
+    match valEntry.node with
+    | .num pt v =>
+      ReduceM.modifyStats (·.incDupCommutation)
+      let copy0 ← ReduceM.addNode (.num pt v) valEntry.ty
+      let copy1 ← ReduceM.addNode (.num pt v) valEntry.ty
+      ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal copy0)
+      ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal copy1)
+      ReduceM.disconnect (PortId.principal dupId)
+      ReduceM.removeNode dupId
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .num64 pt lo hi =>
+      ReduceM.modifyStats (·.incDupCommutation)
+      let copy0 ← ReduceM.addNode (.num64 pt lo hi) valEntry.ty
+      let copy1 ← ReduceM.addNode (.num64 pt lo hi) valEntry.ty
+      ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal copy0)
+      ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal copy1)
+      ReduceM.disconnect (PortId.principal dupId)
+      ReduceM.removeNode dupId
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .era =>
+      ReduceM.modifyStats (·.incDupEraAnnihilation)
+      let era0 ← ReduceM.addNode .era
+      let era1 ← ReduceM.addNode .era
+      ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal era0)
+      ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal era1)
+      ReduceM.disconnect (PortId.principal dupId)
+      ReduceM.removeNode dupId
+      ReduceM.removeNode value
+      return .demand demandPort
+    | .lam erased =>
+      if preserveSharing then
+        return .done dupId
+      ReduceM.modifyStats (·.incDupCommutation)
+      let lam0 ← ReduceM.addNode (.lam erased) valEntry.ty
+      let lam1 ← ReduceM.addNode (.lam erased) valEntry.ty
+      let varTy := valEntry.ty.piDomain?.getD valEntry.ty
+      let bodyTy := match valEntry.ty with
+        | .vPi _ _ name dom cod =>
+          match cod with
+          | .const _ v' => v'
+          | .term _ env _ =>
+            let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
+            cod.applyPure dummyArg
+        | _ => valEntry.ty
+      if !erased then
+        let dupVar ← ReduceM.addNode (.dup label) varTy
+        ReduceM.rewirePort ⟨value, ⟨1⟩⟩ (PortId.principal dupVar)
+        ReduceM.connect ⟨dupVar, ⟨1⟩⟩ ⟨lam0, ⟨1⟩⟩
+        ReduceM.connect ⟨dupVar, ⟨2⟩⟩ ⟨lam1, ⟨1⟩⟩
+      else
+        let eraVar0 ← ReduceM.addNode .era
+        let eraVar1 ← ReduceM.addNode .era
+        ReduceM.connect (PortId.principal eraVar0) ⟨lam0, ⟨1⟩⟩
+        ReduceM.connect (PortId.principal eraVar1) ⟨lam1, ⟨1⟩⟩
+        ReduceM.disconnect ⟨value, ⟨1⟩⟩
+      let dupBody ← ReduceM.addNode (.dup label) bodyTy
+      ReduceM.rewirePort ⟨value, ⟨2⟩⟩ (PortId.principal dupBody)
+      ReduceM.connect ⟨dupBody, ⟨1⟩⟩ ⟨lam0, ⟨2⟩⟩
+      ReduceM.connect ⟨dupBody, ⟨2⟩⟩ ⟨lam1, ⟨2⟩⟩
+      ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal lam0)
+      ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal lam1)
+      ReduceM.disconnect (PortId.principal dupId)
+      ReduceM.removeNode dupId
+      ReduceM.removeNode value
+      ReduceM.trackPeakNodes
+      return .demand demandPort
+    | .sup supLabel =>
+      if label == supLabel then
+        ReduceM.modifyStats (·.incDupSupAnnihilation)
+        ReduceM.link ⟨dupId, ⟨1⟩⟩ ⟨value, ⟨1⟩⟩
+        ReduceM.link ⟨dupId, ⟨2⟩⟩ ⟨value, ⟨2⟩⟩
+        ReduceM.disconnect (PortId.principal dupId)
+        ReduceM.removeNode dupId
+        ReduceM.removeNode value
+        return .demand demandPort
+      else if preserveSharing then
+        return .done dupId
+      else
+        ReduceM.modifyStats (·.incDupSupCommutation)
+        let tyA ← match valEntry.getPort ⟨1⟩ with
+          | some p => pure (← ReduceM.getNode p.node).ty
+          | none => pure valEntry.ty
+        let tyB ← match valEntry.getPort ⟨2⟩ with
+          | some p => pure (← ReduceM.getNode p.node).ty
+          | none => pure valEntry.ty
+        let dupA ← ReduceM.addNode (.dup label) tyA
+        let dupB ← ReduceM.addNode (.dup label) tyB
+        let sup0 ← ReduceM.addNode (.sup supLabel) valEntry.ty
+        let sup1 ← ReduceM.addNode (.sup supLabel) valEntry.ty
+        ReduceM.rewirePort ⟨value, ⟨1⟩⟩ (PortId.principal dupA)
+        ReduceM.rewirePort ⟨value, ⟨2⟩⟩ (PortId.principal dupB)
+        ReduceM.connect ⟨dupA, ⟨1⟩⟩ ⟨sup0, ⟨1⟩⟩
+        ReduceM.connect ⟨dupA, ⟨2⟩⟩ ⟨sup1, ⟨1⟩⟩
+        ReduceM.connect ⟨dupB, ⟨1⟩⟩ ⟨sup0, ⟨2⟩⟩
+        ReduceM.connect ⟨dupB, ⟨2⟩⟩ ⟨sup1, ⟨2⟩⟩
+        ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal sup0)
+        ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal sup1)
+        ReduceM.disconnect (PortId.principal dupId)
+        ReduceM.removeNode dupId
+        ReduceM.removeNode value
+        ReduceM.trackPeakNodes
+        return .demand demandPort
+    | .dup innerLabel =>
+      if label == innerLabel then
+        ReduceM.modifyStats (·.incDupSupAnnihilation)
+        ReduceM.link ⟨dupId, ⟨1⟩⟩ ⟨value, ⟨1⟩⟩
+        ReduceM.link ⟨dupId, ⟨2⟩⟩ ⟨value, ⟨2⟩⟩
+        ReduceM.disconnect (PortId.principal dupId)
+        ReduceM.removeNode dupId
+        ReduceM.removeNode value
+        return .demand demandPort
+      else if preserveSharing then
+        return .done dupId
+      else
+        ReduceM.modifyStats (·.incDupSupCommutation)
+        let tyA ← match valEntry.getPort ⟨1⟩ with
+          | some p => pure (← ReduceM.getNode p.node).ty
+          | none => pure valEntry.ty
+        let tyB ← match valEntry.getPort ⟨2⟩ with
+          | some p => pure (← ReduceM.getNode p.node).ty
+          | none => pure valEntry.ty
+        let dupA ← ReduceM.addNode (.dup label) tyA
+        let dupB ← ReduceM.addNode (.dup label) tyB
+        let dup0 ← ReduceM.addNode (.dup innerLabel) tyA
+        let dup1 ← ReduceM.addNode (.dup innerLabel) tyB
+        ReduceM.rewirePort ⟨value, ⟨1⟩⟩ (PortId.principal dupA)
+        ReduceM.rewirePort ⟨value, ⟨2⟩⟩ (PortId.principal dupB)
+        ReduceM.connect ⟨dupA, ⟨1⟩⟩ ⟨dup0, ⟨1⟩⟩
+        ReduceM.connect ⟨dupA, ⟨2⟩⟩ ⟨dup1, ⟨1⟩⟩
+        ReduceM.connect ⟨dupB, ⟨1⟩⟩ ⟨dup0, ⟨2⟩⟩
+        ReduceM.connect ⟨dupB, ⟨2⟩⟩ ⟨dup1, ⟨2⟩⟩
+        ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal dup0)
+        ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal dup1)
+        ReduceM.disconnect (PortId.principal dupId)
+        ReduceM.removeNode dupId
+        ReduceM.removeNode value
+        ReduceM.trackPeakNodes
+        return .demand demandPort
+    | other =>
+      let arity := other.numAuxPorts
+      if arity == 0 then
+        ReduceM.modifyStats (·.incDupCommutation)
+        let copy0 ← ReduceM.addNode other valEntry.ty
+        let copy1 ← ReduceM.addNode other valEntry.ty
+        ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal copy0)
+        ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal copy1)
+        ReduceM.disconnect (PortId.principal dupId)
+        ReduceM.removeNode dupId
+        ReduceM.removeNode value
+        ReduceM.trackPeakNodes
+        return .demand demandPort
+      else if preserveSharing then
+        return .done dupId
+      else
+        ReduceM.modifyStats (·.incDupCommutation)
+        let node0 ← ReduceM.addNode other valEntry.ty
+        let node1 ← ReduceM.addNode other valEntry.ty
+        for i in [:arity] do
+          let fieldTy ← do
+            match valEntry.getPort ⟨i + 1⟩ with
+            | some fieldPort =>
+              let fieldEntry ← ReduceM.getNode fieldPort.node
+              pure fieldEntry.ty
+            | none => pure valEntry.ty
+          let dupField ← ReduceM.addNode (.dup label) fieldTy
+          ReduceM.rewirePort ⟨value, ⟨i + 1⟩⟩ (PortId.principal dupField)
+          ReduceM.connect ⟨dupField, ⟨1⟩⟩ ⟨node0, ⟨i + 1⟩⟩
+          ReduceM.connect ⟨dupField, ⟨2⟩⟩ ⟨node1, ⟨i + 1⟩⟩
+        ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal node0)
+        ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal node1)
+        ReduceM.disconnect (PortId.principal dupId)
+        ReduceM.removeNode dupId
+        ReduceM.removeNode value
+        ReduceM.trackPeakNodes
+        return .demand demandPort
+
+partial def applyUseTerm (useId : NodeId) (demandPort : PortId)
+    (value : NodeId) : ReduceM StepResult := do
+    let useEntry ← ReduceM.getNode useId
+    let termConn := useEntry.getPort ⟨1⟩
     let reachesPrincipalValue : Bool ← do
       match termConn with
       | none => pure false
@@ -1024,30 +940,56 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
             | _ => false)
     if reachesPrincipalValue then
       ReduceM.modifyStats (·.incUse)
-      erasePort ⟨nid, ⟨1⟩⟩
-      ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨2⟩⟩
-      ReduceM.removeNode nid
-      whnf demandPort
+      erasePort ⟨useId, ⟨1⟩⟩
+      ReduceM.link ⟨useId, .principal⟩ ⟨useId, ⟨2⟩⟩
+      ReduceM.removeNode useId
+      return .demand demandPort
     else
-      pure nid
+      return .done useId
 
-  -- DUP at principal shouldn't be reached in demand-driven evaluation
-  -- (we always arrive at DUP from its auxiliary ports)
-  | .dup _ | .index => pure nid
+partial def applyFrame (frame : WhnfFrame) (value : NodeId) : ReduceM StepResult := do
+  let valEntry ← ReduceM.getNode value
+  match frame with
+  | .appFun appId _ demandPort => applyAppFun appId demandPort value valEntry
+  | .op2Left op2Id op _ demandPort => applyOp2Left op2Id op demandPort value valEntry
+  | .op2Right op2Id op _ leftId ptL vL leftTy demandPort =>
+    applyOp2Right op2Id op leftId ptL vL leftTy demandPort value valEntry
+  | .op1Operand op1Id op _ demandPort => applyOp1Operand op1Id op demandPort value valEntry
+  | .matScrutinee matId expectedTag _ demandPort =>
+    applyMatScrutinee matId expectedTag demandPort value valEntry
+  | .projRecord projId fieldIdx _ demandPort =>
+    applyProjRecord projId fieldIdx demandPort value valEntry
+  | .dupValue dupId label _ demandPort => applyDupValue dupId label demandPort value valEntry
+  | .useTerm useId demandPort => applyUseTerm useId demandPort value
 
-/-- Handle evaluation when we arrive at a node's auxiliary port.
-    This occurs when following a wire from a consumer into a DUP chain. -/
-partial def whnfAtAuxiliary (nid : NodeId) (entry : NodeEntry) (_port : PortIdx)
-    (demandPort : PortId) : ReduceM NodeId := do
-  match entry.node with
-  | .dup label =>
-    -- Consumer wants a copy from this DUP node
-    resolveDup nid label demandPort
-  | _ =>
-    -- Arriving at an auxiliary port of other node types:
-    -- This means we're looking "backwards" through the graph.
-    -- This is a stuck term (e.g., free variable).
-    pure nid
+/-- Tail-recursive trampoline driver for WHNF reduction -/
+partial def whnfLoop (stack : List WhnfFrame) (value? : Option NodeId)
+    (demand : PortId) : ReduceM NodeId := do
+  match value? with
+  | some value =>
+    match stack with
+    | [] => return value
+    | frame :: rest =>
+      match ← applyFrame frame value with
+      | .done nid => whnfLoop rest (some nid) demand
+      | .demand p => whnfLoop rest none p
+      | .demandFrame f p => whnfLoop (f :: rest) none p
+  | none =>
+    ReduceM.consumeFuel
+    let target ← ReduceM.follow demand
+    let entry ← ReduceM.getNode target.node
+    let sr ← if target.port.isPrincipal then
+      stepAtPrincipal target.node entry demand
+    else
+      stepAtAuxiliary target.node entry target.port demand
+    match sr with
+    | .done nid => whnfLoop stack (some nid) demand
+    | .demand p => whnfLoop stack none p
+    | .demandFrame f p => whnfLoop (f :: stack) none p
+
+/-- Evaluate a port to weak head normal form -/
+partial def whnf (initialPort : PortId) : ReduceM NodeId :=
+  whnfLoop [] none initialPort
 
 end -- mutual
 

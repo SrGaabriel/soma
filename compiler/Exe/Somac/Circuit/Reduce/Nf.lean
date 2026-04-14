@@ -4,109 +4,47 @@ namespace Somac.Circuit.Reduce
 
 open Somac.Circuit.Node (Node NodeId PortId PortIdx)
 
-/-- Normalize safe sub-expressions of a node after WHNF -/
-def nfChildren (recurse : PortId → ReduceM NodeId)
-    (nid : NodeId) (node : Node) : ReduceM Unit := do
-  match node with
-  -- Closure CTORs: the function LAM will be extracted as a separate Alloy definition
+/-- Ports of a node that a depth-first normal-form walk should descend into after WHNF has settled the head -/
+private def normalizationChildren (nid : NodeId) : Node → Array PortId
   | .ctor tag 2 =>
-    if tag == 0xFFFE then pure ()
-    else
-      let _ ← recurse ⟨nid, ⟨1⟩⟩; let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
-  -- Data nodes: all fields (tree-structured, no recursive refs)
+    if tag == 0xFFFE then #[]
+    else #[⟨nid, ⟨1⟩⟩, ⟨nid, ⟨2⟩⟩]
   | .ctor _ arity =>
-    for i in [:arity] do let _ ← recurse ⟨nid, ⟨i + 1⟩⟩
+    Array.ofFn (n := arity) (fun i => ⟨nid, ⟨i.val + 1⟩⟩)
   | .record n =>
-    for i in [:n] do let _ ← recurse ⟨nid, ⟨i + 1⟩⟩
+    Array.ofFn (n := n) (fun i => ⟨nid, ⟨i.val + 1⟩⟩)
   | .sup _ | .array _ | .string =>
-    let _ ← recurse ⟨nid, ⟨1⟩⟩; let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
+    #[⟨nid, ⟨1⟩⟩, ⟨nid, ⟨2⟩⟩]
   | .slice =>
-    let _ ← recurse ⟨nid, ⟨1⟩⟩; let _ ← recurse ⟨nid, ⟨2⟩⟩
-    let _ ← recurse ⟨nid, ⟨3⟩⟩; pure ()
-  -- Stuck computations: normalize operands/arguments
+    #[⟨nid, ⟨1⟩⟩, ⟨nid, ⟨2⟩⟩, ⟨nid, ⟨3⟩⟩]
   | .app | .op2 _ =>
-    let _ ← recurse ⟨nid, ⟨1⟩⟩; let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
+    #[⟨nid, ⟨1⟩⟩, ⟨nid, ⟨2⟩⟩]
   | .op1 _ | .proj _ =>
-    let _ ← recurse ⟨nid, ⟨1⟩⟩; pure ()
-  -- Erased LAM: var connects to ERA (no DUP cycle), body normalization is safe
-  | .lam true =>
-    let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
-  -- Non-erased LAM: only safe if var is used linearly (no DUP)
-  | .lam false => do
-    match ← ReduceM.getConnection ⟨nid, ⟨1⟩⟩ with
-    | some target =>
-      let varEntry ← ReduceM.getNode target.node
-      match varEntry.node with
-      | .dup _ => pure ()
-      | _ => let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
-    | none => pure ()
-  -- Stuck MAT: scrutinee was already WHNF'd so we can normalize all sub-expressions!
-  -- Safe because normalizingDefs guards prevent infinite recursive instantiation
+    #[⟨nid, ⟨1⟩⟩]
+  | .lam _ =>
+    #[⟨nid, ⟨2⟩⟩]
   | .mat _ =>
-    let _ ← recurse ⟨nid, ⟨1⟩⟩
-    let _ ← recurse ⟨nid, ⟨2⟩⟩
-    let _ ← recurse ⟨nid, ⟨3⟩⟩
-    pure ()
-  -- Terminal: DUP (consumers), NUM/ERA/REF/ALO (leaves)
-  | _ => pure ()
+    #[⟨nid, ⟨1⟩⟩, ⟨nid, ⟨2⟩⟩, ⟨nid, ⟨3⟩⟩]
+  | _ => #[]
 
-/-- Try eta-reduction: λx. f x → f -/
-def tryEtaReduce (nid : NodeId) : ReduceM Bool := do
-  -- LAM.var (port 1) must connect to APP.arg (port 2) of some APP
-  let some varTarget ← ReduceM.getConnection ⟨nid, ⟨1⟩⟩ | return false
-  if varTarget.port.idx != 2 then return false
-  let varEntry ← ReduceM.getNode varTarget.node
-  match varEntry.node with
-  | .app => pure ()
-  | _ => return false
-  -- LAM.body (port 2) must connect to the same APP's principal (port 0)
-  let some bodyTarget ← ReduceM.getConnection ⟨nid, ⟨2⟩⟩ | return false
-  if bodyTarget.node != varTarget.node || !bodyTarget.port.isPrincipal then return false
-  -- APP.function (port 1) is what the consumer would receive after eta-reduction.
-  let appId := varTarget.node
-  let some fnTarget ← ReduceM.getConnection ⟨appId, ⟨1⟩⟩ | return false
-  let fnEntry ← ReduceM.getNode fnTarget.node
-  if fnTarget.port.isPrincipal then
-    match fnEntry.node with
-    | .app =>
-      -- Check whether the APP is reducible or a stuck partial application
-      let some appFnTarget ← ReduceM.getConnection ⟨fnTarget.node, ⟨1⟩⟩ | return false
-      let appFnEntry ← ReduceM.getNode appFnTarget.node
-      match appFnEntry.node with
-      | .lam _ | .ctor _ _ =>
-        -- Beta-redex or constructor application so it will reduce further, safe to eta
-        pure ()
-      | _ =>
-        -- Potentially stuck partial application
-        return false
-    | _ => pure ()
-  -- Safe to eta-reduce: λx. f x → f
-  ReduceM.modifyStats (·.incEta)
-  ReduceM.link ⟨nid, .principal⟩ ⟨appId, ⟨1⟩⟩
-  ReduceM.disconnect ⟨nid, ⟨1⟩⟩
-  ReduceM.disconnect ⟨nid, ⟨2⟩⟩
-  ReduceM.removeNode nid
-  ReduceM.removeNode appId
-  return true
+/-- Iteratively evaluate a port to full normal form -/
+partial def nf (initialPort : PortId) : ReduceM NodeId := do
+  let mut workStack : Array PortId := #[initialPort]
 
-/-- Evaluate to full normal form: reduce to WHNF, then recursively normalize safe sub-expressions -/
-partial def nf (demandPort : PortId) : ReduceM NodeId := do
-  let nid ← whnf demandPort
-  let target ← ReduceM.follow demandPort
-  if target.port.isPrincipal then
+  let mut visited : Std.HashSet Nat := {}
+  while !workStack.isEmpty do
+    let port := workStack.back!
+    workStack := workStack.pop
+    let nid ← whnf port
+    if visited.contains nid.id then
+      continue
+    visited := visited.insert nid.id
+    let target ← ReduceM.follow port
+    if !target.port.isPrincipal then
+      continue
     let entry ← ReduceM.getNode nid
-    match entry.node with
-    | .lam false =>
-      if (← tryEtaReduce nid) then
-        return ← nf demandPort
-      else
-        nfChildren nf nid entry.node
-        unless (← ReduceM.getGraph).nodes.contains nid.id do
-          return ← nf demandPort
-    | _ =>
-      nfChildren nf nid entry.node
-      unless (← ReduceM.getGraph).nodes.contains nid.id do
-        return ← nf demandPort
-  pure nid
+    for child in normalizationChildren nid entry.node do
+      workStack := workStack.push child
+  whnf initialPort
 
 end Somac.Circuit.Reduce
