@@ -1,1 +1,1 @@
-def display (str : String) : String = str
+def display (str : String) : String := str

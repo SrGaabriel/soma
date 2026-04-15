@@ -19,5 +19,5 @@ def sub : Int32 -> Int32 -> Int32
 def mul : Int32 -> Int32 -> Int32
     | x, y  => x * y
 
-def test1 : Int32 = add 3 4
-def test2 : Int32 = mul (add 2 3) 4
+def test1 : Int32 := add 3 4
+def test2 : Int32 := mul (add 2 3) 4

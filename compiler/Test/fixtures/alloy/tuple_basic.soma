@@ -1,7 +1,7 @@
 // expect: success
 // Test: tuple creation and projection - pair lowering
 
-def pair : (Int32, Int32) = (42, 17)
+def pair : (Int32, Int32) := (42, 17)
 
 def fst : (Int32, Int32) -> Int32
     | (x, _) => x
@@ -12,5 +12,5 @@ def snd : (Int32, Int32) -> Int32
 def swap : (Int32, Int32) -> (Int32, Int32)
     | (a, b) => (b, a)
 
-def test1 : Int32 = fst pair
-def test2 : Int32 = snd (swap pair)
+def test1 : Int32 := fst pair
+def test2 : Int32 := snd (swap pair)

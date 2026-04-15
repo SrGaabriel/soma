@@ -1,4 +1,4 @@
 // expect: error mismatch
 // Test: type mismatch should be caught
 
-def x : Int32 = "not an int"
+def x : Int32 := "not an int"

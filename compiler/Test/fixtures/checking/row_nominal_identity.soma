@@ -11,4 +11,4 @@ record Vec2 where
 def needs_point : Point -> Int32
     | p => p.x
 
-def test : Int32 = needs_point (Vec2 1 2)
+def test : Int32 := needs_point (Vec2 1 2)

@@ -1,7 +1,7 @@
 // expect: success
 // Test: nested record types
 
-def outer : { inner : { x : Int32 } } = { inner = { x = 42 } }
+def outer : { inner : { x : Int32 } } := { inner := { x := 42 } }
 
 def get_inner_x : { inner : { x : Int32 } } -> Int32
     | rec => rec.inner.x

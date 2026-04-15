@@ -18,26 +18,26 @@ def ptr_write : Ptr a -> a -> Unit
 @[intrinsic "ffi.ptr_cast"]
 def ptr_cast : Ptr a -> Ptr b
 
-alias CChar = Int8
-alias CShort = Int16
-alias CInt = Int32
-alias CLong = Int64
-alias CLLong = Int64
+alias CChar := Int8
+alias CShort := Int16
+alias CInt := Int32
+alias CLong := Int64
+alias CLLong := Int64
 
-alias CUChar = Word8
-alias CUShort = Word16
-alias CUInt = Word32
-alias CULong = Word64
-alias CULLong = Word64
+alias CUChar := Word8
+alias CUShort := Word16
+alias CUInt := Word32
+alias CULong := Word64
+alias CULLong := Word64
 
-alias CSize = Word64
-alias CSsize = Int64
-alias CPtrdiff = Int64
+alias CSize := Word64
+alias CSsize := Int64
+alias CPtrdiff := Int64
 
-alias CIntPtr = Int64
-alias CUIntPtr = Word64
+alias CIntPtr := Int64
+alias CUIntPtr := Word64
 
-alias CString = Ptr Word8
+alias CString := Ptr Word8
 
 def to_cstring : String -> CString
     | s => s.data

@@ -3,4 +3,4 @@
 def needs_exact : { x : Int32, y :: Int32 } -> Int32
     | r => r.x
 
-def test : Int32 = needs_exact { x = 1, y = 2, z = 3 }
+def test : Int32 := needs_exact { x := 1, y := 2, z := 3 }

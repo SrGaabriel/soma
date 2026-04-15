@@ -1,6 +1,6 @@
 // expect: success
 // Test: nested dependent function types
 
-def flip_args (a : Type) (b : Type) (c : Type) (f : a -> b -> c) (y : b) (x : a) : c = f x y
+def flip_args (a : Type) (b : Type) (c : Type) (f : a -> b -> c) (y : b) (x : a) : c := f x y
 
-def compose_f (a : Type) (b : Type) (c : Type) (g : b -> c) (f : a -> b) (x : a) : c = g (f x)
+def compose_f (a : Type) (b : Type) (c : Type) (g : b -> c) (f : a -> b) (x : a) : c := g (f x)

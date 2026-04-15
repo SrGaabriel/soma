@@ -1,6 +1,6 @@
 use test::prim::{String, Unit, Word8, Ptr, IO}
 
-alias CString = Ptr Word8
+alias CString := Ptr Word8
 
 @[intrinsic "ffi.to_cstring"]
 def to_cstring : String -> CString
@@ -8,5 +8,5 @@ def to_cstring : String -> CString
 @[extern]
 def puts : CString -> IO ()
 
-def println (s : String) : IO () =
+def println (s : String) : IO () :=
     puts (to_cstring s)

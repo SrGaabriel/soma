@@ -13,4 +13,4 @@ def is_odd : Nat -> Int32
     | Zero => 0
     | (Succ n) => is_even n
 
-def test : Int32 = is_even (Succ (Succ Zero))
+def test : Int32 := is_even (Succ (Succ Zero))

@@ -7,4 +7,4 @@ def {-} : Int32 -> Int32 -> Int32
 def negate : Int32 -> Int32
     | x => 0 - x
 
-def test : Int32 = negate 42
+def test : Int32 := negate 42

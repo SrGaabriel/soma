@@ -194,7 +194,7 @@ partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) 
         | none => recordError "expected type after ':'"; pure none
       else pure none
 
-      if (← check .equals) then
+      if (← check .colonEquals) then
         let eqTok ← consumeAny
         match ← inLayout parseExpr with
         | some body =>
@@ -204,7 +204,7 @@ partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) 
               #[eqTok, body]
             return some (GreenNode.mkNode .declDef children)
         | none =>
-            recordError "expected expression after '='"
+            recordError "expected expression after ':='"
             return some (GreenNode.mkError "missing definition body" (attrs ++ #[defTok, nameNode]))
 
       else if (← checkNextRelevant .pipe) then
@@ -228,7 +228,7 @@ partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) 
           recordError "bodiless def requires @[intrinsic] or @[extern] attribute"
           return some (GreenNode.mkError "missing body" (attrs ++ #[defTok, nameNode, signature.get!]))
         else
-          recordError "expected '=', '|', or ':' after function declaration"
+          recordError "expected ':=', '|', or ':' after function declaration"
           return some (GreenNode.mkError "incomplete definition" (attrs ++ #[defTok, nameNode]))
   | none => return none
 
@@ -773,7 +773,7 @@ def parseAbbrevDecl : ParserM (Option GreenNode) := do
           -- Parse optional type parameters
           let params ← parseTypeParams
 
-          match ← tryConsume .equals with
+          match ← tryConsume .colonEquals with
           | some eqTok =>
               match ← parseType with
               | some ty =>
@@ -782,11 +782,11 @@ def parseAbbrevDecl : ParserM (Option GreenNode) := do
                   let children := #[abbrevTok, nameTok] ++ paramList ++ #[eqTok, ty]
                   return some (GreenNode.mkNode .declAbbrev children)
               | none =>
-                  recordError "expected type after '='"
+                  recordError "expected type after ':='"
                   return some (GreenNode.mkError "missing type" #[abbrevTok, nameTok, eqTok])
           | none =>
-              recordError "expected '=' in abbreviation declaration"
-              return some (GreenNode.mkError "missing '='" #[abbrevTok, nameTok])
+              recordError "expected ':=' in abbreviation declaration"
+              return some (GreenNode.mkError "missing ':='" #[abbrevTok, nameTok])
       | none =>
           recordError "expected type name after 'abbrev'"
           return some (GreenNode.mkError "missing type name" #[abbrevTok])

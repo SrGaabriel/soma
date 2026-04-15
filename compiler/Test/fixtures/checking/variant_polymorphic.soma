@@ -1,7 +1,7 @@
 // expect: success
 
-def test1 :  (r : Row). < Ok : Int32 | r > = .Ok 42
+def test1 :  (r : Row). < Ok : Int32 | r > := .Ok 42
 
-def test2 : < Ok : Int32 | Err : String > = .Ok 100
+def test2 : < Ok : Int32 | Err : String > := .Ok 100
 
-def test3 : < Ok : Int32 | Err : String | Warning : Bool > = .Ok 200
+def test3 : < Ok : Int32 | Err : String | Warning : Bool > := .Ok 200

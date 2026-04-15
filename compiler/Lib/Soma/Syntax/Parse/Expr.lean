@@ -16,6 +16,7 @@ def operatorPrecedence (op : String) : Nat × Assoc :=
   | "+" | "-" => (6, .left)
   | ":" => (5, .right)
   | "<>" | "++" => (5, .right)
+  | "=" => (4, .none)
   | "==" | "/=" | "!=" | "<" | ">" | "<=" | ">=" => (4, .none)
   | "&&" => (3, .right)
   | "||" => (2, .right)
@@ -152,16 +153,16 @@ partial def parseListExpr : ParserM (Option GreenNode) := do
 partial def parseRecordField : ParserM (Option GreenNode) := do
   match ← parseLowerIdent with
   | some nameTok =>
-      match ← tryConsume .equals with
+      match ← tryConsume .colonEquals with
       | some eqTok =>
           match ← parseExpr with
           | some valExpr =>
               return some (GreenNode.mkNode .recordField #[nameTok, eqTok, valExpr])
           | none =>
-              recordError "expected expression after '=' in record field"
+              recordError "expected expression after ':=' in record field"
               return some (GreenNode.mkError "missing field value" #[nameTok, eqTok])
       | none =>
-          -- Punning: { x } means { x = x }
+          -- Punning: { x } means { x := x }
           return some (GreenNode.mkNode .recordField #[nameTok])
   | none => return none
 
@@ -181,8 +182,7 @@ partial def parseRecordExpr : ParserM (Option GreenNode) := do
           let nameTok ← consumeAny
           let nextTok ← current
           match nextTok.kind with
-          | some .equals =>
-              -- It's a field: name = expr
+          | some .colonEquals =>
               let eqTok ← consumeAny
               match ← parseExpr with
               | some valExpr =>
@@ -202,7 +202,7 @@ partial def parseRecordExpr : ParserM (Option GreenNode) := do
                       recordError "unclosed record"
                       return some (GreenNode.mkError "unclosed record" (#[lbrace] ++ fields))
               | none =>
-                  recordError "expected expression after '=' in record field"
+                  recordError "expected expression after ':=' in record field"
                   return some (GreenNode.mkError "missing field value" #[lbrace, nameTok, eqTok])
           | some .pipe =>
               -- It's a record update: { base | field = val }
@@ -342,7 +342,7 @@ partial def parseLetExpr : ParserM (Option GreenNode) := do
       match ← parseLowerIdent with
       | some nameTok =>
           let typeAnnot ← if (← check .doubleColon) then parseTypeSignature else pure none
-          match ← tryConsume .equals with
+          match ← tryConsume .colonEquals with
           | some eqTok =>
               match ← parseExpr with
               | some value =>
@@ -377,15 +377,15 @@ partial def parseLetExpr : ParserM (Option GreenNode) := do
                         recordError "expected 'in' after let binding"
                         return some (GreenNode.mkError "missing 'in'" #[letTok, nameTok, eqTok, value])
               | none =>
-                  recordError "expected expression after '=' in let"
+                  recordError "expected expression after ':=' in let"
                   return some (GreenNode.mkError "missing let value" #[letTok, nameTok, eqTok])
           | none =>
-              recordError "expected '=' after let binding name"
-              return some (GreenNode.mkError "missing '=' in let" #[letTok, nameTok])
+              recordError "expected ':=' after let binding name"
+              return some (GreenNode.mkError "missing ':=' in let" #[letTok, nameTok])
       | none =>
           match ← parsePattern with
           | some pat =>
-              match ← tryConsume .equals with
+              match ← tryConsume .colonEquals with
               | some eqTok =>
                   match ← parseExpr with
                   | some value =>
@@ -411,11 +411,11 @@ partial def parseLetExpr : ParserM (Option GreenNode) := do
                             recordError "expected 'in' after let binding"
                             return some (GreenNode.mkError "missing 'in'" #[letTok, pat, eqTok, value])
                   | none =>
-                      recordError "expected expression after '='"
+                      recordError "expected expression after ':='"
                       return some (GreenNode.mkError "missing let value" #[letTok, pat, eqTok])
               | none =>
-                  recordError "expected '=' after pattern"
-                  return some (GreenNode.mkError "missing '=' in let" #[letTok, pat])
+                  recordError "expected ':=' after pattern"
+                  return some (GreenNode.mkError "missing ':=' in let" #[letTok, pat])
           | none =>
               recordError "expected binding name or pattern after 'let'"
               return some (GreenNode.mkError "missing let binding" #[letTok])
@@ -468,7 +468,7 @@ partial def parseMatchArm : ParserM (Option GreenNode) := do
 
       while true do
         let tok ← current
-        if tok.kind == some .fatArrow || tok.kind == some .equals || tok.kind == some .kw_if then
+        if tok.kind == some .fatArrow || tok.kind == some .kw_if then
           break
         if tok.kind == some .comma then
           let commaTok ← consumeAny
@@ -496,7 +496,7 @@ partial def parseMatchArm : ParserM (Option GreenNode) := do
       else pure none
 
       let tok ← current
-      if tok.kind == some .fatArrow || tok.kind == some .equals then
+      if tok.kind == some .fatArrow then
         let arrowTok ← consumeAny
         match ← inLayout parseExpr with
         | some body =>
@@ -534,31 +534,31 @@ partial def parseComposeLetStmt : ParserM (Option GreenNode) := do
   | some letTok =>
       match ← parseLowerIdent with
       | some nameTok =>
-          match ← tryConsume .equals with
+          match ← tryConsume .colonEquals with
           | some eqTok =>
               match ← parseExpr with
               | some value =>
                   return some (GreenNode.mkNode .composeLetStmt #[letTok, nameTok, eqTok, value])
               | none =>
-                  recordError "expected expression after '=' in let"
+                  recordError "expected expression after ':=' in let"
                   return some (GreenNode.mkError "missing let value" #[letTok, nameTok, eqTok])
           | none =>
-              recordError "expected '=' after let binding name"
-              return some (GreenNode.mkError "missing '=' in let" #[letTok, nameTok])
+              recordError "expected ':=' after let binding name"
+              return some (GreenNode.mkError "missing ':=' in let" #[letTok, nameTok])
       | none =>
           match ← parsePattern with
           | some pat =>
-              match ← tryConsume .equals with
+              match ← tryConsume .colonEquals with
               | some eqTok =>
                   match ← parseExpr with
                   | some value =>
                       return some (GreenNode.mkNode .composeLetStmt #[letTok, pat, eqTok, value])
                   | none =>
-                      recordError "expected expression after '=' in let"
+                      recordError "expected expression after ':=' in let"
                       return some (GreenNode.mkError "missing let value" #[letTok, pat, eqTok])
               | none =>
-                  recordError "expected '=' after let pattern"
-                  return some (GreenNode.mkError "missing '=' in let" #[letTok, pat])
+                  recordError "expected ':=' after let pattern"
+                  return some (GreenNode.mkError "missing ':=' in let" #[letTok, pat])
           | none =>
               recordError "expected binding name or pattern after 'let'"
               return some (GreenNode.mkError "missing let binding" #[letTok])
@@ -635,10 +635,10 @@ partial def parseVariantExpr : ParserM (Option GreenNode) := do
   let labelTok ← consumeAny
   -- Optionally parse an argument (but don't consume operators, delimiters, etc.)
   let argTok ← current
-  if argTok.kind == some .varSymbol || argTok.kind == some .rightParen ||
-     argTok.kind == some .rightBracket || argTok.kind == some .rightBrace ||
-     argTok.kind == some .comma || argTok.kind == some .pipe ||
-     argTok.kind == some .fatArrow || argTok.kind == some .equals ||
+  if argTok.kind == some .varSymbol || argTok.kind == some .equals ||
+     argTok.kind == some .rightParen || argTok.kind == some .rightBracket ||
+     argTok.kind == some .rightBrace || argTok.kind == some .comma ||
+     argTok.kind == some .pipe || argTok.kind == some .fatArrow ||
      argTok.kind == some .kw_in || argTok.kind == some .kw_then ||
      argTok.kind == some .kw_else || argTok.kind == some .kw_where ||
      argTok.kind == some .kw_with || argTok.kind == some .doubleColon ||
@@ -745,9 +745,9 @@ partial def parseExprInfixWithPrec (minPrec : Nat) : ParserM (Option GreenNode) 
 where
   parseExprInfixLoop (left : GreenNode) (minPrec : Nat) : ParserM (Option GreenNode) := do
     let mut result := left
-    while (← check .varSymbol) do
+    while (← check .varSymbol) || (← check .equals) do
       let tok ← current
-      let opText := tok.text
+      let opText := if tok.kind == some .equals then "=" else tok.text
       let (prec, assoc) := operatorPrecedence opText
 
       if prec < minPrec then break

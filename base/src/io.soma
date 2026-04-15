@@ -13,18 +13,18 @@ def io_bind (m : IO a) (f : a -> IO b) : IO b
         | Pair::Mk w1 val => f val w1
 
 instance : Functor IO where
-	def fmap (f : (a -> b)) (ioA : IO a) : IO b =
+	def fmap (f : (a -> b)) (ioA : IO a) : IO b :=
 	    io_bind ioA (\x -> pure_io (f x))
 
 instance {{Functor IO}} : Applicative IO where
-	def pure : a -> IO a = pure_io
-	def {<*>} (ioF : IO (a -> b)) (ioA : IO a) : IO b =
+	def pure : a -> IO a := pure_io
+	def {<*>} (ioF : IO (a -> b)) (ioA : IO a) : IO b :=
 	    io_bind ioF (\f -> io_bind ioA (\a -> pure_io (f a)))
-	def {*>} (ioA : IO a) (ioB : IO b) : IO b =
+	def {*>} (ioA : IO a) (ioB : IO b) : IO b :=
 	    io_bind ioA (\unused -> ioB)
-	def {<*} (ioA : IO a) (ioB : IO b) : IO a =
+	def {<*} (ioA : IO a) (ioB : IO b) : IO a :=
 	    io_bind ioA (\a -> io_bind ioB (\b -> pure_io a))
 
 instance {{Applicative IO}} : Monad IO where
-	def {>>=} (ioA : IO a) (f : a -> IO b) : IO b = io_bind ioA f
-	def {>>} (ioA : IO a) (ioB : IO b) : IO b = ioA >>= (\unused -> ioB)
+	def {>>=} (ioA : IO a) (f : a -> IO b) : IO b := io_bind ioA f
+	def {>>} (ioA : IO a) (ioB : IO b) : IO b := ioA >>= (\unused -> ioB)

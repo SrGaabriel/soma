@@ -72,7 +72,7 @@ record Ptr {a : Type}
 @[intrinsic]
 record World
 
-alias IO a = (1 w : World) -> Pair World a
+alias IO a := (1 w : World) -> Pair World a
 
 @[intrinsic "primop.add"]
 def {+} : Int32 -> Int32 -> Int32

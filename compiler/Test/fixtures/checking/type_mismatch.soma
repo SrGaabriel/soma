@@ -1,2 +1,2 @@
 // expect: error mismatch
-def a : String = 5
+def a : String := 5

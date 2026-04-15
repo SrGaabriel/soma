@@ -1,5 +1,5 @@
 // expect: success
 // Test: simple variant types
 
-def ok : < Ok::Int32 | Err :: String > = .Ok 42
-def err : < Ok::Int32 | Err :: String > = .Err "failed"
+def ok : < Ok::Int32 | Err :: String > := .Ok 42
+def err : < Ok::Int32 | Err :: String > := .Err "failed"

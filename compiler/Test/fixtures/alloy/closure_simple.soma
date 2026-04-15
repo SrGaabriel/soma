@@ -10,4 +10,4 @@ def apply : (Int32 -> Int32) -> Int32 -> Int32
 def add_one : Int32 -> Int32
     | x => x + 1
 
-def test : Int32 = apply add_one 41
+def test : Int32 := apply add_one 41

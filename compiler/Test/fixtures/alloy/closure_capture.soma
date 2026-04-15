@@ -7,4 +7,4 @@ def {+} : Int32 -> Int32 -> Int32
 def make_adder : Int32 -> Int32 -> Int32
     | n => \x -> x + n
 
-def test : Int32 = (make_adder 10) 5
+def test : Int32 := (make_adder 10) 5

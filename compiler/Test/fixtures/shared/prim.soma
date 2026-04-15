@@ -72,4 +72,4 @@ inductive Ptr {a : Type} where
 inductive World where
     | MkWorld
 
-alias IO a = (1 w : World) -> Pair World a
+alias IO a := (1 w : World) -> Pair World a

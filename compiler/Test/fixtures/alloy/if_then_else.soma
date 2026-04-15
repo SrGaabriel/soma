@@ -12,4 +12,4 @@ def choose : MyBool -> Int32 -> Int32 -> Int32
 def max : Int32 -> Int32 -> Int32
     | x, y  => choose MyTrue x y
 
-def test : Int32 = max 10 20
+def test : Int32 := max 10 20

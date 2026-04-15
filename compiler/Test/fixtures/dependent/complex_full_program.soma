@@ -15,6 +15,6 @@ def map : ∀ a b. (a -> b) -> Maybe a -> Maybe b
     | f, Maybe::Nothing => Maybe::Nothing
     | f, (Maybe::Just x) => Maybe::Just (f x)
 
-def test1 : Int32 = id 42
-def test2 : Maybe Int32 = Maybe::Just 100
-def test3 : Maybe Int32 = map id (Maybe::Just 42)
+def test1 : Int32 := id 42
+def test2 : Maybe Int32 := Maybe::Just 100
+def test3 : Maybe Int32 := map id (Maybe::Just 42)

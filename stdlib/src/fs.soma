@@ -50,8 +50,8 @@ def c_remove : CString -> IO CInt
 
 def open : Path -> String -> IO FileHandle
     | (Path::New path), mode => compose
-        let cpath = to_cstring path
-        let cmode = to_cstring mode
+        let cpath := to_cstring path
+        let cmode := to_cstring mode
         bind handle <- c_fopen cpath cmode
         pure_io (FileHandle::New handle)
 

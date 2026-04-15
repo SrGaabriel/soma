@@ -5,8 +5,8 @@ def handle_result : < Ok::Int32 | Err :: Int32 > -> Int32
     | .Ok n => n
     | .Err e => e
 
-def success : < Ok::Int32 | Err :: Int32 > = .Ok 42
-def failure : < Ok::Int32 | Err :: Int32 > = .Err 1
+def success : < Ok::Int32 | Err :: Int32 > := .Ok 42
+def failure : < Ok::Int32 | Err :: Int32 > := .Err 1
 
-def test1 : Int32 = handle_result success
-def test2 : Int32 = handle_result failure
+def test1 : Int32 := handle_result success
+def test2 : Int32 := handle_result failure

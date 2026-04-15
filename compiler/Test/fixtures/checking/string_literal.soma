@@ -1,2 +1,2 @@
 // expect: success
-def x = "hello"
+def x := "hello"

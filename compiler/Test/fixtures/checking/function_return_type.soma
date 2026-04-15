@@ -1,2 +1,2 @@
 // expect: success
-def add (x : Int32) (y : Int32) : Int32 = x
+def add (x : Int32) (y : Int32) : Int32 := x

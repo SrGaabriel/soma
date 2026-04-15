@@ -1,5 +1,5 @@
-def main : IO () =
+def main : IO () :=
     compose
-        let x = 1
-        let y = 2
+        let x := 1
+        let y := 2
         println (x + y)

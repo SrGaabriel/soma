@@ -1,4 +1,4 @@
 use test::prim::{IO}
 use test::test2::{println}
 
-def main : IO () = println "Hello, World!"
+def main : IO () := println "Hello, World!"

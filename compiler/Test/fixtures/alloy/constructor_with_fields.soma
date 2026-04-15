@@ -9,4 +9,4 @@ def from_maybe :  a. a -> Maybe a -> a
     | default, Nothing  => default
     | _ (Just, x)  => x
 
-def test : Int32 = from_maybe 0 (Just 42)
+def test : Int32 := from_maybe 0 (Just 42)

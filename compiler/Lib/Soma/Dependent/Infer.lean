@@ -810,13 +810,21 @@ where
 
     -- Infix operators: resolve op, apply to both args
     | .infix op left right span => do
-      -- Resolve the operator name
-      let (opTy, opExpr) ← inferSyntax (.var ⟨#[], op.value, op.span⟩)
-      -- Apply to left
-      let (ty1, expr1) ← inferSyntaxApp opTy opExpr left span
-      -- Apply to right
-      let (ty2, expr2) ← inferSyntaxApp ty1 expr1 right span
-      return (ty2, expr2)
+      -- `a = b` desugars to the propositional equality type `Eq {A} a b`
+      if op.value == "=" then
+        let (lhsTy, lhsExpr) ← inferSyntax left
+        let rhsExpr ← checkSyntax right lhsTy
+        let tyLevel ← inferUniverse lhsTy
+        let tyExpr ← quoteValueToExpr lhsTy
+        return (.vType tyLevel, .eqTy tyLevel tyExpr lhsExpr rhsExpr)
+      else
+        -- Resolve the operator name
+        let (opTy, opExpr) ← inferSyntax (.var ⟨#[], op.value, op.span⟩)
+        -- Apply to left
+        let (ty1, expr1) ← inferSyntaxApp opTy opExpr left span
+        -- Apply to right
+        let (ty2, expr2) ← inferSyntaxApp ty1 expr1 right span
+        return (ty2, expr2)
 
     -- Lambda: generate bindings, infer body
     | .lambda params body span => do

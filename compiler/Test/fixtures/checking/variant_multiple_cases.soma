@@ -1,9 +1,9 @@
 // expect: success
 
-def test1 : < Ok::Int32 | Err :: String > = .Ok 42
+def test1 : < Ok::Int32 | Err :: String > := .Ok 42
 
-def test2 : < Ok::Int32 | Err :: String > = .Err "failed"
+def test2 : < Ok::Int32 | Err :: String > := .Err "failed"
 
-def test3 : < A::Int32 | B :: String | C :: Bool > = .A 1
-def test4 : < A::Int32 | B :: String | C :: Bool > = .B "two"
-def test5 : < A::Int32 | B :: String | C :: Bool > = .C true
+def test3 : < A::Int32 | B :: String | C :: Bool > := .A 1
+def test4 : < A::Int32 | B :: String | C :: Bool > := .B "two"
+def test5 : < A::Int32 | B :: String | C :: Bool > := .C true

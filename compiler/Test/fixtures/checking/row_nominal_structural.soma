@@ -10,8 +10,8 @@ def get_x : Point -> Int32
 def get_y : Point -> Int32
     | p => p.y
 
-def test1 : Int32 = get_x (Point 1 2)
+def test1 : Int32 := get_x (Point 1 2)
 
-def test2 : Int32 = get_y (Point 3 4)
+def test2 : Int32 := get_y (Point 3 4)
 
-def test3 : Int32 = (Point 5 6).x
+def test3 : Int32 := (Point 5 6).x

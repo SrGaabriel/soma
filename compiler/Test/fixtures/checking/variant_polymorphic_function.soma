@@ -4,12 +4,12 @@ def is_ok :  (r : Row). < Ok : Int32 | r > -> Bool
     | .Ok _ => true
     | _ => false
 
-def test1 : Bool = is_ok (.Ok 42)
-def test2 : Bool = is_ok (.Err "fail")
+def test1 : Bool := is_ok (.Ok 42)
+def test2 : Bool := is_ok (.Err "fail")
 
 def get_ok :  (r : Row). < Ok : Int32 | r > -> Int32
     | .Ok n => n
     | _ => 0
 
-def test3 : Int32 = get_ok (.Ok 100)
-def test4 : Int32 = get_ok (.Err "nope")
+def test3 : Int32 := get_ok (.Ok 100)
+def test4 : Int32 := get_ok (.Err "nope")

@@ -9,4 +9,4 @@ def not : MyBool -> MyBool
     | MyTrue => MyFalse
     | MyFalse => MyTrue
 
-def test : MyBool = not MyTrue
+def test : MyBool := not MyTrue

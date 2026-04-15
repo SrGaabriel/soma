@@ -1,22 +1,22 @@
 use stdlib::collections::{map, filter, length, head, append, reverse}
 
-def main : IO () =
+def main : IO () :=
     compose
-        let xs = [1, 2, 3, 4, 5]
+        let xs := [1, 2, 3, 4, 5]
 
-        let doubled = map (\x -> x * 2) xs
-        let h = head doubled
+        let doubled := map (\x -> x * 2) xs
+        let h := head doubled
         puts ("Head of map: " <> display h)
 
-        let len = length doubled
+        let len := length doubled
         puts ("Length of map: " <> display len)
 
-        let combined = append [10, 20] [30, 40]
-        let hc = head combined
+        let combined := append [10, 20] [30, 40]
+        let hc := head combined
         puts ("Head of append: " <> display hc)
 
-        let rev = reverse xs
-        let hr = head rev
+        let rev := reverse xs
+        let hr := head rev
         puts ("Head of reverse: " <> display hr)
 
         puts "Done!"

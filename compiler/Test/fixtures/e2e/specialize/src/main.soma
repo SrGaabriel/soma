@@ -1,2 +1,2 @@
-def main : IO () =
+def main : IO () :=
     puts ("Hello" <> ", World!")

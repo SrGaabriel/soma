@@ -1,8 +1,8 @@
 use stdlib::fs::{from_string, create, write, read_to_string, close, remove, open}
 
-def main : IO () =
+def main : IO () :=
     compose
-        let path = from_string "test_output.txt"
+        let path := from_string "test_output.txt"
 
         bind fh <- create path
         write fh "Hello from Soma!\nLine 2"

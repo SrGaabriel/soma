@@ -42,16 +42,16 @@ instance : Functor Option where
         | _, Option::None => Option::None
 
 instance : Display String where
-    def display (s : String) : String =
+    def display (s : String) : String :=
         s
 
 instance : Display Int32 where
-    def display (n : Int32) : String =
+    def display (n : Int32) : String :=
         int_to_string n
 
 instance : Semigroup String where
     @[inline]
-    def {<>} (s1 : String) (s2 : String) : String =
+    def {<>} (s1 : String) (s2 : String) : String :=
         strcat s1 s2
 
 instance {a : Type} {{d : Display a}} : Display (Option a) where

@@ -16,4 +16,4 @@ def double : Int32 -> Int32
 def square : Int32 -> Int32
     | x => x * x
 
-def test : Int32 = comp double square 3
+def test : Int32 := comp double square 3

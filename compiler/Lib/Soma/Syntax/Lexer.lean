@@ -339,6 +339,7 @@ partial def lexToken : LexerM (Option RawToken) := do
   | '$' => return some (← singleCharToken .dollar)
   | ':' =>
     if (← peekNext) == ':' then skipN 2; return some (← makeToken .doubleColon start)
+    else if (← peekNext) == '=' then skipN 2; return some (← makeToken .colonEquals start)
     else advance; return some (← makeToken .colon start)
   | '-' =>
     if (← peekNext) == '>' then skipN 2; return some (← makeToken .arrow start)

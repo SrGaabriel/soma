@@ -13,6 +13,6 @@ def pred : Nat -> Nat
     | Zero => Zero
     | (Succ n) => n
 
-def one : Nat = Succ Zero
-def two : Nat = Succ (Succ Zero)
-def test : Int32 = is_zero one
+def one : Nat := Succ Zero
+def two : Nat := Succ (Succ Zero)
+def test : Int32 := is_zero one

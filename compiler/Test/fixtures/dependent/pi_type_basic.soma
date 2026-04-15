@@ -1,6 +1,6 @@
 // expect: success
 // Test: basic dependent function (Pi) types
 
-def identity {a : Type} (x : a) : a = x
+def identity {a : Type} (x : a) : a := x
 
-def const (a : Type) (b : Type) (x : a) (ignored : b) : a = x
+def const (a : Type) (b : Type) (x : a) (ignored : b) : a := x

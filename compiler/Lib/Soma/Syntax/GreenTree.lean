@@ -17,7 +17,7 @@ inductive TokenKind where
   | kw_use | kw_pub | kw_forall | kw_bind | kw_compose
   | kw_abbrev
   | leftParen | rightParen | leftBrace | rightBrace | leftBracket | rightBracket
-  | leftAngle | rightAngle | comma | colon | doubleColon | equals | pipe | dot
+  | leftAngle | rightAngle | comma | colon | doubleColon | colonEquals | equals | pipe | dot
   | at | underscore | lambda | forallSymbol | dollar | slash | hash
   | arrow | fatArrow | leftArrow
   | times         -- '×' for dependent pair types
@@ -67,6 +67,7 @@ def describe : TokenKind → String
   | .comma => "','"
   | .colon => "':'"
   | .doubleColon => "'::'"
+  | .colonEquals => "':='"
   | .equals => "'='"
   | .pipe => "'|'"
   | .dot => "'.'"

@@ -1,2 +1,2 @@
 // expect: error mismatch
-def x = if true then 1 else "hello"
+def x := if true then 1 else "hello"

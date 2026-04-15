@@ -11,6 +11,6 @@ def to_int : Color -> Int32
     | Green => 1
     | Blue => 2
 
-def test1 : Int32 = to_int Red
-def test2 : Int32 = to_int Green
-def test3 : Int32 = to_int Blue
+def test1 : Int32 := to_int Red
+def test2 : Int32 := to_int Green
+def test3 : Int32 := to_int Blue

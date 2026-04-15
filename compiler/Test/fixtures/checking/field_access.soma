@@ -3,7 +3,7 @@ record Point where
     x : Int32
     y : Int32
 
-def origin : Point = Point 0 0
+def origin : Point := Point 0 0
 
 def get_x : Point -> Int32
     | p => p.x
@@ -11,4 +11,4 @@ def get_x : Point -> Int32
 def get_y : Point -> Int32
     | p => p.y
 
-def test : Int32 = origin.x
+def test : Int32 := origin.x

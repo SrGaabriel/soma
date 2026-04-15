@@ -1,2 +1,2 @@
 // expect: success
-def x = true
+def x := true

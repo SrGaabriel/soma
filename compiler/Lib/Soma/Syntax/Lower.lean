@@ -1033,7 +1033,7 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
 
       | .exprInfix =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
-          let opNode := children.find? fun c => isTokenKind c .varSymbol
+          let opNode := children.find? fun c => isTokenKind c .varSymbol || isTokenKind c .equals
           match opNode, opNode.bind getTokenText with
           | some _, some opText =>
               if kidsWithOffsets.size >= 2 then

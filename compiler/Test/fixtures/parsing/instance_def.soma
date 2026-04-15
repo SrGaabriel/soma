@@ -1,4 +1,4 @@
 instance : Functor Maybe where
-    def fmap (f : Int32 -> Int32) (m : Maybe Int32) : Maybe Int32 = match m
+    def fmap (f : Int32 -> Int32) (m : Maybe Int32) : Maybe Int32 := match m
         | Nothing => Nothing
         | Just, x  => Just (f x)

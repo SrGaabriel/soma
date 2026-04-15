@@ -1,4 +1,4 @@
-def main : IO () =
+def main : IO () :=
     compose
         puts "Hello"
         puts ("Hello" <> ", World!")

@@ -1,7 +1,7 @@
 // expect: success
 // Test: simple record types
 
-def point : { x : Int32, y : Int32 } = { x = 1, y = 2 }
+def point : { x : Int32, y : Int32 } := { x := 1, y := 2 }
 
 def get_x : { x : Int32, y : Int32 } -> Int32
     | rec => rec.x

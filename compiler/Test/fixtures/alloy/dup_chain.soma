@@ -10,5 +10,5 @@ def use_thrice : Int32 -> Int32
 def use_twice : Int32 -> (Int32, Int32)
     | x => (x, x)
 
-def test1 : Int32 = use_thrice 10
-def test2 : (Int32, Int32) = use_twice 42
+def test1 : Int32 := use_thrice 10
+def test2 : (Int32, Int32) := use_twice 42

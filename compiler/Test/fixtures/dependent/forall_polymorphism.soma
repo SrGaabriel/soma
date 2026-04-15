@@ -7,6 +7,6 @@ def id : ∀ a. a -> a
 def const : ∀ a b. a -> b -> a
     | x, _ => x
 
-def test1 : Int32 = id 42
-def test2 : String = id "hello"
-def test3 : Int32 = const 1 "ignored"
+def test1 : Int32 := id 42
+def test2 : String := id "hello"
+def test3 : Int32 := const 1 "ignored"

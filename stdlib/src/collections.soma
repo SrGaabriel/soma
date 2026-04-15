@@ -125,7 +125,7 @@ def find {a : Type} : (a -> Bool) -> [a] -> Option a
 
 def partition {a : Type} : (a -> Bool) -> [a] -> ([a], [a])
     | p, (x:xs) =>
-        let (yes, no) = partition p xs in
+        let (yes, no) := partition p xs in
         if p x then (List::Cons x yes, no) else (yes, List::Cons x no)
     | _, [] => ([], [])
 

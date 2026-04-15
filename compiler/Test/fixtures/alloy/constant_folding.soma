@@ -7,8 +7,8 @@ def {+} : Int32 -> Int32 -> Int32
 @[intrinsic "primop.mul"]
 def {*} : Int32 -> Int32 -> Int32
 
-def forty_two : Int32 = 42
-def sum : Int32 = 1 + 2 + 3 + 4 + 5
-def product : Int32 = 2 * 3 * 4
+def forty_two : Int32 := 42
+def sum : Int32 := 1 + 2 + 3 + 4 + 5
+def product : Int32 := 2 * 3 * 4
 
-def test : Int32 = forty_two + sum + product
+def test : Int32 := forty_two + sum + product

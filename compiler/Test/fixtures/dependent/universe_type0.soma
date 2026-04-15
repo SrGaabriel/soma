@@ -1,6 +1,6 @@
 // expect: success
 // Test: Type universe - Int32 lives in Type0
 
-def int_is_type : Type = Int32
-def bool_is_type : Type = Bool
-def string_is_type : Type = String
+def int_is_type : Type := Int32
+def bool_is_type : Type := Bool
+def string_is_type : Type := String

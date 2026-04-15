@@ -1,6 +1,6 @@
 // expect: success
 // Test: applying dependent functions
 
-def id (a : Type) (x : a) : a = x
+def id (a : Type) (x : a) : a := x
 
-def apply_twice (a : Type) (f : a -> a) (x : a) : a = f (f x)
+def apply_twice (a : Type) (f : a -> a) (x : a) : a := f (f x)

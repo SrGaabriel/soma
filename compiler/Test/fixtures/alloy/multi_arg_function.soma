@@ -7,4 +7,4 @@ def {+} : Int32 -> Int32 -> Int32
 def add3 : Int32 -> Int32 -> Int32 -> Int32
     | a b, c  => a + b + c
 
-def test : Int32 = add3 1 2 3
+def test : Int32 := add3 1 2 3
