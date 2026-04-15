@@ -349,16 +349,37 @@ def handleCompletion (ctx : RequestContext LspState) (params : CompletionParams)
   -- Convert position to byte offset
   let offset := positionToOffset mod.sourceFile params.position
 
+  -- Get live content from VFS (has latest keystrokes even before didChange analysis)
+  let liveContent ← ctx.getDocumentContent uri
+
+  let isTriggerChar := match params.context with
+    | some ctx => match ctx.triggerKind with
+      | .triggerCharacter => true
+      | _ => false
+    | none => false
+  if isTriggerChar == true then
+    if let some live := liveContent then
+      let lines := (live.splitOn "\n").toArray
+      let lineIdx := params.position.line
+      if h : lineIdx < lines.size then
+        let line := lines[lineIdx]
+        let col := params.position.character
+        let prevChar := if col >= 2 then line.get ⟨col - 2⟩ else ' '
+        let lastChar := if col >= 1 then line.get ⟨col - 1⟩ else ' '
+        if lastChar == ':' && prevChar != ':' then
+          return { isIncomplete := false, items := #[] }
+
   -- Get all modules
   let allMods := state.allModules
 
-  -- Get completions (uses cached symbol table)
-  let defs := getCompletionsAt offset mod allMods
+  -- Get completions (Globals-based with CST fallback, namespace-aware)
+  let completions := getCompletionsAt offset mod allMods (some state) liveContent
+    (some params.position.line) (some params.position.character)
 
   -- Convert to completion items
-  let items := defs.map fun def_ =>
-    { label := def_.name
-    , kind := some (match completionKindNumber def_.kind with
+  let items := completions.map fun entry =>
+    { label := entry.label
+    , kind := some (match completionKindNumber entry.kind with
         | 2 => .method
         | 3 => .function
         | 4 => .constructor
@@ -369,9 +390,9 @@ def handleCompletion (ctx : RequestContext LspState) (params : CompletionParams)
         | 22 => .struct
         | 25 => .typeParameter
         | _ => .text)
-    , detail := def_.typeSignature
+    , detail := entry.detail
     , documentation := none
-    , insertText := some def_.name
+    , insertText := some entry.insertText
     : CompletionItem }
 
   return { isIncomplete := false, items }
@@ -458,6 +479,60 @@ def handleSemanticTokensFull (ctx : RequestContext LspState) (params : SemanticT
 
   return buildSemanticTokens mod
 
+open Lapis.Protocol.Generated in
+def handleInlayHint (ctx : RequestContext LspState) (params : InlayHintParams)
+    : IO (Array InlayHint) := do
+  let uri := params.textDocument.uri
+  let filePath := uriToPath uri
+
+  let state ← ctx.getUserState
+  let some mod := state.getModule filePath | return #[]
+
+  let sf := mod.sourceFile
+  let startOffset := positionToOffset sf params.range.start
+  let endOffset := positionToOffset sf params.range.«end»
+
+  let hints := collectInlayHints mod startOffset endOffset
+
+  return hints.map fun (span, label, _) =>
+    let pos := offsetToPosition sf span.stop.byteOffset
+    { position := pos
+    , label := Lean.Json.str label
+    , kind := some .type
+    , paddingLeft := some true
+    , paddingRight := some false
+    : InlayHint }
+
+open Lapis.Protocol.Generated in
+def handleSignatureHelp (ctx : RequestContext LspState) (params : SignatureHelpParams)
+    : IO (Option SignatureHelp) := do
+  let uri := params.textDocument.uri
+  let filePath := uriToPath uri
+
+  let state ← ctx.getUserState
+  let some mod := state.getModule filePath | return none
+
+  let offset := positionToOffset mod.sourceFile params.position
+  let allMods := state.allModules
+  let seedSymbols := state.seedSymbolsForModule mod.name
+
+  let some (sigInfo, activeParam) := getSignatureHelpAt offset mod allMods seedSymbols | return none
+
+  let paramInfos := sigInfo.parameters.map fun (name, ty) =>
+    { label := Lean.Json.str s!"{name} :: {ty}"
+    , documentation := Lean.Json.null
+    : ParameterInformation }
+
+  return some {
+    signatures := #[{
+      label := sigInfo.fullSignature
+      , parameters := some paramInfos
+      , activeParameter := some activeParam
+    }]
+    , activeSignature := some 0
+    , activeParameter := some activeParam
+  }
+
 /-- Build server capabilities -/
 def serverCapabilities : ServerCapabilities :=
   { textDocumentSync := some {
@@ -470,9 +545,13 @@ def serverCapabilities : ServerCapabilities :=
       triggerCharacters := some #[".", ":"]
       resolveProvider := some false
     }
+  , signatureHelpProvider := some {
+      triggerCharacters := some #["(", " "]
+    }
   , definitionProvider := some true
   , referencesProvider := some true
   , documentSymbolProvider := some true
+  , inlayHintProvider := some { resolveProvider := some false }
   , semanticTokensProvider := some defaultOptions
   }
 
@@ -529,6 +608,8 @@ def main : IO Unit := do
     |>.onRequest "textDocument/documentSymbol" handleDocumentSymbol
     |>.onRequest "textDocument/references" handleReferences
     |>.onRequest "textDocument/semanticTokens/full" handleSemanticTokensFull
+    |>.onRequest "textDocument/inlayHint" handleInlayHint
+    |>.onRequestOpt "textDocument/signatureHelp" handleSignatureHelp
 
   runStdio config ({} : LspState)
 

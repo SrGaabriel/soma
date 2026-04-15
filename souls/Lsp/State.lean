@@ -30,6 +30,7 @@ inductive SymbolKind where
   | typeVariable
   | module
   | parameter
+  | typeAlias
   deriving Repr, BEq, Inhabited
 
 instance : ToString SymbolKind where
@@ -44,6 +45,7 @@ instance : ToString SymbolKind where
     | .typeVariable => "type variable"
     | .module => "module"
     | .parameter => "parameter"
+    | .typeAlias => "type alias"
 
 /-- Convert LocalBindingKind to the coarser SymbolKind for LSP presentation -/
 def LocalBindingKind.toSymbolKind : LocalBindingKind → SymbolKind
@@ -64,6 +66,7 @@ def syntaxKindToSymbolKind : SyntaxKind → SymbolKind
   | .declDef => .function
   | .declInductive => .type
   | .declStruct => .type
+  | .declAbbrev => .typeAlias
   | .declTrait => .trait
   | .constructor => .constructor
   | .field => .field
@@ -187,6 +190,8 @@ structure CompiledModule where
   instanceEnv : Option InstanceEnv := none
   /-- Incremental type checking state (dependency tracking and caching) -/
   incrementalState : Option Soma.Dependent.Incremental.IncrementalState := none
+  /-- Abbreviation environment (type aliases and their expansions) -/
+  abbrevEnv : Option AbbrevEnv := none
   /-- Local scope map for position-aware local symbol resolution -/
   scopeMap : ScopeMap := {}
   deriving Inhabited

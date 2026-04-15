@@ -74,6 +74,19 @@ def positionToOffset (sf : SourceFile) (pos : Position) : Nat :=
     -- Past end of file
     sf.content.utf8ByteSize
 
+/-- Convert a byte offset to an LSP Position -/
+def offsetToPosition (sf : SourceFile) (offset : Nat) : Position := Id.run do
+  let mut lineIdx := 0
+  for h : i in [1:sf.lineStarts.size] do
+    if sf.lineStarts[i] > offset then
+      break
+    lineIdx := i
+  let lineStart := if lineIdx < sf.lineStarts.size then sf.lineStarts[lineIdx]! else 0
+  let byteCol := offset - lineStart
+  let lineContent := getLineContent sf lineIdx
+  let utf16Col := utf8OffsetToUtf16 lineContent byteCol
+  { line := lineIdx, character := utf16Col }
+
 /-- Get line content at a 0-indexed line number -/
 def getLineAt (sf : SourceFile) (line : Nat) : String :=
   sf.getLine (line + 1)

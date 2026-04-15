@@ -17,6 +17,7 @@ open Lapis.Protocol.Generated
 def symbolKindToTokenType : SymbolKind → SemanticTokenTypes
   | .function => .function
   | .type => .type
+  | .typeAlias => .type
   | .constructor => .enumMember
   | .field => .property
   | .trait => .interface

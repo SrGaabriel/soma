@@ -276,6 +276,7 @@ def kindDisplayName : SyntaxKind → String
   | .declDef => "function"
   | .declInductive => "inductive type"
   | .declStruct => "struct"
+  | .declAbbrev => "type alias"
   | .declTrait => "class"
   | .declInstance => "instance"
   | .constructor => "constructor"

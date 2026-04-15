@@ -102,6 +102,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
       elabResult := none
       globals := some cm.globals
       instanceEnv := some cm.instanceEnv
+      abbrevEnv := some cm.abbrevEnv
       incrementalState := some cm.incrementalState
       scopeMap := scopeMap
     }
@@ -125,6 +126,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
 
   let globals := checkedModule?.map (·.globals)
   let instanceEnv := checkedModule?.map (·.instanceEnv)
+  let abbrevEnv := checkedModule?.map (·.abbrevEnv)
   let incrState := checkedModule?.map (·.incrementalState)
 
   let allDiags := frontendDiags ++ astLowerDiags ++ checkDiags
@@ -141,6 +143,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
     elabResult := none
     globals := globals
     instanceEnv := instanceEnv
+    abbrevEnv := abbrevEnv
     incrementalState := incrState
     scopeMap := scopeMap
   }
@@ -218,9 +221,10 @@ def analyzeSourceIncremental (filePath : String) (content : String)
       Globals.empty InstanceEnv.empty AbbrevEnv.empty
       {} packageName supply preludeSymbols
 
-  let globals := _checkedModule.map (·.globals)
-  let instanceEnv := _checkedModule.map (·.instanceEnv)
-  let incrState := _checkedModule.map (·.incrementalState)
+  let globals := _checkedModule.map (·.globals) |>.orElse fun _ => oldModule.globals
+  let instanceEnv := _checkedModule.map (·.instanceEnv) |>.orElse fun _ => oldModule.instanceEnv
+  let abbrevEnv := _checkedModule.map (·.abbrevEnv) |>.orElse fun _ => oldModule.abbrevEnv
+  let incrState := _checkedModule.map (·.incrementalState) |>.orElse fun _ => oldModule.incrementalState
 
   let allDiags := frontendDiags ++ astLowerDiags ++ checkDiags
 
@@ -236,6 +240,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     elabResult := none
     globals := globals
     instanceEnv := instanceEnv
+    abbrevEnv := abbrevEnv
     incrementalState := incrState
     scopeMap := scopeMap
   }
