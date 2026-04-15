@@ -1,11 +1,11 @@
-{"version": "1.1.0",
+{"version": "1.2.0",
  "packagesDir": ".lake/packages",
  "packages":
  [{"url": "https://github.com/SrGaabriel/kenosis",
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "187269877f84a6a3dac46911f3e6e4c6a7bedf76",
+   "rev": "c5750f1e8c059136fdde5062a78691cfe3b98db1",
    "name": "kenosis",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",
@@ -15,11 +15,12 @@
    "type": "git",
    "subDir": null,
    "scope": "leanprover",
-   "rev": "7802da01beb530bf051ab657443f9cd9bc3e1a29",
+   "rev": "f7d0ca7c926cdde0562af20394dd25d028b839a5",
    "name": "Cli",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",
    "inherited": false,
    "configFile": "lakefile.toml"}],
  "name": "soma",
- "lakeDir": ".lake"}
+ "lakeDir": ".lake",
+ "fixedToolchain": false}
