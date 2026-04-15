@@ -2,7 +2,6 @@ mod config;
 mod dirs;
 mod error;
 mod target;
-mod toolchain;
 mod version;
 
 pub use config::*;

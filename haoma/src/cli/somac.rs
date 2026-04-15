@@ -13,11 +13,11 @@ pub fn generate_metadata(
         .path
         .join(SRC_FOLDER_NAME)
         .canonicalize()
-        .map_err(|e| format!("Failed to canonicalize src path: {}", e))?;
+        .map_err(|e| format!("Failed to canonicalize src path: {e}"))?;
 
     let build_folder = node.path.join(BUILD_FOLDER_NAME);
     std::fs::create_dir_all(&build_folder)
-        .map_err(|e| format!("Failed to create build folder: {}", e))?;
+        .map_err(|e| format!("Failed to create build folder: {e}"))?;
 
     let metadata_path = build_folder.join(format!("{}.meta.json", node.manifest.name));
 
@@ -39,7 +39,7 @@ pub fn generate_metadata(
 
     let output = command
         .output()
-        .map_err(|e| format!("Failed to run somac metadata: {}", e))?;
+        .map_err(|e| format!("Failed to run somac metadata: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -64,7 +64,7 @@ pub fn generate_metadata(
         })?;
 
     std::fs::write(&metadata_path, json_line)
-        .map_err(|e| format!("Failed to write metadata file: {}", e))?;
+        .map_err(|e| format!("Failed to write metadata file: {e}"))?;
 
     Ok(metadata_path)
 }
@@ -74,7 +74,7 @@ pub fn generate_all_metadata(
 ) -> Result<HashMap<String, PathBuf>, String> {
     let layers = graph
         .topological_layers()
-        .map_err(|e| format!("Failed to order packages: {}", e))?;
+        .map_err(|e| format!("Failed to order packages: {e}"))?;
 
     let mut metadata_paths: HashMap<String, PathBuf> = HashMap::new();
 

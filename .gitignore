@@ -1,5 +1,5 @@
-# Created by https://www.toptal.com/developers/gitignore/api/rust,linux,haskell,windows,visualstudiocode,c,cmake
-# Edit at https://www.toptal.com/developers/gitignore?templates=rust,linux,haskell,windows,visualstudiocode,c,cmake
+# Created by https://www.toptal.com/developers/gitignore/api/c,rust,cmake,linux,windows,visualstudiocode,zig
+# Edit at https://www.toptal.com/developers/gitignore?templates=c,rust,cmake,linux,windows,visualstudiocode,zig
 
 ### C ###
 # Prerequisites
@@ -73,30 +73,6 @@ CMakeUserPresets.json
 
 # External projects
 *-prefix/
-
-### Haskell ###
-dist
-dist-*
-cabal-dev
-*.hi
-*.hie
-*.chi
-*.chs.h
-*.dyn_o
-*.dyn_hi
-.hpc
-.hsenv
-.cabal-sandbox/
-cabal.sandbox.config
-*.prof
-*.aux
-*.hp
-*.eventlog
-.stack-work/
-cabal.project.local
-cabal.project.local~
-.HTF/
-.ghc.environment.*
 
 ### Linux ###
 *~
@@ -173,20 +149,18 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
-# End of https://www.toptal.com/developers/gitignore/api/rust,linux,haskell,windows,visualstudiocode,c,cmake
+### zig ###
+# Zig programming language
 
-zlang
-report.html
-CRITICAL.md
-ideas
+zig-cache/
+zig-out/
+build/
+build-*/
+docgen_tmp/
 
-# Haoma
-.haoma
+# End of https://www.toptal.com/developers/gitignore/api/c,rust,cmake,linux,windows,visualstudiocode,zig
 
-# Liquid Haskell
-.liquid/
+.zig-cache/
 
 # Lean
 **/.lake
-
-vine

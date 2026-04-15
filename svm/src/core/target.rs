@@ -40,49 +40,17 @@ impl Target {
         #[cfg(not(any(target_env = "gnu", target_env = "musl", target_env = "msvc")))]
         None
     }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        let parts: Vec<&str> = s.split('-').collect();
-        match parts.len() {
-            // arch-os (minimal)
-            2 => Some(Self {
-                arch: parts[0].to_string(),
-                vendor: None,
-                os: parts[1].to_string(),
-                env: None,
-            }),
-            // arch-vendor-os or arch-os-env
-            3 => Some(Self {
-                arch: parts[0].to_string(),
-                vendor: Some(parts[1].to_string()),
-                os: parts[2].to_string(),
-                env: None,
-            }),
-            // arch-vendor-os-env
-            4 => Some(Self {
-                arch: parts[0].to_string(),
-                vendor: Some(parts[1].to_string()),
-                os: parts[2].to_string(),
-                env: Some(parts[3].to_string()),
-            }),
-            _ => None,
-        }
-    }
-
-    pub fn to_string_lossy(&self) -> String {
-        self.to_string()
-    }
 }
 
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.arch)?;
         if let Some(ref vendor) = self.vendor {
-            write!(f, "-{}", vendor)?;
+            write!(f, "-{vendor}")?;
         }
         write!(f, "-{}", self.os)?;
         if let Some(ref env) = self.env {
-            write!(f, "-{}", env)?;
+            write!(f, "-{env}")?;
         }
         Ok(())
     }
@@ -91,15 +59,6 @@ impl fmt::Display for Target {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_triplet() {
-        let t = Target::parse("x86_64-unknown-linux-gnu").unwrap();
-        assert_eq!(t.arch, "x86_64");
-        assert_eq!(t.vendor, Some("unknown".to_string()));
-        assert_eq!(t.os, "linux");
-        assert_eq!(t.env, Some("gnu".to_string()));
-    }
 
     #[test]
     fn test_host_detection() {

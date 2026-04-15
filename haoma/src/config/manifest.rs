@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use kdl::{KdlDocument, KdlNode};
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write;
 use thiserror::Error;
 
 pub const MANIFEST_NAME: &str = "haoma.kdl";
@@ -92,7 +93,7 @@ impl Manifest {
         if let Some(authors) = &self.authors
             && !authors.is_empty()
         {
-            let author_args: Vec<String> = authors.iter().map(|a| format!("{:?}", a)).collect();
+            let author_args: Vec<String> = authors.iter().map(|a| format!("{a:?}")).collect();
             lines.push(format!("authors {}", author_args.join(" ")));
         }
 
@@ -102,12 +103,12 @@ impl Manifest {
             for (name, value) in &self.dependencies.dependencies {
                 match value {
                     ManifestDependencyValue::Version(v) => {
-                        lines.push(format!("    {} {:?}", name, v));
+                        lines.push(format!("    {name} {v:?}"));
                     }
                     ManifestDependencyValue::Custom { path, version } => {
-                        let mut dep_line = format!("    {} path={:?}", name, path);
+                        let mut dep_line = format!("    {name} path={path:?}");
                         if let Some(v) = version {
-                            dep_line.push_str(&format!(" version={:?}", v));
+                            let _ = write!(dep_line, " version={v:?}");
                         }
                         lines.push(dep_line);
                     }
@@ -183,7 +184,7 @@ fn get_string_field(
     entry
         .value()
         .as_string()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .ok_or_else(|| {
             let span = entry.span();
             ManifestError::InvalidValue {
@@ -243,7 +244,12 @@ fn get_string_list(doc: &KdlDocument, field: &str) -> Option<Vec<String>> {
     doc.get(field).map(|node| {
         node.entries()
             .iter()
-            .filter_map(|entry| entry.value().as_string().map(|s| s.to_string()))
+            .filter_map(|entry| {
+                entry
+                    .value()
+                    .as_string()
+                    .map(std::string::ToString::to_string)
+            })
             .collect()
     })
 }
@@ -281,13 +287,13 @@ fn parse_dependency(
     let path = node
         .get("path")
         .and_then(|e| e.as_string())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     if let Some(path) = path {
         let version = node
             .get("version")
             .and_then(|e| e.as_string())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         return Ok((name, ManifestDependencyValue::Custom { path, version }));
     }

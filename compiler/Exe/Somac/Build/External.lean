@@ -12,14 +12,15 @@ structure ToolPaths where
   ar : String := "ar"
   /-- Path to tar (tape archive) -/
   tar : String := "tar"
+  /-- Path to the Zig compiler -/
+  zig : String := "zig"
   deriving Inhabited
 
 /-- Default tool paths -/
 def defaultTools : ToolPaths := {}
 
-/-- Runtime file names -/
-def runtimeSourceFile : String := "soma_runtime.c"
-def runtimeHeaderFile : String := "soma_runtime.h"
+/-- Runtime archive name -/
+def runtimeArchiveFile : String := "libsoma_runtime.a"
 
 /-- Find the sysroot directory using the standard discovery order -/
 def findSysroot (explicit : Option String) : IO (Option System.FilePath) := do
@@ -60,27 +61,6 @@ def findSysroot (explicit : Option String) : IO (Option System.FilePath) := do
 
   return none
 
-/-- Find the runtime source file -/
-def findRuntime (sysroot : Option String) : IO (Option System.FilePath) := do
-  -- 1. Check sysroot/lib/
-  if let some sysrootPath ← findSysroot sysroot then
-    let runtimePath := sysrootPath / "lib" / runtimeSourceFile
-    if ← runtimePath.pathExists then
-      return some runtimePath
-
-  -- 2. Check relative to cwd (todo: remove this on prod)
-  let cwd ← IO.currentDir
-  -- Check ../runtime/ (when running from compiler/)
-  let devPath := cwd / ".." / "runtime" / runtimeSourceFile
-  if ← devPath.pathExists then
-    return some devPath
-  -- Check runtime/ (when running from project root)
-  let rootPath := cwd / "runtime" / runtimeSourceFile
-  if ← rootPath.pathExists then
-    return some rootPath
-
-  return none
-
 /-- Result of running an external command -/
 structure CommandResult where
   exitCode : UInt32
@@ -88,10 +68,12 @@ structure CommandResult where
   stderr : String
 
 /-- Run an external command and capture output -/
-def runCommand (cmd : String) (args : Array String) : IO CommandResult := do
+def runCommand (cmd : String) (args : Array String) (cwd : Option String := none)
+    : IO CommandResult := do
   let proc ← IO.Process.spawn {
     cmd := cmd
     args := args
+    cwd := cwd
     stdout := .piped
     stderr := .piped
   }
@@ -99,6 +81,53 @@ def runCommand (cmd : String) (args : Array String) : IO CommandResult := do
   let stderr ← proc.stderr.readToEnd
   let exitCode ← proc.wait
   pure { exitCode, stdout, stderr }
+
+/-- Candidate dev-mode locations for the runtime tree -/
+private def devRuntimeDirs : IO (Array System.FilePath) := do
+  let cwd ← IO.currentDir
+  pure #[cwd / ".." / "runtime", cwd / "runtime"]
+
+private def zigArchiveSubpath : System.FilePath :=
+  System.FilePath.mk "zig-out" / runtimeArchiveFile
+
+private def buildRuntimeArchive
+    (zig : String) (runtimeDir : System.FilePath)
+    : IO (Except String System.FilePath) := do
+  let result ← runCommand zig #["build"] (cwd := some runtimeDir.toString)
+  if result.exitCode ≠ 0 then
+    pure (.error s!"zig build failed in {runtimeDir} (exit {result.exitCode}):\n{result.stderr}")
+  else
+    let path := runtimeDir / zigArchiveSubpath
+    if ← path.pathExists then
+      pure (.ok path)
+    else
+      pure (.error s!"zig build succeeded but {path} was not produced")
+
+/-- Find the prebuilt runtime archive -/
+def findRuntime (sysroot : Option String) : IO (Option System.FilePath) := do
+  if let some sysrootPath ← findSysroot sysroot then
+    let runtimePath := sysrootPath / "lib" / runtimeArchiveFile
+    if ← runtimePath.pathExists then
+      return some runtimePath
+
+  let devDirs ← devRuntimeDirs
+
+  for dir in devDirs do
+    let flat := dir / runtimeArchiveFile
+    if ← flat.pathExists then return some flat
+    let zigOut := dir / zigArchiveSubpath
+    if ← zigOut.pathExists then return some zigOut
+
+  for dir in devDirs do
+    let buildZig := dir / "build.zig"
+    if ← buildZig.pathExists then
+      IO.println s!"runtime archive not found; running `zig build` in {dir}"
+      match ← buildRuntimeArchive defaultTools.zig dir with
+      | .ok path => return some path
+      | .error e =>
+        IO.eprintln e
+
+  return none
 
 /-- Check if a tool is available -/
 def checkTool (path : String) : IO Bool := do
@@ -117,6 +146,8 @@ def compileToObject
   let optFlag := s!"-O{min optLevel 3}"
   let mut args := #["-c", optFlag, "-o", oPath.toString, llPath.toString]
 
+  if lto then
+    args := args.push "-flto"
 
   if let some triple := llvmTarget then
     args := #["-target", triple] ++ args
@@ -139,18 +170,19 @@ def linkExecutable
     (llvmTarget : Option String := none)
     (isWindowsTarget : Bool := System.Platform.isWindows)
     : IO (Except String Unit) := do
+  let _ := llvmTarget
   let optFlag := s!"-O{min optLevel 3}"
 
   let mut args := #[optFlag, "-o", output.toString]
+
+  if lto then
+    args := args.push "-flto"
 
   -- Add object files
   for obj in objs do
     args := args.push obj.toString
 
-  -- Add runtime library if specified
   if let some rt := runtime then
-    if let some rtDir := rt.parent then
-      args := args ++ #["-I", rtDir.toString]
     args := args.push rt.toString
 
   if isWindowsTarget then
@@ -218,23 +250,6 @@ def extractTarball
   else
     pure (.error s!"tar failed (exit {result.exitCode}):\n{result.stderr}")
 
-/-- Pre-compile a C runtime source file to an object using gcc -/
-def precompileRuntime
-    (tools : ToolPaths)
-    (cPath : System.FilePath)
-    (oPath : System.FilePath)
-    (optLevel : Nat := 2)
-    : IO (Except String Unit) := do
-  let optFlag := s!"-O{min optLevel 3}"
-  -- -I for the runtime's own directory so it finds soma_runtime.h
-  let includeDir := cPath.parent.getD "."
-  let args := #["-c", optFlag, "-I", includeDir.toString, "-o", oPath.toString, cPath.toString]
-  let result ← runCommand tools.cc args
-  if result.exitCode == 0 then
-    pure (.ok ())
-  else
-    pure (.error s!"gcc runtime compilation failed (exit {result.exitCode}):\n{result.stderr}")
-
 /-- Full compilation pipeline: LLVM IR → object → executable -/
 def compileAndLink
     (tools : ToolPaths)
@@ -248,37 +263,20 @@ def compileAndLink
     (llvmTarget : Option String := none)
     (isWindowsTarget : Bool := System.Platform.isWindows)
     : IO (Except String Unit) := do
-  -- Compile to object
   let oPath := output.withExtension "o"
 
   match ← compileToObject tools llPath oPath optLevel lto llvmTarget with
   | .error e => pure (.error e)
   | .ok () =>
-    -- Find runtime if not explicitly provided
     let runtimePath ← match runtime with
       | some r => pure (some r)
       | none => findRuntime sysroot
 
-    let mut runtimeForLink := runtimePath
-    let mut runtimeOPath : Option System.FilePath := none
-    if lto then
-      if let some rtPath := runtimePath then
-        if rtPath.extension == some "c" then
-          let rtOPath := output.withExtension "rt.o"
-          match ← precompileRuntime tools rtPath rtOPath optLevel with
-          | .error e => return .error e
-          | .ok () =>
-            runtimeForLink := some rtOPath
-            runtimeOPath := some rtOPath
-
-    -- Link to executable
-    match ← linkExecutable tools #[oPath] output runtimeForLink optLevel lto llvmTarget isWindowsTarget with
+    match ← linkExecutable tools #[oPath] output runtimePath optLevel lto llvmTarget isWindowsTarget with
     | .error e => pure (.error e)
     | .ok () =>
       unless keepIntermediates do
         IO.FS.removeFile oPath |>.catchExceptions fun _ => pure ()
-        if let some rtO := runtimeOPath then
-          IO.FS.removeFile rtO |>.catchExceptions fun _ => pure ()
       pure (.ok ())
 
 end Somac.Build.External

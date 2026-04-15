@@ -45,10 +45,10 @@ pub fn execute(path: &Path, full: bool) {
     let graph = match resolver.resolve(&manifest) {
         Ok(g) => g,
         Err(e) => {
-            output_err(&format!("Failed to resolve dependencies: {}", e));
+            output_err(&format!("Failed to resolve dependencies: {e}"));
             let output = ProjectMetadata {
                 success: false,
-                error: Some(format!("{}", e)),
+                error: Some(format!("{e}")),
                 root_package: root_name,
                 packages: vec![],
                 modules: vec![],
@@ -99,7 +99,7 @@ pub fn execute(path: &Path, full: bool) {
             Err(e) => {
                 let output = ProjectMetadata {
                     success: false,
-                    error: Some(format!("Failed to generate type metadata: {}", e)),
+                    error: Some(format!("Failed to generate type metadata: {e}")),
                     root_package: root_name,
                     packages,
                     modules: all_modules,
@@ -147,17 +147,17 @@ fn scan_modules_recursive(
             let new_prefix = if prefix.is_empty() {
                 file_name_str.to_string()
             } else {
-                format!("{}/{}", prefix, file_name_str)
+                format!("{prefix}/{file_name_str}")
             };
             scan_modules_recursive(package_name, &path, &new_prefix, modules)?;
-        } else if path.extension().map(|e| e == "soma").unwrap_or(false) {
+        } else if path.extension().is_some_and(|e| e == "soma") {
             let module_suffix = if prefix.is_empty() {
                 file_name_str.trim_end_matches(".soma").to_string()
             } else {
                 format!("{}/{}", prefix, file_name_str.trim_end_matches(".soma"))
             };
 
-            let module_name = format!("{}/{}", package_name, module_suffix);
+            let module_name = format!("{package_name}/{module_suffix}");
             let abs_path = path.canonicalize().unwrap_or_else(|_| path.clone());
 
             modules.push(ModuleInfo {

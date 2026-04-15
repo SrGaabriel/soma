@@ -52,7 +52,7 @@ impl DependencyGraph {
                 && self.has_cycle_dfs(node_name, &mut visited, &mut rec_stack)
             {
                 return Err(BuildError::CircularDependencyDetected(
-                    node_name.to_string(),
+                    node_name.clone(),
                 ));
             }
         }

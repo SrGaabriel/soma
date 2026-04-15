@@ -26,7 +26,7 @@ pub fn execute(path: &Path) {
     let graph = match resolver.resolve(&manifest) {
         Ok(g) => g,
         Err(e) => {
-            output_err(&format!("Failed to resolve dependencies: {}", e));
+            output_err(&format!("Failed to resolve dependencies: {e}"));
             std::process::exit(1);
         }
     };
@@ -34,7 +34,7 @@ pub fn execute(path: &Path) {
     let layers = match graph.topological_layers() {
         Ok(l) => l,
         Err(e) => {
-            output_err(&format!("Failed to order modules: {}", e));
+            output_err(&format!("Failed to order modules: {e}"));
             std::process::exit(1);
         }
     };
@@ -84,7 +84,7 @@ pub fn execute(path: &Path) {
                             all_outputs.push(make_error_output(
                                 node,
                                 &module_name,
-                                &format!("Failed to generate metadata for dependency: {}", e),
+                                &format!("Failed to generate metadata for dependency: {e}"),
                             ));
                         }
                     }
@@ -96,11 +96,11 @@ pub fn execute(path: &Path) {
     for module_output in all_outputs {
         if let Some(module_name) = &module_output.module_name {
             if module_output.success {
-                output_ok(&format!("Module '{}': Check passed", module_name));
+                output_ok(&format!("Module '{module_name}': Check passed"));
             } else {
-                output_err(&format!("Module '{}': Check failed", module_name));
+                output_err(&format!("Module '{module_name}': Check failed"));
                 if let Some(diagnostics) = &module_output.diagnostics {
-                    println!("{}", diagnostics);
+                    println!("{diagnostics}");
                 }
             }
         }
@@ -113,7 +113,7 @@ pub fn execute(path: &Path) {
     output_ok("All checks passed successfully!");
 }
 
-fn make_error_output(node: &BuildNode, module_name: &str, message: &str) -> CheckOutput {
+fn make_error_output(_node: &BuildNode, module_name: &str, message: &str) -> CheckOutput {
     CheckOutput {
         success: false,
         diagnostics: Some(message.to_string()),
@@ -129,7 +129,7 @@ fn check_module(
         .path
         .join(SRC_FOLDER_NAME)
         .canonicalize()
-        .map_err(|e| format!("Failed to canonicalize src path: {}", e))?;
+        .map_err(|e| format!("Failed to canonicalize src path: {e}"))?;
 
     let mut command = Command::new("somac");
     if std::env::var("LEAN_STACK_SIZE").is_err() {
@@ -153,17 +153,15 @@ fn check_module(
 
     let output = command
         .output()
-        .map_err(|e| format!("Failed to run compiler: {}", e))?;
+        .map_err(|e| format!("Failed to run compiler: {e}"))?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     Ok(CheckOutput {
         success: output.status.success(),
-        diagnostics: stderr
+        diagnostics: if stderr
             .trim()
-            .is_empty()
-            .then(|| None)
-            .unwrap_or_else(|| Some(stderr.trim().to_string())),
+            .is_empty() { None } else { Some(stderr.trim().to_string()) },
         module_name: Some(node.manifest.name.clone()),
     })
 }

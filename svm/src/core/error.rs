@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum SvmError {
     #[error("Version '{0}' is not installed")]
     VersionNotInstalled(String),

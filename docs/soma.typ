@@ -12,7 +12,10 @@
 #import "@preview/cetz:0.3.2": canvas, draw
 
 #align(center)[
-  #heading(level: 1, numbering: none)[Soma: Achieving Low-Level Performance in a General-Purpose Dependently Typed Functional Language via Interaction Nets]
+  #heading(
+    level: 1,
+    numbering: none,
+  )[Soma: Achieving Low-Level Performance in a General-Purpose Dependently Typed Functional Language via Interaction Nets]
   Gabriel Di Lucca Minatel
 ]
 
@@ -281,7 +284,9 @@ $ "DUP"^l ("SUP"^l (a, b)) arrow.r.double (a, b) $
 
 *SUP-DUP different-label commutation.* When a DUP with label $l_1$ encounters a SUP with a different label $l_2$, both push through each other, creating new SUP and DUP nodes with their respective labels preserved. This handles nested duplications correctly without oracle machinery.
 
-$ "DUP"^(l_1) ("SUP"^(l_2) (a, b)) arrow.r.double ("SUP"^(l_2) ("DUP"^(l_1) (a)_0, "DUP"^(l_1) (b)_0), "SUP"^(l_2) ("DUP"^(l_1) (a)_1, "DUP"^(l_1) (b)_1)) $
+$
+  "DUP"^(l_1) ("SUP"^(l_2) (a, b)) arrow.r.double ("SUP"^(l_2) ("DUP"^(l_1) (a)_0, "DUP"^(l_1) (b)_0), "SUP"^(l_2) ("DUP"^(l_1) (a)_1, "DUP"^(l_1) (b)_1))
+$
 
 #heading(level: 4)[Access-Site Code Generation]
 
@@ -386,7 +391,9 @@ Soma uses QTT as both a correctness mechanism and a _compilation strategy oracle
 
 Soma compiles source code through a sequence of intermediate representations, each serving a distinct purpose. The pipeline is:
 
-$ "Source" arrow.r "CST" arrow.r "AST" arrow.r "Core" arrow.r "Circuit IR" arrow.r "Alloy IR" arrow.r "LLVM IR" arrow.r "Native" $
+$
+  "Source" arrow.r "CST" arrow.r "AST" arrow.r "Core" arrow.r "Circuit IR" arrow.r "Alloy IR" arrow.r "LLVM IR" arrow.r "Native"
+$
 
 #heading(level: 2)[Frontend: Source to Core]
 
@@ -422,7 +429,7 @@ Types in Alloy include primitives, pointers, structs, tagged unions, closures (f
 
 #heading(level: 2)[LLVM Code Generation]
 
-Alloy IR is lowered to LLVM IR, each Alloy function becomes an LLVM function and each block becomes an LLVM basic block. The interaction net primitives lower to calls into the C runtime (`soma_runtime.c`) or to inline LLVM operations:
+Alloy IR is lowered to LLVM IR, each Alloy function becomes an LLVM function and each block becomes an LLVM basic block. The interaction net primitives lower to calls into the Zig runtime (`soma_runtime.zig`) or to inline LLVM operations:
 
 - Flat-tier DUP $arrow.r$ register copy (zero cost)
 - Flat-tier ERA $arrow.r$ no-op

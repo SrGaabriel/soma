@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -55,6 +55,7 @@ pub struct BuildState {
     pub receiver: Receiver<BuildMessage>,
 }
 
+#[allow(dead_code)]
 pub enum BuildMessage {
     Output(String),
     ComponentDone { success: bool },
@@ -130,7 +131,7 @@ impl App {
         let target = self.target.clone();
 
         thread::spawn(move || {
-            run_build(project_root, components, dirs, target, tx);
+            run_build(&project_root, &components, &dirs, &target, &tx);
         });
 
         self.build_state = Some(BuildState {
@@ -188,11 +189,11 @@ impl App {
                 }
                 KeyCode::Char('d') => {
                     if let Some(v) = self.selected_version().cloned() {
-                        if Some(&v) != self.current.as_ref() {
+                        if Some(&v) == self.current.as_ref() {
+                            self.message = Some("Cannot uninstall the active version".to_string());
+                        } else {
                             self.confirm_action = Some(ConfirmAction::Uninstall(v));
                             self.mode = AppMode::Confirming;
-                        } else {
-                            self.message = Some("Cannot uninstall the active version".to_string());
                         }
                     }
                 }
@@ -217,11 +218,11 @@ impl App {
                             ConfirmAction::Use(v) => {
                                 self.dirs.set_current(&v, &self.target)?;
                                 self.current = Some(v.clone());
-                                self.message = Some(format!("Switched to {}", v));
+                                self.message = Some(format!("Switched to {v}"));
                             }
                             ConfirmAction::Uninstall(v) => {
                                 self.dirs.remove_version(&v)?;
-                                self.message = Some(format!("Uninstalled {}", v));
+                                self.message = Some(format!("Uninstalled {v}"));
                                 self.refresh()?;
                             }
                             ConfirmAction::BuildDev => {
@@ -260,26 +261,26 @@ impl App {
 }
 
 fn run_build(
-    project_root: PathBuf,
-    components: Vec<ComponentConfig>,
-    dirs: SvmDirs,
-    target: Target,
-    tx: Sender<BuildMessage>,
+    project_root: &Path,
+    components: &[ComponentConfig],
+    dirs: &SvmDirs,
+    target: &Target,
+    tx: &Sender<BuildMessage>,
 ) {
     use std::fs;
 
     let version = Version::Dev;
-    let bin_dir = dirs.bin_dir(&version, &target);
+    let bin_dir = dirs.bin_dir(&version, target);
 
     if let Err(e) = fs::create_dir_all(&bin_dir) {
-        let _ = tx.send(BuildMessage::Output(format!("Error creating dir: {}", e)));
+        let _ = tx.send(BuildMessage::Output(format!("Error creating dir: {e}")));
         let _ = tx.send(BuildMessage::AllDone { success: false });
         return;
     }
 
     let mut all_success = true;
 
-    for component in &components {
+    for component in components {
         let _ = tx.send(BuildMessage::Output(format!(
             "[Building {}]",
             component.name
@@ -307,7 +308,7 @@ fn run_build(
         let mut child: Child = match child_result {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx.send(BuildMessage::Output(format!("Failed to start: {}", e)));
+                let _ = tx.send(BuildMessage::Output(format!("Failed to start: {e}")));
                 let _ = tx.send(BuildMessage::ComponentDone { success: false });
                 all_success = false;
                 continue;
@@ -317,7 +318,7 @@ fn run_build(
         if let Some(stdout) = child.stdout.take() {
             let tx_clone = tx.clone();
             let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(|l| l.ok()) {
+            for line in reader.lines().map_while(std::result::Result::ok) {
                 let _ = tx_clone.send(BuildMessage::Output(line));
             }
         }
@@ -325,7 +326,7 @@ fn run_build(
         if let Some(stderr) = child.stderr.take() {
             let tx_clone = tx.clone();
             let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(|l| l.ok()) {
+            for line in reader.lines().map_while(std::result::Result::ok) {
                 let _ = tx_clone.send(BuildMessage::Output(line));
             }
         }
@@ -357,7 +358,7 @@ fn run_build(
             #[cfg(windows)]
             {
                 if let Err(e) = std::os::windows::fs::symlink_file(&src, &dest) {
-                    let _ = tx.send(BuildMessage::Output(format!("Symlink error: {}", e)));
+                    let _ = tx.send(BuildMessage::Output(format!("Symlink error: {e}")));
                 }
             }
         } else {
@@ -368,7 +369,7 @@ fn run_build(
     }
 
     if all_success {
-        let _ = dirs.set_current(&version, &target);
+        let _ = dirs.set_current(&version, target);
         let _ = tx.send(BuildMessage::Output(
             "\nDev mode active. Binaries linked.".to_string(),
         ));

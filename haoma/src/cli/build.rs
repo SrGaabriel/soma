@@ -16,7 +16,7 @@ pub fn execute(path: &Path) {
             print_build_success(&build);
         }
         Err(e) => {
-            output_err(&format!("Build failed: {}", e));
+            output_err(&format!("Build failed: {e}"));
         }
     }
 }
@@ -51,7 +51,7 @@ fn print_build_success(stats: &BuildStats) {
         format!(
             "{} module{}",
             stats.modules_built,
-            if stats.modules_built != 1 { "s" } else { "" }
+            if stats.modules_built == 1 { "" } else { "s" }
         )
         .green()
     );
@@ -61,7 +61,7 @@ fn print_build_success(stats: &BuildStats) {
         format!(
             "{} module{}",
             stats.modules_cached,
-            if stats.modules_cached != 1 { "s" } else { "" }
+            if stats.modules_cached == 1 { "" } else { "s" }
         )
         .bright_blue(),
         if stats.total_modules > 0 {
@@ -149,15 +149,16 @@ fn print_build_success(stats: &BuildStats) {
     println!();
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn format_duration(ms: u128) -> String {
     if ms < 1000 {
-        format!("{}ms", ms)
+        format!("{ms}ms")
     } else if ms < 60_000 {
         format!("{:.2}s", ms as f64 / 1000.0)
     } else {
         let seconds = ms / 1000;
         let minutes = seconds / 60;
         let remaining_seconds = seconds % 60;
-        format!("{}m {}s", minutes, remaining_seconds)
+        format!("{minutes}m {remaining_seconds}s")
     }
 }

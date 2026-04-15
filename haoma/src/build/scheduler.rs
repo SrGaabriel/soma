@@ -58,7 +58,7 @@ impl BuildScheduler {
             let result_sender = result_sender.clone();
 
             let handle = thread::spawn(move || {
-                Self::worker_loop(worker_id, work_receiver, result_sender);
+                Self::worker_loop(worker_id, &work_receiver, &result_sender);
             });
 
             workers.push(handle);
@@ -74,8 +74,8 @@ impl BuildScheduler {
 
     fn worker_loop(
         _worker_id: usize,
-        work_receiver: Arc<Mutex<Receiver<WorkerMessage>>>,
-        result_sender: Sender<BuildResults>,
+        work_receiver: &Mutex<Receiver<WorkerMessage>>,
+        result_sender: &Sender<BuildResults>,
     ) {
         loop {
             let message = {
@@ -91,10 +91,7 @@ impl BuildScheduler {
                         break;
                     }
                 }
-                Ok(WorkerMessage::Shutdown) => {
-                    break;
-                }
-                Err(_) => {
+                Ok(WorkerMessage::Shutdown) | Err(_) => {
                     break;
                 }
             }
@@ -188,7 +185,7 @@ impl LayeredBuilder {
 
     pub fn build_layers(
         self,
-        layers: Vec<Vec<String>>,
+        layers: &[Vec<String>],
         nodes: &HashMap<String, BuildNode>,
         skip_modules: &HashMap<String, (String, String)>,
         cache: &BuildCache,
@@ -295,7 +292,7 @@ impl LayeredBuilder {
                             result.module_name
                         ));
                         if let Some(error) = &result.error {
-                            layer_pb.println(format!("    Error: {}", error));
+                            layer_pb.println(format!("    Error: {error}"));
                         }
                         layer_failed = true;
                     }

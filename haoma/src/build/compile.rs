@@ -88,7 +88,7 @@ fn compile_module(
         .arg(&output_file);
     if manifest.module_type == ManifestModuleType::Library {
         command.arg("--lib");
-    };
+    }
 
     if let Some(sysroot) = find_sysroot(build_config.somac.sysroot.as_deref()) {
         command.arg("--sysroot").arg(sysroot);

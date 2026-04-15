@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use directories::BaseDirs;
 
@@ -20,10 +20,6 @@ impl SvmDirs {
         })
     }
 
-    pub fn with_root(root: PathBuf) -> Self {
-        Self { root }
-    }
-
     pub fn ensure_dirs(&self) -> Result<()> {
         let dirs = [
             self.root.clone(),
@@ -37,10 +33,6 @@ impl SvmDirs {
         }
 
         Ok(())
-    }
-
-    pub fn root(&self) -> &Path {
-        &self.root
     }
 
     pub fn versions_dir(&self) -> PathBuf {
@@ -77,10 +69,6 @@ impl SvmDirs {
 
     pub fn cache_dir(&self) -> PathBuf {
         self.root.join("cache")
-    }
-
-    pub fn config_file(&self) -> PathBuf {
-        self.root.join("config.kdl")
     }
 
     pub fn is_installed(&self, version: &Version, target: &Target) -> bool {

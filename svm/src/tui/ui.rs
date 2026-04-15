@@ -105,7 +105,7 @@ fn draw_versions(frame: &mut Frame, app: &App, area: Rect) {
             let is_selected = i == app.selected;
 
             let marker = if is_current { "*" } else { " " };
-            let content = format!("{} {}", marker, version);
+            let content = format!("{marker} {version}");
 
             let style = match (is_selected, is_current) {
                 (true, true) => Style::default()
@@ -149,6 +149,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(footer, area);
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn draw_progress_bar(frame: &mut Frame, app: &App, area: Rect) {
     let (label, ratio) = if let Some(ref state) = app.build_state {
         let ratio = if state.components_total > 0 {
@@ -251,8 +252,8 @@ fn draw_confirm_dialog(frame: &mut Frame, app: &App) {
     let area = centered_rect(50, 25, frame.area());
 
     let message = match &app.confirm_action {
-        Some(ConfirmAction::Use(v)) => format!("Switch to version {}?", v),
-        Some(ConfirmAction::Uninstall(v)) => format!("Uninstall version {}?", v),
+        Some(ConfirmAction::Use(v)) => format!("Switch to version {v}?"),
+        Some(ConfirmAction::Uninstall(v)) => format!("Uninstall version {v}?"),
         Some(ConfirmAction::BuildDev) => "Build dev version from source?".to_string(),
         None => "Confirm?".to_string(),
     };

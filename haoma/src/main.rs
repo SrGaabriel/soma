@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic)]
+
 use tracing_appender::rolling;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt};
 

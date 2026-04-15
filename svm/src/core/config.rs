@@ -41,7 +41,7 @@ impl BuildConfig {
         let content = fs::read_to_string(path).map_err(|e| SvmError::io(path, e))?;
         let doc: kdl::KdlDocument = content
             .parse()
-            .map_err(|e| SvmError::InvalidConfig(format!("{}", e)))?;
+            .map_err(|e| SvmError::InvalidConfig(format!("{e}")))?;
 
         let mut components = HashMap::new();
         let mut libraries = HashMap::new();
@@ -56,7 +56,7 @@ impl BuildConfig {
                     .first()?
                     .value()
                     .as_string()
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
             };
 
             let get_string_array = |key: &str| -> Option<Vec<String>> {
@@ -66,7 +66,7 @@ impl BuildConfig {
                     child
                         .entries()
                         .iter()
-                        .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
+                        .filter_map(|e| e.value().as_string().map(std::string::ToString::to_string))
                         .collect(),
                 )
             };
@@ -74,7 +74,7 @@ impl BuildConfig {
             // Check if this is a library config
             if let Some(files) = get_string_array("files") {
                 let path_str = get_string("path").ok_or_else(|| {
-                    SvmError::InvalidConfig(format!("Missing 'path' for {}", name))
+                    SvmError::InvalidConfig(format!("Missing 'path' for {name}"))
                 })?;
                 libraries.insert(
                     name.clone(),
@@ -86,13 +86,13 @@ impl BuildConfig {
                 );
             } else {
                 let path_str = get_string("path").ok_or_else(|| {
-                    SvmError::InvalidConfig(format!("Missing 'path' for {}", name))
+                    SvmError::InvalidConfig(format!("Missing 'path' for {name}"))
                 })?;
                 let build_command = get_string("build").ok_or_else(|| {
-                    SvmError::InvalidConfig(format!("Missing 'build' for {}", name))
+                    SvmError::InvalidConfig(format!("Missing 'build' for {name}"))
                 })?;
                 let binary_str = get_string("binary").ok_or_else(|| {
-                    SvmError::InvalidConfig(format!("Missing 'binary' for {}", name))
+                    SvmError::InvalidConfig(format!("Missing 'binary' for {name}"))
                 })?;
 
                 components.insert(
@@ -160,7 +160,6 @@ impl BuildConfig {
             );
         }
 
-        // runtime - C runtime library
         let runtime_dir = project_root.join("runtime");
         if runtime_dir.exists() {
             libraries.insert(
@@ -169,8 +168,8 @@ impl BuildConfig {
                     name: "runtime".to_string(),
                     path: runtime_dir,
                     files: vec![
-                        PathBuf::from("soma_runtime.c"),
-                        PathBuf::from("soma_runtime.h"),
+                        PathBuf::from("soma_runtime.zig"),
+                        PathBuf::from("build.zig"),
                     ],
                 },
             );
@@ -186,61 +185,11 @@ impl BuildConfig {
         })
     }
 
-    pub fn get(&self, name: &str) -> Option<&ComponentConfig> {
-        self.components.get(name)
-    }
-
-    pub fn get_library(&self, name: &str) -> Option<&LibraryConfig> {
-        self.libraries.get(name)
-    }
-
     pub fn iter(&self) -> impl Iterator<Item = &ComponentConfig> {
         self.components.values()
     }
 
     pub fn iter_libraries(&self) -> impl Iterator<Item = &LibraryConfig> {
         self.libraries.values()
-    }
-}
-
-/// Global svm configuration (~/.svm/config.kdl)
-#[derive(Debug, Clone, Default)]
-pub struct GlobalConfig {
-    /// Default version to use if no soma-toolchain.kdl is present
-    pub default_version: Option<String>,
-}
-
-impl GlobalConfig {
-    pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-
-        let content = fs::read_to_string(path).map_err(|e| SvmError::io(path, e))?;
-        let doc: kdl::KdlDocument = content
-            .parse()
-            .map_err(|e| SvmError::InvalidConfig(format!("{}", e)))?;
-
-        let default_version = doc
-            .get("default")
-            .and_then(|n| n.entries().first())
-            .and_then(|e| e.value().as_string())
-            .map(|s| s.to_string());
-
-        Ok(Self { default_version })
-    }
-
-    pub fn save(&self, path: &Path) -> Result<()> {
-        let mut doc = kdl::KdlDocument::new();
-
-        if let Some(ref version) = self.default_version {
-            let mut node = kdl::KdlNode::new("default");
-            node.push(kdl::KdlEntry::new(version.clone()));
-            doc.nodes_mut().push(node);
-        }
-
-        let content = doc.to_string();
-        fs::write(path, content).map_err(|e| SvmError::io(path, e))?;
-        Ok(())
     }
 }

@@ -170,7 +170,7 @@ pub fn parse_manifest(path: &Path) -> Manifest {
     let content = match std::fs::read_to_string(&manifest_path) {
         Ok(c) => c,
         Err(e) => {
-            output_err(&format!("Failed to read manifest file: {}", e));
+            output_err(&format!("Failed to read manifest file: {e}"));
             std::process::exit(1);
         }
     };

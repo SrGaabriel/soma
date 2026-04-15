@@ -1,4 +1,5 @@
-#![allow(dead_code)]
+#![warn(clippy::pedantic)]
+#![allow(clippy::too_many_lines)]
 
 mod cli;
 mod core;
@@ -8,7 +9,7 @@ use cli::{Cli, CommandRunner, Commands, SelfCommands};
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }
@@ -24,7 +25,7 @@ fn run() -> core::Result<()> {
 
         Commands::Dev { path, copy, only } => {
             let runner = CommandRunner::new()?;
-            runner.dev(path, copy, only)?;
+            runner.dev(path, copy, only.as_ref())?;
         }
 
         Commands::Use { version } => {

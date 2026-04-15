@@ -16,28 +16,11 @@ pub struct Semver {
     pub prerelease: Option<String>,
 }
 
-impl Version {
-    pub fn dev() -> Self {
-        Self::Dev
-    }
-
-    pub fn is_dev(&self) -> bool {
-        matches!(self, Self::Dev)
-    }
-
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Dev => "dev",
-            Self::Semver(_) => panic!("Use Display for Semver"),
-        }
-    }
-}
-
 impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Dev => write!(f, "dev"),
-            Self::Semver(v) => write!(f, "{}", v),
+            Self::Semver(v) => write!(f, "{v}"),
         }
     }
 }
@@ -57,7 +40,7 @@ impl fmt::Display for Semver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
         if let Some(ref pre) = self.prerelease {
-            write!(f, "-{}", pre)?;
+            write!(f, "-{pre}")?;
         }
         Ok(())
     }
@@ -75,7 +58,7 @@ impl FromStr for Semver {
 
         let parts: Vec<&str> = version.split('.').collect();
         if parts.len() != 3 {
-            return Err(format!("Invalid version format: {}", s));
+            return Err(format!("Invalid version format: {s}"));
         }
 
         Ok(Self {

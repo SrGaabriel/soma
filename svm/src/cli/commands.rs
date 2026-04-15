@@ -1,6 +1,6 @@
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::{fs, path::Path};
 
 use directories::BaseDirs;
 
@@ -8,6 +8,23 @@ use crate::core::{
     BuildConfig, ComponentConfig, LibraryConfig, Result, SvmDirs, SvmError, Target, Version,
     find_project_root,
 };
+
+const HWND_BROADCAST: *mut std::ffi::c_void = 0xffff as *mut std::ffi::c_void;
+const WM_SETTINGCHANGE: u32 = 0x001A;
+const SMTO_ABORTIFHUNG: u32 = 0x0002;
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn SendMessageTimeoutW(
+        hwnd: *mut std::ffi::c_void,
+        msg: u32,
+        wparam: usize,
+        lparam: *const u16,
+        flags: u32,
+        timeout: u32,
+        result: *mut usize,
+    ) -> isize;
+}
 
 pub struct CommandRunner {
     dirs: SvmDirs,
@@ -27,13 +44,13 @@ impl CommandRunner {
     pub fn install(&self, version_str: &str) -> Result<()> {
         let _version: Version = version_str
             .parse()
-            .map_err(|e| SvmError::InvalidConfig(format!("Invalid version: {}", e)))?;
+            .map_err(|e| SvmError::InvalidConfig(format!("Invalid version: {e}")))?;
 
         // todo: remote installation
         Err(SvmError::RemoteNotImplemented)
     }
 
-    pub fn dev(&self, path: Option<PathBuf>, copy: bool, only: Option<Vec<String>>) -> Result<()> {
+    pub fn dev(&self, path: Option<PathBuf>, copy: bool, only: Option<&Vec<String>>) -> Result<()> {
         let project_root = path
             .or_else(find_project_root)
             .ok_or(SvmError::ProjectNotFound)?;
@@ -50,8 +67,7 @@ impl CommandRunner {
             .iter()
             .filter(|c| {
                 only.as_ref()
-                    .map(|names| names.iter().any(|n| n == &c.name))
-                    .unwrap_or(true)
+                    .is_none_or(|names| names.iter().any(|n| n == &c.name))
             })
             .collect();
 
@@ -59,8 +75,7 @@ impl CommandRunner {
             .iter_libraries()
             .filter(|l| {
                 only.as_ref()
-                    .map(|names| names.iter().any(|n| n == &l.name))
-                    .unwrap_or(true)
+                    .is_none_or(|names| names.iter().any(|n| n == &l.name))
             })
             .collect();
 
@@ -181,7 +196,7 @@ impl CommandRunner {
         if !status.success() {
             return Err(SvmError::BuildFailed {
                 component: component.name.clone(),
-                message: format!("Command exited with status: {}", status),
+                message: format!("Command exited with status: {status}"),
             });
         }
 
@@ -191,14 +206,14 @@ impl CommandRunner {
     pub fn use_version(&self, version_str: &str) -> Result<()> {
         let version: Version = version_str
             .parse()
-            .map_err(|e| SvmError::InvalidConfig(format!("Invalid version: {}", e)))?;
+            .map_err(|e| SvmError::InvalidConfig(format!("Invalid version: {e}")))?;
 
         if !self.dirs.is_installed(&version, &self.target) {
             return Err(SvmError::VersionNotInstalled(version.to_string()));
         }
 
         self.dirs.set_current(&version, &self.target)?;
-        println!("Now using Soma {}", version);
+        println!("Now using Soma {version}");
 
         Ok(())
     }
@@ -234,16 +249,13 @@ impl CommandRunner {
     }
 
     pub fn current(&self) -> Result<()> {
-        match self.dirs.current_version(&self.target)? {
-            Some(version) => {
-                println!("{}", version);
-                let bin_dir = self.dirs.current_bin_dir(&self.target);
-                println!("Binary path: {}", bin_dir.display());
-            }
-            None => {
-                println!("No version currently active.");
-                println!("Run 'svm use <version>' to activate a version.");
-            }
+        if let Some(version) = self.dirs.current_version(&self.target)? {
+            println!("{version}");
+            let bin_dir = self.dirs.current_bin_dir(&self.target);
+            println!("Binary path: {}", bin_dir.display());
+        } else {
+            println!("No version currently active.");
+            println!("Run 'svm use <version>' to activate a version.");
         }
         Ok(())
     }
@@ -251,7 +263,7 @@ impl CommandRunner {
     pub fn uninstall(&self, version_str: &str) -> Result<()> {
         let version: Version = version_str
             .parse()
-            .map_err(|e| SvmError::InvalidConfig(format!("Invalid version: {}", e)))?;
+            .map_err(|e| SvmError::InvalidConfig(format!("Invalid version: {e}")))?;
 
         if let Some(current) = self.dirs.current_version(&self.target)?
             && current == version
@@ -260,7 +272,7 @@ impl CommandRunner {
         }
 
         self.dirs.remove_version(&version)?;
-        println!("Uninstalled {}", version);
+        println!("Uninstalled {version}");
 
         Ok(())
     }
@@ -298,12 +310,12 @@ impl CommandRunner {
     fn setup_windows_env(&self, bin_path: &std::path::Path) -> Result<()> {
         use std::ptr;
         use winreg::RegKey;
-        use winreg::enums::*;
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let env = hkcu
             .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
-            .map_err(|e| SvmError::ShellSetupFailed(format!("Failed to open registry: {}", e)))?;
+            .map_err(|e| SvmError::ShellSetupFailed(format!("Failed to open registry: {e}")))?;
 
         let current_path: String = env.get_value("Path").unwrap_or_default();
         let bin_path_str = bin_path.to_string_lossy();
@@ -312,35 +324,18 @@ impl CommandRunner {
             .split(';')
             .any(|p| p.eq_ignore_ascii_case(&bin_path_str))
         {
-            println!("PATH already contains {}", bin_path_str);
+            println!("PATH already contains {bin_path_str}");
             return Ok(());
         }
 
         let new_path = if current_path.is_empty() {
             bin_path_str.to_string()
         } else {
-            format!("{};{}", bin_path_str, current_path)
+            format!("{bin_path_str};{current_path}")
         };
 
         env.set_value("Path", &new_path)
-            .map_err(|e| SvmError::ShellSetupFailed(format!("Failed to update PATH: {}", e)))?;
-
-        #[link(name = "user32")]
-        unsafe extern "system" {
-            fn SendMessageTimeoutW(
-                hwnd: *mut std::ffi::c_void,
-                msg: u32,
-                wparam: usize,
-                lparam: *const u16,
-                flags: u32,
-                timeout: u32,
-                result: *mut usize,
-            ) -> isize;
-        }
-
-        const HWND_BROADCAST: *mut std::ffi::c_void = 0xffff as *mut std::ffi::c_void;
-        const WM_SETTINGCHANGE: u32 = 0x001A;
-        const SMTO_ABORTIFHUNG: u32 = 0x0002;
+            .map_err(|e| SvmError::ShellSetupFailed(format!("Failed to update PATH: {e}")))?;
 
         let environment: Vec<u16> = "Environment\0".encode_utf16().collect();
         unsafe {
@@ -355,7 +350,7 @@ impl CommandRunner {
             );
         }
 
-        println!("Added {} to user PATH", bin_path_str);
+        println!("Added {bin_path_str} to user PATH");
         println!("Restart your terminal for changes to take effect.");
 
         Ok(())
@@ -562,8 +557,7 @@ impl CommandRunner {
                 #[cfg(windows)]
                 {
                     println!(
-                        "Shell '{}' not supported, but PATH was added via Windows Registry.",
-                        shell
+                        "Shell '{shell}' not supported, but PATH was added via Windows Registry."
                     );
                     return Ok(());
                 }
@@ -598,7 +592,7 @@ impl CommandRunner {
                         .unwrap_or(false)
                 }
             } else {
-                candidate.parent().map(|p| p.exists()).unwrap_or(false)
+                candidate.parent().is_some_and(Path::exists)
             };
 
             if !can_write {
@@ -621,7 +615,6 @@ impl CommandRunner {
                 }
                 Err(e) => {
                     last_error = Some(format!("{}: {}", candidate.display(), e));
-                    continue;
                 }
             }
         }
@@ -631,14 +624,6 @@ impl CommandRunner {
             last_error.unwrap_or_else(|| "unknown".to_string())
         )))
     }
-}
-
-fn dirs_path() -> PathBuf {
-    BaseDirs::new()
-        .map(|b| b.config_dir().to_path_buf())
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config")
-        })
 }
 
 fn detect_shell() -> String {

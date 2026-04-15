@@ -71,7 +71,7 @@ impl BuildOrchestrator {
             "{} {} {}",
             "✓".green(),
             "Resolved dependencies".dimmed(),
-            format!("({}ms)", resolution_time).dimmed()
+            format!("({resolution_time}ms)").dimmed()
         ));
 
         let analysis_pb = multi_progress.add(ProgressBar::new_spinner());
@@ -101,12 +101,12 @@ impl BuildOrchestrator {
                 analysis.skip_modules.len()
             )
             .bright_blue(),
-            format!("({}ms)", analysis_time).dimmed()
+            format!("({analysis_time}ms)").dimmed()
         ));
 
         let execution_start = Instant::now();
         let build_results = self.execute_builds(
-            analysis.layers,
+            &analysis.layers,
             &graph,
             &analysis.skip_modules,
             &multi_progress,
@@ -156,7 +156,7 @@ impl BuildOrchestrator {
             for module_name in layer {
                 let node = graph.get_node(module_name).ok_or_else(|| {
                     BuildError::Internal(InternalBuildError::BuildNodeNotFound(
-                        module_name.to_string(),
+                        module_name.clone(),
                     ))
                 })?;
 
@@ -194,7 +194,7 @@ impl BuildOrchestrator {
 
     fn execute_builds(
         &self,
-        layers: Vec<Vec<String>>,
+        layers: &[Vec<String>],
         graph: &DependencyGraph,
         skip_modules: &HashMap<String, (String, String)>,
         multi_progress: &MultiProgress,
