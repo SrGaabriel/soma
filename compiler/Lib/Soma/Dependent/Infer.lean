@@ -8,6 +8,7 @@ import Soma.Core.Expr
 import Soma.Dependent.Prelude
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
+import Soma.Dependent.Coverage
 import Soma.Dependent.Unify
 import Soma.Dependent.Error
 import Soma.Dependent.Usage
@@ -313,75 +314,49 @@ partial def instantiateImplicits (ty : Value) (_span : Span) : TCM Value := do
   | _ =>
     return ty'
 
-/-- Check if two forced values are structurally incompatible (distinct head constructors) -/
-partial def structurallyIncompatible (v1 v2 : Value) : TCM Bool := do
-  let v1' ← force v1
-  let v2' ← force v2
-  match v1', v2' with
-  | .vConstructor n1 _ _ _, .vConstructor n2 _ _ _ => return n1 != n2
-  | .vIntLit n1, .vIntLit n2 => return n1 != n2
-  | .vFloatLit f1, .vFloatLit f2 => return f1 != f2
-  | .vStringLit s1, .vStringLit s2 => return s1 != s2
-  | .vPrimTy p1, .vPrimTy p2 => return p1 != p2
-  | .vDataType id1 ps1, .vDataType id2 ps2 =>
-    if id1 != id2 then return true
-    let rec checkParams (l1 l2 : List Value) : TCM Bool := do
-      match l1, l2 with
-      | p1 :: rest1, p2 :: rest2 =>
-        if ← structurallyIncompatible p1 p2 then return true
-        checkParams rest1 rest2
-      | _, _ => return false
-    checkParams ps1 ps2
-  | _, _ => return false
+/-- Extract constructor field types and their declared QTT quantities,
+    constraining the constructor's result type against the scrutinee type.
 
-/-- Extract constructor field types, constraining result type against scrutinee type.
-
-    For a constructor type like `forall {a}. a -> Vec n a -> Vec (n+1) a` and
+    For a constructor `forall {a}. (1 x : a) -> Vec n a -> Vec (n+1) a` and
     scrutinee type `Vec 5 Int`:
-    1. Instantiate implicits with fresh metas: `?a -> Vec ?n ?a -> Vec (?n+1) ?a`
-    2. Collect explicit argument types: [?a, Vec ?n ?a]
-    3. Unify result type `Vec (?n+1) ?a` with scrutinee `Vec 5 Int`
-    4. This generates constraints: `?n+1 = 5`, `?a = Int`
-    5. Return field types with metas that will be solved: [Int, Vec 4 Int]
+    1. Instantiate implicits with fresh metas: `(1 x : ?a) -> Vec ?n ?a -> Vec (?n+1) ?a`
+    2. Collect explicit field (type, qty) pairs: `[(?a, .one), (Vec ?n ?a, .omega)]`
+    3. Unify result `Vec (?n+1) ?a` with scrutinee `Vec 5 Int` to solve indices
+    4. Field types become [Int, Vec 4 Int] once metas are solved, each carrying
+       its constructor-declared quantity.
 
-    This enables proper index inference in pattern matching. -/
+    Returning the quantities lets callers propagate linearity / erasure through
+    pattern bindings per the standard QTT rule `binding_qty = scrut_qty * field_qty` -/
 partial def extractConstructorFieldTypes (ctorTy : Value) (scrutTy : Value)
     (ctorName : Option String := none) (span : Span := default)
-    : TCM (Array Value) := do
-  -- Walk the constructor type, instantiating implicits and collecting explicit field types
-  let rec go (ty : Value) (acc : Array Value) : TCM (Array Value × Value) := do
+    : TCM (Array (Value × Quantity)) := do
+  let rec go (ty : Value) (acc : Array (Value × Quantity))
+      : TCM (Array (Value × Quantity) × Value) := do
     let ty' ← force ty
     match ty' with
-    | .vPi _qty binder _name dom cod =>
+    | .vPi qty binder _name dom cod =>
       if binder.isImplicit then
-        -- Implicit parameter: instantiate with fresh meta
         let metaVal ← TCM.freshMetaVal dom
         let resultTy ← applyClosure cod metaVal
         go resultTy acc
       else
-        -- Explicit parameter: this is a field type
-        -- Create a dummy value to apply the closure (for dependent fields)
         let lvl ← TCM.currentLevel
         let dummyVal := Value.vNeutral dom (.nVar ⟨"_field", lvl⟩)
         let resultTy ← applyClosure cod dummyVal
-        go resultTy (acc.push dom)
+        go resultTy (acc.push (dom, qty))
     | _ =>
-      -- Not a Pi type: this is the result type
       return (acc, ty')
 
-  let (fieldTypes, resultTy) ← go ctorTy #[]
+  let (fields, resultTy) ← go ctorTy #[]
 
-  -- Check for structurally impossible patterns before unification
   if ← structurallyIncompatible resultTy scrutTy then
     match ctorName with
     | some name => TCM.throw (.impossiblePattern name resultTy scrutTy span)
     | none => pure ()
 
-  -- Unify the constructor's result type with the scrutinee type
-  -- This generates constraints on the indices
   unify resultTy scrutTy
 
-  return fieldTypes
+  return fields
 
 /-- Collect available field names from a row -/
 partial def collectRowFields (row : Value) : TCM (Array String) := do
@@ -580,6 +555,14 @@ private def requireUniqueWiredRole (role : WiredRole) (span : Span) : TCM Global
     let details := String.intercalate ", " names.toList
     TCM.throw (.cannotInfer s!"wired role '{role.canonical}' is ambiguous: {details}" span none)
 
+/-- A binding produced by pattern elaboration -/
+structure PatternBinding where
+  fvarId : Unique
+  name : String
+  type : Value
+  qty : Quantity
+  deriving Inhabited
+
 /-- Build a nested Pair pattern from a list of core patterns: (a, b, c) → Pair(a, Pair(b, c))
     Requires @[wired_in "pair"] to be defined on a binary constructor. -/
 partial def buildNestedPairPattern (elems : List Soma.Core.Pattern) (span : Span)
@@ -612,13 +595,14 @@ partial def buildListPattern (elems : List Soma.Core.Pattern) (span : Span)
     | some info => pure (.ctor info.name info.ctorTag #[head, tailPat])
     | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
 
-/-- Convert a Syntax.Pattern to a Core.Pattern and simultaneously extract binding types -/
-partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Value)
-    : TCM (Soma.Core.Pattern × List (Unique × String × Value)) := do
+/-- Convert a Syntax.Pattern to a Core.Pattern and the `PatternBinding`s it introduces -/
+partial def convertPatternWithBindings
+    (pat : Soma.Syntax.Pattern) (scrutTy : Value) (scrutQty : Quantity)
+    : TCM (Soma.Core.Pattern × List PatternBinding) := do
   match pat with
   | .var name =>
     let u ← TCM.freshUnique name.name
-    pure (.var (some u), [(u, name.name, scrutTy)])
+    pure (.var (some u), [{ fvarId := u, name := name.name, type := scrutTy, qty := scrutQty }])
   | .wildcard _ => pure (.wildcard, [])
   | .lit l =>
     pure (.lit (match l with
@@ -638,23 +622,24 @@ partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Va
       | none => pure none
     match ctorInfo? with
     | some ctorInfo =>
-      let fieldTypes ← extractConstructorFieldTypes ctorInfo.type scrutTy (some name.name) span
+      let fields ← extractConstructorFieldTypes ctorInfo.type scrutTy (some name.name) span
       let mut coreArgs : Array Soma.Core.Pattern := #[]
-      let mut bindings : List (Unique × String × Value) := []
+      let mut bindings : List PatternBinding := []
       for h : i in [:args.size] do
         let arg := args[i]
-        let fieldTy ← if h' : i < fieldTypes.size then
-          pure fieldTypes[i]
+        let (fieldTy, fieldQty) ← if h' : i < fields.size then
+          pure fields[i]
         else
-          TCM.freshMetaVal (.vType .zero)
-        let (corePat, argBindings) ← convertPatternWithBindings arg fieldTy
+          let ty ← TCM.freshMetaVal (.vType .zero)
+          pure (ty, .omega)
+        let (corePat, argBindings) ← convertPatternWithBindings arg fieldTy (scrutQty * fieldQty)
         coreArgs := coreArgs.push corePat
         bindings := bindings ++ argBindings
       pure (.ctor ctorInfo.name ctorInfo.ctorTag coreArgs, bindings)
     | none =>
       TCM.throw (.unboundVariable name.name span #[])
   | .tuple elems span => do
-    let (coreElems, bindings) ← convertTuplePatternWithBindings elems.toList scrutTy
+    let (coreElems, bindings) ← convertTuplePatternWithBindings elems.toList scrutTy scrutQty
     let nested ← buildNestedPairPattern coreElems span
     pure (nested, bindings)
   | .list elems span => do
@@ -668,9 +653,9 @@ partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Va
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
     let mut coreElems : List Soma.Core.Pattern := []
-    let mut bindings : List (Unique × String × Value) := []
+    let mut bindings : List PatternBinding := []
     for elem in elems do
-      let (corePat, elemBindings) ← convertPatternWithBindings elem elemTy
+      let (corePat, elemBindings) ← convertPatternWithBindings elem elemTy scrutQty
       coreElems := coreElems ++ [corePat]
       bindings := bindings ++ elemBindings
     let listPat ← buildListPattern coreElems span
@@ -685,60 +670,64 @@ partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Va
       let listId := listInfo.name.id
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
-    let (coreHead, headBindings) ← convertPatternWithBindings head elemTy
-    let (coreTail, tailBindings) ← convertPatternWithBindings tail scrutTy
+    let (coreHead, headBindings) ← convertPatternWithBindings head elemTy scrutQty
+    let (coreTail, tailBindings) ← convertPatternWithBindings tail scrutTy scrutQty
     match ← TCM.lookupWiredIn .cons with
     | some info => pure (.ctor info.name info.ctorTag #[coreHead, coreTail], headBindings ++ tailBindings)
     | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
-  | .parens inner _ => convertPatternWithBindings inner scrutTy
-  | .typed pat _ _ => convertPatternWithBindings pat scrutTy
+  | .parens inner _ => convertPatternWithBindings inner scrutTy scrutQty
+  | .typed pat _ _ => convertPatternWithBindings pat scrutTy scrutQty
   | .variant label arg _ => do
     match arg with
     | some p =>
       let argTy ← TCM.freshMetaVal (.vType .zero)
-      let (coreArg, bindings) ← convertPatternWithBindings p argTy
+      let (coreArg, bindings) ← convertPatternWithBindings p argTy scrutQty
       pure (.inject label.name (some coreArg), bindings)
     | none => pure (.inject label.name none, [])
 where
-  convertTuplePatternWithBindings (elems : List Soma.Syntax.Pattern) (ty : Value)
-      : TCM (List Soma.Core.Pattern × List (Unique × String × Value)) := do
+  convertTuplePatternWithBindings
+      (elems : List Soma.Syntax.Pattern) (ty : Value) (scrutQty : Quantity)
+      : TCM (List Soma.Core.Pattern × List PatternBinding) := do
     match elems with
     | [] => return ([], [])
     | [lastElem] =>
-      let (pat, bindings) ← convertPatternWithBindings lastElem ty
+      let (pat, bindings) ← convertPatternWithBindings lastElem ty scrutQty
       pure ([pat], bindings)
     | elem :: rest =>
       let ty' ← force ty
       match ty' with
-      | .vSigma _ _ fstTy sndClos =>
-        let (elemPat, elemBindings) ← convertPatternWithBindings elem fstTy
+      | .vSigma fstQty _ fstTy sndClos =>
+        let (elemPat, elemBindings) ←
+          convertPatternWithBindings elem fstTy (scrutQty * fstQty)
         let lvl ← TCM.currentLevel
         let dummyVal := Value.vNeutral fstTy (.nVar ⟨"_", lvl⟩)
         let sndTy ← applyClosure sndClos dummyVal
-        let (restPats, restBindings) ← convertTuplePatternWithBindings rest sndTy
+        let (restPats, restBindings) ←
+          convertTuplePatternWithBindings rest sndTy scrutQty
         return (elemPat :: restPats, elemBindings ++ restBindings)
       | _ =>
         let mut pats : List Soma.Core.Pattern := []
-        let mut bindings : List (Unique × String × Value) := []
+        let mut bindings : List PatternBinding := []
         for e in (elem :: rest) do
           let eTy ← TCM.freshMetaVal (.vType .zero)
-          let (p, bs) ← convertPatternWithBindings e eTy
+          let (p, bs) ← convertPatternWithBindings e eTy scrutQty
           pats := pats ++ [p]
           bindings := bindings ++ bs
         return (pats, bindings)
 
-/-- Convert a list of Syntax.Patterns with corresponding scrutinee types -/
-partial def convertPatternListWithBindings (pats : List Soma.Syntax.Pattern) (scrutTys : List Value)
-    : TCM (Array Soma.Core.Pattern × List (Unique × String × Value)) := do
-  match pats, scrutTys with
+/-- Convert a list of Syntax.Patterns against parallel `(scrutineeType, scrutineeQty)` pairs -/
+partial def convertPatternListWithBindings
+    (pats : List Soma.Syntax.Pattern) (scruts : List (Value × Quantity))
+    : TCM (Array Soma.Core.Pattern × List PatternBinding) := do
+  match pats, scruts with
   | [], _ => return (#[], [])
-  | pat :: rest, ty :: tys =>
-    let (corePat, patBindings) ← convertPatternWithBindings pat ty
+  | pat :: rest, (ty, qty) :: tys =>
+    let (corePat, patBindings) ← convertPatternWithBindings pat ty qty
     let (restPats, restBindings) ← convertPatternListWithBindings rest tys
     return (#[corePat] ++ restPats, patBindings ++ restBindings)
   | pat :: rest, [] =>
     let freshTy ← TCM.freshMetaVal (.vType .zero)
-    let (corePat, patBindings) ← convertPatternWithBindings pat freshTy
+    let (corePat, patBindings) ← convertPatternWithBindings pat freshTy .omega
     let (restPats, restBindings) ← convertPatternListWithBindings rest []
     return (#[corePat] ++ restPats, patBindings ++ restBindings)
 
@@ -846,7 +835,7 @@ where
     | .case scruts arms _ => do
       let (scrutTys, scrutsExpr) ← inferSyntaxList scruts.toList
       let resultTy ← TCM.freshMetaVal (.vType .zero)
-      let armsExpr ← inferSyntaxArms arms.toList scrutTys resultTy
+      let armsExpr ← inferSyntaxArms arms.toList scrutTys scrutsExpr resultTy
       let resultTyExpr ← quoteValueToExpr resultTy
       return (resultTy, .«case» scrutsExpr armsExpr resultTyExpr)
 
@@ -1043,7 +1032,9 @@ partial def inferSyntaxLamBody
   | (name, _tyAnnot) :: rest =>
     let paramTy ← TCM.freshMetaVal (.vType .zero)
     let bindingId ← TCM.freshLocalId name.name
-    TCM.withBinding name.name bindingId paramTy .omega .explicit span do
+    -- Inference mode has no expected Pi to read quantities from, so every
+    -- parameter binds at `.omega`
+    withCheckedBinding name.name bindingId paramTy .omega .explicit span do
       match ← TCM.lookupLocal name.name with
       | some entry =>
         let domExpr ← quoteValueToExpr paramTy
@@ -1125,18 +1116,32 @@ partial def inferSyntaxRecordFields (fields : List (Soma.Syntax.QualName × Soma
 
 /-- Infer arms of a case expression from Syntax.MatchArm -/
 partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
-    (scrutTys : List Value) (expectedTy : Value)
+    (scrutTys : List Value) (scrutExprs : Array Soma.Core.Expr) (expectedTy : Value)
     : TCM (Array Soma.Core.Arm) := do
+  let ctx ← TCM.getCtx
+  let mut scruts : List (Value × Quantity) := []
+  let mut i : Nat := 0
+  for ty in scrutTys do
+    let baseQty : Quantity :=
+      if h : i < scrutExprs.size then
+        match scrutExprs[i] with
+        | .fvar u _ =>
+          match ctx.locals.find? (·.fvarId == u) with
+          | some entry => entry.qty
+          | none => .omega
+        | _ => .omega
+      else .omega
+    scruts := scruts ++ [(ty, baseQty)]
+    i := i + 1
   let mut results : Array Soma.Core.Arm := #[]
   let mut armUsagesList : Array UsageSnapshot := #[]
   for arm in arms do
     let pats := arm.patterns.toList
-    -- Single unified pass: convert patterns and extract bindings with shared unique IDs
-    let (corePatterns, bindingsWithTypes) ← convertPatternListWithBindings pats scrutTys
+    let (corePatterns, bindings) ← convertPatternListWithBindings pats scruts
     let (bodyExpr, armUsages) ← captureUsages
-      (inferSyntaxArmBodyWithBindings bindingsWithTypes arm.body expectedTy arm.span)
-    let abstractedBody := bindingsWithTypes.foldl
-      (fun body (bindingId, _, _) => body.abstractFVar bindingId) bodyExpr
+      (inferSyntaxArmBodyWithBindings bindings arm.body expectedTy arm.span)
+    let abstractedBody := bindings.foldl
+      (fun body b => body.abstractFVar b.fvarId) bodyExpr
     results := results.push (Soma.Core.Arm.mk corePatterns abstractedBody)
     armUsagesList := armUsagesList.push armUsages
   let span := match arms.head? with
@@ -1144,17 +1149,19 @@ partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
     | none => default
   let joined ← checkMultiBranchUsages armUsagesList span
   applyUsages joined
+  Coverage.checkExhaustiveness results scrutTys span
   return results
 
-/-- Helper: extend context with bindings and check body -/
+/-- Extend the context with pattern bindings (each carrying its computed QTT
+    quantity) and check the arm body against the expected arm type -/
 partial def inferSyntaxArmBodyWithBindings
-  (bindings : List (Unique × String × Value))
+    (bindings : List PatternBinding)
     (body : Soma.Syntax.Expr) (expectedTy : Value) (span : Span)
     : TCM Soma.Core.Expr := do
   match bindings with
   | [] => checkSyntax body expectedTy
-  | (bindingId, name, bindingTy) :: rest =>
-    TCM.withBinding name bindingId bindingTy .omega .explicit span do
+  | b :: rest =>
+    withCheckedBinding b.name b.fvarId b.type b.qty .explicit span do
       inferSyntaxArmBodyWithBindings rest body expectedTy span
 
 /-- Infer nested tuple as nested pairs -/

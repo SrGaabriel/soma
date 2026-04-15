@@ -146,9 +146,7 @@ def checkMultiBranchUsages (branches : Array UsageSnapshot) (span : Span)
     After the action, checks that the bound variable was used correctly. -/
 def withCheckedBinding (name : String) (bindingId : Unique) (ty : Value)
     (qty : Quantity) (binder : BinderInfo) (span : Span) (action : TCM α) : TCM α := do
-  -- Run the action under the binding
   let result ← TCM.withBinding name bindingId ty qty binder span action
-  -- Check usage of the bound variable
   if qty == .one then
     checkLinearBinding bindingId span
   return result

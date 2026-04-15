@@ -447,6 +447,33 @@ end
 def subtype (v1 v2 : Value) : TCM Bool :=
   convert v1 v2
 
+/-- Check if two values have structurally incompatible heads -/
+partial def structurallyIncompatible (v1 v2 : Value) : TCM Bool := do
+  let v1' ← force v1
+  let v2' ← force v2
+  match v1', v2' with
+  | .vConstructor n1 _ args1 _, .vConstructor n2 _ args2 _ =>
+    if n1 != n2 then return true
+    if args1.length != args2.length then return true
+    incompatPairwise args1 args2
+  | .vIntLit n1, .vIntLit n2 => return n1 != n2
+  | .vFloatLit f1, .vFloatLit f2 => return f1 != f2
+  | .vStringLit s1, .vStringLit s2 => return s1 != s2
+  | .vPrimTy p1, .vPrimTy p2 => return p1 != p2
+  | .vDataType id1 ps1, .vDataType id2 ps2 =>
+    if id1 != id2 then return true
+    if ps1.length != ps2.length then return true
+    incompatPairwise ps1 ps2
+  | _, _ => return false
+where
+  /-- True when any positional pair of values is structurally incompatible -/
+  incompatPairwise (l1 l2 : List Value) : TCM Bool := do
+    match l1, l2 with
+    | a1 :: rest1, a2 :: rest2 =>
+      if ← structurallyIncompatible a1 a2 then return true
+      incompatPairwise rest1 rest2
+    | _, _ => return false
+
 /-- Assert that two values are convertible, throwing an error if not -/
 def assertConvert (v1 v2 : Value) (purpose : CheckPurpose) : TCM Unit := do
   let eq ← convert v1 v2

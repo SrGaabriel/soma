@@ -400,6 +400,12 @@ inductive TCError where
       (scrutTy : Value)
       (span : Span)
 
+  /-- Pattern match does not cover every inhabitant of the scrutinee type -/
+  | nonExhaustiveMatch
+      (scrutType : Value)
+      (missingPatterns : Array String)
+      (span : Span)
+
   deriving Inhabited
 
 namespace TCError
@@ -437,6 +443,7 @@ def span : TCError → Span
   | .positivityViolation _ _ s _ => s
   | .nonStructuralRecursion _ s _ _ => s
   | .impossiblePattern _ _ _ s => s
+  | .nonExhaustiveMatch _ _ s => s
 
 /-- Build secondary labels from constraint chain -/
 private def chainToLabels (chain : Array ConstraintInfo) : Array Label :=
@@ -760,6 +767,29 @@ def toDiagnostic : TCError → Diagnostic
       |>.withCode "E1030"
       |>.withNote "the constructor's index does not match the scrutinee type"
       |>.withHelp "remove this pattern — it can never match"
+
+  | .nonExhaustiveMatch scrutType missing span =>
+    let primaryDetail :=
+      if missing.isEmpty then
+        "pattern match does not cover every case"
+      else
+        let quoted := missing.toList.map (s!"`{·}`")
+        s!"missing: {String.intercalate ", " quoted}"
+    let notes :=
+      if missing.isEmpty then
+        #[s!"scrutinee has type `{scrutType}`"]
+      else
+        #[ s!"scrutinee has type `{scrutType}`"
+         , "each listed shape can occur at runtime but no arm matches it"
+         ]
+    { severity := .error
+    , code := some "E1031"
+    , message := "non-exhaustive pattern match"
+    , primaryLabel := Label.primary span primaryDetail
+    , secondaryLabels := #[]
+    , notes := notes
+    , help := some "add an arm for each listed case, or a catch-all variable / `_` pattern"
+    }
 
 instance : ToString TCError where
   toString err := err.toDiagnostic.message

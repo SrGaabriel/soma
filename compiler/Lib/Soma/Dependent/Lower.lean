@@ -266,15 +266,15 @@ private def lowerTypeDecl
               { name := ctorName, tag := i, fieldTypeSyntax := fieldTypes, sigSyntax := none, attrs := ctor.attrs }
           acc := acc.push lowered
       acc
-    (some (.algebraic attrs typeName typeVarNames ctors), diags, supply)
-  | .record attrs name params _ctorName fields _ =>
+    (some (.algebraic attrs typeName typeVarNames ctors span), diags, supply)
+  | .record attrs name params _ctorName fields span =>
     let typeName := registry.requireTopLevel name.name
     let typeVarNames := params.map (·.name.name)
     let (ctorUnique, supply'') := supply.fresh "New"
     let ctorQName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
     let fieldsWithOptNames := fields.map fun field =>
       (field.name.map (·.name), field.type_)
-    (some (.record attrs typeName typeVarNames ctorQName fieldsWithOptNames), #[], supply'')
+    (some (.record attrs typeName typeVarNames ctorQName fieldsWithOptNames span), #[], supply'')
   | _ => (none, #[], supply)
 
 /-- Rewrite single-field record types in arrow domain position as implicit binders -/

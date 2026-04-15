@@ -717,7 +717,7 @@ def extractPublicSymbols
   -- Extract type definitions and constructors
   for typeDef in untypedModule.types do
     match typeDef with
-    | .algebraic _ typeName typeVarNames constructors =>
+    | .algebraic _ typeName typeVarNames constructors typeSpan =>
       let typeNameStr := typeName.display
       if shouldExport typeNameStr then
         let typeSym : Symbol := {
@@ -726,7 +726,7 @@ def extractPublicSymbols
           kind := .type
           module := moduleName
           package := packageName
-          span := Span.uninhabited
+          span := typeSpan
         }
         acc := acc.insert typeSym (Value.typeConstructorKind typeVarNames.size)
         addedNames := addedNames.insert typeNameStr
@@ -743,13 +743,13 @@ def extractPublicSymbols
               kind := .dataCon typeNameStr ctor.tag
               module := moduleName
               package := packageName
-              span := Span.uninhabited
+              span := typeSpan
             }
             acc := acc.insert ctorSym ctorInfo.type
             addedNames := addedNames.insert ctorSimpleName
           | none => pure ()
 
-    | .record _ recordName typeVarNames ctorName fields =>
+    | .record _ recordName typeVarNames ctorName fields typeSpan =>
       let recordNameStr := recordName.display
       if shouldExport recordNameStr then
         let recordSym : Symbol := {
@@ -758,7 +758,7 @@ def extractPublicSymbols
           kind := .type
           module := moduleName
           package := packageName
-          span := Span.uninhabited
+          span := typeSpan
         }
         acc := acc.insert recordSym (Value.typeConstructorKind typeVarNames.size)
         addedNames := addedNames.insert recordNameStr
@@ -773,7 +773,7 @@ def extractPublicSymbols
             kind := .dataCon recordNameStr 0
             module := moduleName
             package := packageName
-            span := Span.uninhabited
+            span := typeSpan
           }
           acc := acc.insert ctorSym ctorInfo.type
           addedNames := addedNames.insert ctorName.display

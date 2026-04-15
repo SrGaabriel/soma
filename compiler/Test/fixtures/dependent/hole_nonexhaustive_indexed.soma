@@ -1,12 +1,21 @@
 // expect: error non-exhaustive
+// Indexed non-exhaustive match: `Flag Nat::Zero` has three declared
+// constructors, but index refinement filters `Furled` (whose result type
+// `Flag (Succ Zero)` is structurally incompatible with the scrutinee's
+// `Zero`). That leaves `Raised` and `Lowered` as live candidates; matching
+// only `Raised` should be reported as missing `Flag::Lowered`, not
+// `Flag::Furled` — a stronger statement than plain ADT coverage because it
+// tests that coverage interacts correctly with `structurallyIncompatible`
+// on dependent indices.
 
 inductive Nat where
     | Zero : Nat
     | Succ : Nat -> Nat
 
-inductive Vec (n : Nat) (a : Type) where
-    | Nil : Vec Nat::Zero a
-    | Cons : a -> Vec m a -> Vec (Nat::Succ m) a
+inductive Flag (n : Nat) where
+    | Raised : Flag Nat::Zero
+    | Lowered : Flag Nat::Zero
+    | Furled : Flag (Nat::Succ Nat::Zero)
 
-def unsafe_head {n : Nat} {a : Type} : Vec n a -> a
-    | Vec::Cons x _ => x
+def peek : Flag Nat::Zero -> Int32
+    | Flag::Raised => 1

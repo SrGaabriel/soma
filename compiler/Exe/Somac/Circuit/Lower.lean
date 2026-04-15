@@ -1478,7 +1478,7 @@ def registerTypes (types : Array Soma.Core.TypeDef)
     (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
   for typeDef in types do
     match typeDef with
-    | .algebraic _attrs typeName _tvars ctors =>
+    | .algebraic _attrs typeName _tvars ctors _ =>
       let mut usedMetadata := false
       if let some g := globals then
         if let some typeQN := g.resolve #[] #[] typeName.display then
@@ -1501,7 +1501,7 @@ def registerTypes (types : Array Soma.Core.TypeDef)
                 LowerM.modifyCtx fun ctx =>
                   ctx.registerCtorType typeQN.id ctor.tag ctorMeta.type
 
-    | .record _attrs recordName _tvars ctorName fields =>
+    | .record _attrs recordName _tvars ctorName fields _ =>
       let mut usedMetadata := false
       if let some g := globals then
         if let some typeQN := g.resolve #[] #[] recordName.display then

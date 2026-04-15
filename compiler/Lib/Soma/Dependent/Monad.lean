@@ -1107,15 +1107,10 @@ def extend (ctx : TCContext) (name : String) (bindingId : Unique)
   }
   -- Create a neutral variable for NbE
   let varVal := Value.vNeutral ty (Neutral.nVar ⟨name, lvl⟩)
-  -- When entering a zero-quantity binder, we enter erased context
-  -- and set the quantity multiplier to zero (all usages become erased)
-  let enteringErased := qty == .zero
   { ctx with
     locals := entry :: ctx.locals
     localsByName := ctx.localsByName.insert name entry
     env := ctx.env.extend name varVal
-    inErased := ctx.inErased || enteringErased
-    qtyMultiplier := if enteringErased then .zero else ctx.qtyMultiplier
   }
 
 /-- Update the current span -/

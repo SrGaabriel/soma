@@ -136,31 +136,6 @@ def checkFunctionTotality (fn : Soma.Core.UntypedFunction) (body : Soma.Core.Exp
   let (registry', result) := Totality.checkAndRegisterTotality fnInfo body registry
   (registry', result.errors)
 
-/-- Check positivity for a data type definition -/
-def checkDataTypePositivity (typeDef : Soma.Core.UntypedTypeDef) (ctx : TCContext) (state : TCState)
-    : Array TCError :=
-  match typeDef with
-  | .algebraic _ name _params constructors =>
-    let typeName := name.display
-    let unique := name.id
-
-    -- Elaborate each constructor's field types
-    let ctorTypes := constructors.foldl (init := #[]) fun acc ctor =>
-      ctor.fieldTypeSyntax.foldl (init := acc) fun acc2 fieldTyExpr =>
-        match (Elaborate.elaborateType Elaborate.ElabEnv.empty fieldTyExpr).run ctx state with
-        | .ok (fieldVal, _) => acc2.push fieldVal
-        | .error _ => acc2  -- Skip fields that fail to elaborate
-
-    -- Run positivity check
-    match Totality.checkDataTypePositivity unique ctorTypes Span.uninhabited with
-    | .ok => #[]
-    | .violated reason violationSpan =>
-      #[TCError.positivityViolation typeName reason violationSpan none]
-
-  | .record _ _ _ _ _ =>
-    -- Records are always positive
-    #[]
-
 /-- Extract explicit parameter types from a Pi type, returning (paramTypes, resultType) -/
 partial def extractParamTypes (ty : Value) (numParams : Nat) : TCM (Array Value × Value) := do
   if numParams == 0 then
@@ -250,7 +225,7 @@ def withSignaturePrefixBindings (allParams : Array (String × Value × Soma.Core
     else
       let (bindingId, paramName, binder, qty) := allBindings[idx]!
       let (_, ty, _, _) := allParams[idx]!
-      TCM.withBinding paramName bindingId ty qty binder span do
+      withCheckedBinding paramName bindingId ty qty binder span do
         go (idx + 1)
   let result ← go 0
   return (explicitBindings, result)
@@ -461,13 +436,13 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
   let mut g := globals
   for typeDef in module.types do
     match typeDef with
-    | .algebraic attrs typeName _ ctors =>
+    | .algebraic attrs typeName _ ctors _ =>
       if let some typeInfo := g.getDef typeName then
         g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {typeName.display}"
       for ctor in ctors do
         if let some ctorInfo := g.getDef ctor.name then
           g ← registerWiredRoleFromAttrs g ctor.attrs ctorInfo s!"constructor {ctor.name.display}"
-    | .record attrs recordName _ _ _ =>
+    | .record attrs recordName _ _ _ _ =>
       if let some typeInfo := g.getDef recordName then
         g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {recordName.display}"
   for fn in module.functions do
@@ -544,7 +519,7 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
   let mut globals := ctx.globals
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName typeVarNames _ =>
+    | .algebraic _ typeName typeVarNames _ _ =>
       let typeQN := typeName
       globals := globals.registerInductive typeQN .algebraic typeVarNames
       let dataTypeInfo : GlobalInfo := {
@@ -555,7 +530,7 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
         origin := .typeDecl
       }
       globals := globals.register ns typeName.display dataTypeInfo
-    | .record _ recordName typeVarNames _ fields =>
+    | .record _ recordName typeVarNames _ fields _ =>
       let typeQN := recordName
       globals := globals.registerInductive typeQN .record typeVarNames
         (fields.filterMap (·.1))
@@ -577,7 +552,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
   -- First pass: Register all data types
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName typeVarNames _ =>
+    | .algebraic _ typeName typeVarNames _ _ =>
       let typeQN := typeName
       globals := globals.registerInductive typeQN .algebraic typeVarNames
       let dataTypeInfo : GlobalInfo := {
@@ -588,7 +563,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         origin := .typeDecl
       }
       globals := globals.register ns typeName.display dataTypeInfo
-    | .record _ recordName typeVarNames _ fields =>
+    | .record _ recordName typeVarNames _ fields _ =>
       let typeQN := recordName
       globals := globals.registerInductive typeQN .record typeVarNames
         (fields.filterMap (·.1))
@@ -604,7 +579,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
   -- Second pass: Register constructors under their parent type namespace
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName typeVarNames constructors =>
+    | .algebraic _ typeName typeVarNames constructors _ =>
       let typeNs := ns.push typeName.display
       for ctor in constructors do
         let ctorType ← TCM.recoverWithM
@@ -631,7 +606,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
           arity := ctor.fieldTypeSyntax.size
           type := ctorType
         }
-    | .record _ recordName typeVarNames ctorName fields =>
+    | .record _ recordName typeVarNames ctorName fields _ =>
       let typeNs := ns.push recordName.display
       let ctorType ← TCM.recoverWithM
         (TCM.withGlobals globals (elaborateCtorType recordName typeVarNames (fields.map (·.2))))
@@ -664,6 +639,22 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
             origin := .projection
           }
           globals := globals.register typeNs fieldName accessorInfo
+
+  for typeDef in module.types do
+    match typeDef with
+    | .algebraic _ typeName _ _ typeSpan =>
+      match globals.lookupInductive typeName with
+      | some indMeta =>
+        let ctorTypes := indMeta.ctors.map (·.type)
+        match Totality.checkDataTypePositivity typeName.id ctorTypes typeSpan with
+        | .ok => pure ()
+        | .violated reason violationSpan =>
+          -- Prefer the positivity check's own violation span (pointing at the negative occurrence)
+          let reportSpan :=
+            if violationSpan == Span.uninhabited then typeSpan else violationSpan
+          TCM.addError (.positivityViolation typeName.display reason reportSpan none)
+      | none => pure ()
+    | .record _ _ _ _ _ _ => pure ()
 
   -- Register type class heads as globals
   for typeClass in module.typeClasses do
@@ -1148,11 +1139,11 @@ def buildGlobalsIncremental
   -- First pass: Register all data types
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName typeVarNames _ =>
+    | .algebraic _ typeName typeVarNames _ _ =>
       let nameStr := typeName.display
       let isDirty := dirtyNames.contains nameStr
       globals ← registerDataType globals nameStr .algebraic typeVarNames #[] (some prevGlobals) isDirty
-    | .record _ recordName typeVarNames _ fields =>
+    | .record _ recordName typeVarNames _ fields _ =>
       let nameStr := recordName.display
       let isDirty := dirtyNames.contains nameStr
       globals ← registerDataType globals nameStr .record typeVarNames (fields.filterMap (·.1)) (some prevGlobals) isDirty
@@ -1160,11 +1151,11 @@ def buildGlobalsIncremental
   -- Second pass: Register constructors
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName typeVarNames constructors =>
+    | .algebraic _ typeName typeVarNames constructors _ =>
       let isDirty := dirtyNames.contains typeName.display
       for ctor in constructors do
         globals ← registerConstructor globals typeName typeVarNames ctor (some prevGlobals) isDirty
-    | .record _ recordName typeVarNames ctorName fields =>
+    | .record _ recordName typeVarNames ctorName fields _ =>
       let isDirty := dirtyNames.contains recordName.display
       globals ← registerRecordConstructor globals recordName typeVarNames ctorName fields (some prevGlobals) isDirty
 

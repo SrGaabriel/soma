@@ -149,14 +149,32 @@ partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value)
 
 end
 
-/-- Check positivity for a data type definition -/
+/-- Walk the outer Pi chain of a constructor type -/
+partial def checkConstructorType (unique : Unique) (ctorTy : Value) : PositivityResult :=
+  match ctorTy with
+  | .vPi _ _ _ dom cod =>
+    match checkPositivityValue unique .positive dom with
+    | .violated reason span => .violated reason span
+    | .ok =>
+      let freshVar := Value.vNeutral dom (.nVar ⟨cod.name, ⟨cod.env.size⟩⟩)
+      match cod.body with
+      | some body =>
+        let env' := cod.env.extend cod.name freshVar
+        let evalCtx : EvalCtx :=
+          { env := env', globals := GlobalEnv.empty, metas := MetaState.empty }
+        let rest := evalCoreExpr evalCtx body
+        checkConstructorType unique rest
+      | none => .ok
+  | _ => .ok
+
+/-- Check strict positivity for a data type definition -/
 def checkDataTypePositivity (unique : Unique) (constructors : Array Value)
     (span : Span) : PositivityResult :=
   constructors.foldl (init := PositivityResult.ok) fun acc ctorTy =>
     match acc with
     | .violated _ _ => acc
     | .ok =>
-      match checkPositivityValue unique .positive ctorTy with
+      match checkConstructorType unique ctorTy with
       | .violated reason _ => .violated reason span
       | .ok => .ok
 
@@ -204,13 +222,5 @@ def validateTypeIndex (idx : Value) (registry : TotalityRegistry) (span : Span) 
   | name :: _ =>
     let u ← TCM.freshUnique name
     TCM.throw (.partialInTypeIndex ⟨u⟩ span)
-
-/-- Check and report positivity for a data type definition -/
-def checkAndReportPositivity (typeName : String) (unique : Unique)
-    (constructorTypes : Array Value) (span : Span) : TCM Unit := do
-  match checkDataTypePositivity unique constructorTypes span with
-  | .ok => pure ()
-  | .violated reason violationSpan =>
-    TCM.throw (.positivityViolation typeName reason violationSpan none)
 
 end Soma.Dependent.Totality

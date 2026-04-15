@@ -244,14 +244,13 @@ end LinearTests
 
 namespace ErasedTests
 
-/-- Test: Erased variable used in erased context is OK -/
+/-- Test: Erased variable used inside `inErasedContext` is OK -/
 def testErasedInErasedContext : IO TestResult := do
   let xId := testUnique "x"
   let action : TCM Unit := do
     TCM.withBinding "x" xId (.vPrimTy .int) .zero .explicit testSpan do
-      -- When we bind with qty=0, we automatically enter erased context
-      -- So this should succeed
-      checkNotErased xId testSpan
+      TCM.inErasedContext do
+        checkNotErased xId testSpan
   match action.run' with
   | .ok () => return .passed
   | .error e => return .failed s!"Should succeed in erased context: {e}"
@@ -290,16 +289,31 @@ def testNonErasedAtRuntime : IO TestResult := do
   | .ok () => return .passed
   | .error e => return .failed s!"Should succeed for non-erased var: {e}"
 
-/-- Test: Binding with qty=0 automatically enters erased context -/
-def testZeroBindingEntersErased : IO TestResult := do
+/-- Test: Binding with qty=0 does NOT by itself enter an erased context -/
+def testZeroBindingDoesNotEnterErased : IO TestResult := do
   let xId := testUnique "x"
   let action : TCM Bool := do
     TCM.withBinding "x" xId (.vPrimTy .int) .zero .explicit testSpan do
       TCM.isInErasedContext
   match action.run' with
-  | .ok true => return .passed
-  | .ok false => return .failed "Should be in erased context with qty=0 binding"
+  | .ok false => return .passed
+  | .ok true => return .failed "Should NOT be in erased context after qty=0 binding"
   | .error e => return .failed s!"Unexpected error: {e}"
+
+/-- Test: Binding with qty=0 and then using the variable at runtime -/
+def testZeroBindingRuntimeUseErrors : IO TestResult := do
+  let xId := testUnique "x"
+  let action : TCM Unit := do
+    TCM.withBinding "x" xId (.vPrimTy .int) .zero .explicit testSpan do
+      checkNotErased xId testSpan
+  match action.run' with
+  | .ok _ => return .failed "Should have failed: erased variable used at runtime"
+  | .error e =>
+    match e with
+    | .erasedUsedAtRuntime name _ _ =>
+      if name == "x" then return .passed
+      else return .failed s!"Wrong variable: {name}"
+    | _ => return .failed s!"Wrong error type: {e}"
 
 def run : IO TestRunner := do
   IO.println "  === Erased Variable Tests ==="
@@ -308,7 +322,8 @@ def run : IO TestRunner := do
   runner := runner.record "erased_in_erased_context" (← testErasedInErasedContext)
   runner := runner.record "erased_at_runtime" (← testErasedAtRuntime)
   runner := runner.record "non_erased_at_runtime" (← testNonErasedAtRuntime)
-  runner := runner.record "zero_binding_enters_erased" (← testZeroBindingEntersErased)
+  runner := runner.record "zero_binding_does_not_enter_erased" (← testZeroBindingDoesNotEnterErased)
+  runner := runner.record "zero_binding_runtime_use_errors" (← testZeroBindingRuntimeUseErrors)
 
   return runner
 

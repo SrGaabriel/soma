@@ -544,14 +544,14 @@ def hashFunction (fn : Soma.Core.UntypedFunction) : UInt64 :=
 /-- Hash a type definition for incremental checking -/
 def hashTypeDef (td : Soma.Core.TypeDef) : UInt64 :=
   match td with
-  | .algebraic attrs name typeVars ctors =>
+  | .algebraic attrs name typeVars ctors _ =>
     let attrsHash := attrs.foldl (fun acc a => combineHash acc (hashString a.name.name)) 0
     let nameHash := hashString name.display
     let varsHash := typeVars.foldl (fun acc v => combineHash acc (hashString v)) 0
     let ctorsHash := ctors.foldl (fun acc ctor =>
       combineHash acc (hashString ctor.name.display)) 0
     combineHashes #[0, attrsHash, nameHash, varsHash, ctorsHash]  -- 0 = algebraic tag
-  | .record attrs name typeVars ctorName fields =>
+  | .record attrs name typeVars ctorName fields _ =>
     let attrsHash := attrs.foldl (fun acc a => combineHash acc (hashString a.name.name)) 0
     let nameHash := hashString name.display
     let varsHash := typeVars.foldl (fun acc v => combineHash acc (hashString v)) 0
@@ -574,8 +574,8 @@ def hashModuleDefinitions (moduleName : String) (module : Soma.Core.UntypedModul
   -- Hash types
   for td in module.types do
     let typeName := match td with
-      | .algebraic _ name _ _ => name.display
-      | .record _ name _ _ _ => name.display
+      | .algebraic _ name _ _ _ => name.display
+      | .record _ name _ _ _ _ => name.display
     let defId := DefId.mk moduleName typeName
     let typeHash := hashTypeDef td
     hashes := hashes.insert defId typeHash
