@@ -325,7 +325,7 @@ jobs:
 
             - name: Setup Zig
               if: matrix.project == 'compiler'
-              uses: mlugg/setup-zig@v1
+              uses: mlugg/setup-zig@v2
               with:
                   version: ${{ env.ZIG_VERSION }}
 
