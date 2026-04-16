@@ -9,10 +9,14 @@ use crate::core::{
     find_project_root,
 };
 
+#[cfg(windows)]
 const HWND_BROADCAST: *mut std::ffi::c_void = 0xffff as *mut std::ffi::c_void;
+#[cfg(windows)]
 const WM_SETTINGCHANGE: u32 = 0x001A;
+#[cfg(windows)]
 const SMTO_ABORTIFHUNG: u32 = 0x0002;
 
+#[cfg(windows)]
 #[link(name = "user32")]
 unsafe extern "system" {
     fn SendMessageTimeoutW(

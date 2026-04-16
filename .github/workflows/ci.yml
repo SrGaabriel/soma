@@ -13,10 +13,8 @@ on:
             - "LICENSE"
 
 env:
-    GHC_VERSION: "9.12.2"
-    CABAL_VERSION: "3.12"
     RUST_STABLE: "stable"
-    RUST_NIGHTLY: "nightly"
+    ZIG_VERSION: "0.15.2"
 
 jobs:
     svm-build:
@@ -324,6 +322,12 @@ jobs:
             - name: Update Lake packages
               run: lake update
               shell: bash
+
+            - name: Setup Zig
+              if: matrix.project == 'compiler'
+              uses: mlugg/setup-zig@v1
+              with:
+                  version: ${{ env.ZIG_VERSION }}
 
             - name: Build ${{ matrix.project }}
               run: lake build

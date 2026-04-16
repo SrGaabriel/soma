@@ -51,9 +51,7 @@ impl DependencyGraph {
             if !visited.contains(node_name)
                 && self.has_cycle_dfs(node_name, &mut visited, &mut rec_stack)
             {
-                return Err(BuildError::CircularDependencyDetected(
-                    node_name.clone(),
-                ));
+                return Err(BuildError::CircularDependencyDetected(node_name.clone()));
             }
         }
 

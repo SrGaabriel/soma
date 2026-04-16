@@ -155,9 +155,7 @@ impl BuildOrchestrator {
         for layer in &layers {
             for module_name in layer {
                 let node = graph.get_node(module_name).ok_or_else(|| {
-                    BuildError::Internal(InternalBuildError::BuildNodeNotFound(
-                        module_name.clone(),
-                    ))
+                    BuildError::Internal(InternalBuildError::BuildNodeNotFound(module_name.clone()))
                 })?;
 
                 let src_path = node.path.join(SRC_FOLDER_NAME);

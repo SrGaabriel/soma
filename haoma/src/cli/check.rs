@@ -159,9 +159,11 @@ fn check_module(
 
     Ok(CheckOutput {
         success: output.status.success(),
-        diagnostics: if stderr
-            .trim()
-            .is_empty() { None } else { Some(stderr.trim().to_string()) },
+        diagnostics: if stderr.trim().is_empty() {
+            None
+        } else {
+            Some(stderr.trim().to_string())
+        },
         module_name: Some(node.manifest.name.clone()),
     })
 }

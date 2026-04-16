@@ -73,9 +73,8 @@ impl BuildConfig {
 
             // Check if this is a library config
             if let Some(files) = get_string_array("files") {
-                let path_str = get_string("path").ok_or_else(|| {
-                    SvmError::InvalidConfig(format!("Missing 'path' for {name}"))
-                })?;
+                let path_str = get_string("path")
+                    .ok_or_else(|| SvmError::InvalidConfig(format!("Missing 'path' for {name}")))?;
                 libraries.insert(
                     name.clone(),
                     LibraryConfig {
@@ -85,9 +84,8 @@ impl BuildConfig {
                     },
                 );
             } else {
-                let path_str = get_string("path").ok_or_else(|| {
-                    SvmError::InvalidConfig(format!("Missing 'path' for {name}"))
-                })?;
+                let path_str = get_string("path")
+                    .ok_or_else(|| SvmError::InvalidConfig(format!("Missing 'path' for {name}")))?;
                 let build_command = get_string("build").ok_or_else(|| {
                     SvmError::InvalidConfig(format!("Missing 'build' for {name}"))
                 })?;
