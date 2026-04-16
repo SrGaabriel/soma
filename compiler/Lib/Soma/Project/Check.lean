@@ -665,7 +665,8 @@ def typeCheckModule
     usages := usages
     typedFunctions := mergedTypedFns
     errors := allErrors
-    allUsedGlobals := fnResult.allUsedGlobals
+    allUsedGlobals := globalsResult.finalState.globalDeps.fold
+      (init := fnResult.allUsedGlobals) fun acc qn => acc.insert qn
     uniqueNextId := fnResult.finalState.uniqueSupply.nextId
     metas := fnResult.finalState.metas
   }
@@ -924,6 +925,12 @@ def extractPreludeSymbols (extSymbols : Std.HashMap String SymbolEnv) : Array St
   | none => #[]
   | some env => env.toArray.map fun (sym, _) => sym.name
 
+/-- Check if any QualifiedName under a namespace node is in the used set -/
+private partial def hasUsedDescendant (ns : Soma.Dependent.Namespace)
+    (usedGlobals : Std.HashSet Soma.Core.QualifiedName) : Bool :=
+  ns.decls.any (fun _ qn => usedGlobals.contains qn) ||
+    ns.children.any (fun _ child => hasUsedDescendant child usedGlobals)
+
 /-- Detect imports that were resolved but never referenced during type checking -/
 def detectUnusedImports (ast : Soma.Syntax.Module) (globals : Globals)
     (usedGlobals : Std.HashSet Soma.Core.QualifiedName) : Diagnostics :=
@@ -937,7 +944,11 @@ def detectUnusedImports (ast : Soma.Syntax.Module) (globals : Globals)
         items.foldl (init := diags) fun ds item =>
           match resolveImportItem root modulePath item.name with
           | some qn =>
-            if usedGlobals.contains qn then ds
+            let isUsed := usedGlobals.contains qn ||
+              match root.getAt? (modulePath ++ [item.name]) with
+              | some childNs => hasUsedDescendant childNs usedGlobals
+              | none => false
+            if isUsed then ds
             else ds.push (Diagnostic.warning s!"unused import `{item.name}`" item.span
               |>.withHelp "remove this import or use the imported name")
           | none => ds

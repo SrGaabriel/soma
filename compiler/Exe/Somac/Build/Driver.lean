@@ -142,8 +142,7 @@ def build (opts : BuildOptions) : IO BuildResult := do
 
   -- Print diagnostics
   if result.diagnostics.size > 0 then
-    for (_, sourceFile) in result.sourceFiles.files do
-      Error.printDiagnostics result.diagnostics sourceFile
+    Error.printDiagnosticsWithMap result.diagnostics result.sourceFiles
 
   if !result.success then
     IO.eprintln ""

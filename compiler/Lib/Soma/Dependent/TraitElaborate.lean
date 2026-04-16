@@ -284,6 +284,8 @@ def elaborateConstraint (constraint : Syntax.Constraint) (env : ElabEnv)
   match registry.lookup constraint.className.name with
   | none => return none
   | some classId =>
+    if let some qn ← TCM.resolve #[] constraint.className.name then
+      TCM.recordGlobalDep qn
     let args ← constraint.args.mapM (elaborateType env)
     return some (classId, args)
 
@@ -772,6 +774,8 @@ private def processInstanceBinders (binders : Array Syntax.InstanceBinder)
 partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
     (classInfo : ClassInfo) (registry : ClassRegistry)
     : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) := do
+  if let some qn ← TCM.resolve #[] inst.className then
+    TCM.recordGlobalDep qn
   let (elabEnv, constraints) ← processInstanceBinders inst.binders registry
   let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
 
@@ -862,6 +866,8 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
   | none =>
     return none
   | some classId =>
+    if let some qn ← TCM.resolve #[] inst.className then
+      TCM.recordGlobalDep qn
     let (elabEnv, constraints) ← processInstanceBinders inst.binders registry
 
     let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)

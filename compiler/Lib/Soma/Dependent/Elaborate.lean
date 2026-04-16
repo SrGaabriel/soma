@@ -149,6 +149,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     else match ← TCM.resolve name.path name.name with
     | some qn =>
       if let some abbrevInfo ← TCM.lookupAbbrev qn then
+        TCM.recordGlobalDep qn
         -- Parameterized abbreviations are represented as vDataType during elaboration
         if abbrevInfo.arity > 0 then
           return Value.vDataType abbrevInfo.abbrevId []
@@ -166,7 +167,8 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
               return Value.vDataType globalInfo.name.id []
           else
             return Value.vDataType globalInfo.name.id []
-      else
+      else do
+        TCM.recordGlobalDep qn
         return Value.vDataType qn.id []
     | none =>
       TCM.throw (.cannotInfer
