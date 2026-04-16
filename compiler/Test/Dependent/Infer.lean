@@ -354,9 +354,13 @@ def testInferTypeUniverse : IO TestResult := do
 
 /-- Test: Primitive type names are not hardcoded in inference -/
 def testInferPrimTy : IO TestResult := do
-  let expr : Soma.Syntax.Expr := .var (synName "Int")
+  let expr : Soma.Syntax.Expr := .var (synName "Int32")
   match typeInfer expr with
-  | .ok _ => return .failed "Expected unknown variable error for Int without wired-in registration"
+  | .ok (_, _, state) =>
+    if state.errors.any (fun e => match e with | .unboundVariable .. => true | _ => false) then
+      return .passed
+    else
+      return .failed "Expected unbound variable error for Int without wired-in registration"
   | .error _ => return .passed
 
 /-- Test: Infer row empty type -/

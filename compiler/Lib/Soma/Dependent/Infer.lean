@@ -56,6 +56,14 @@ def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none
   let v' ← force v
   match v' with
   | .vPi qty binder name dom cod => return (qty, binder, name, dom, cod)
+  | .vNeutral _ (.nMeta mid) =>
+    -- Fake it for error recovery
+    let domMeta ← TCM.freshMetaVal (.vType .zero)
+    let codMeta ← TCM.freshMetaVal (.vType .zero)
+    let codClosure := Closure.const "?cod" codMeta
+    let piTy := Value.vPi .omega .explicit "?dom" domMeta codClosure
+    TCM.solveMeta mid piTy "ensurePi-meta"
+    return (.omega, .explicit, "?dom", domMeta, codClosure)
   | _ =>
     TCM.throw (.expectedFunction v' span origin)
 
@@ -790,7 +798,16 @@ where
           | "Type1" => return (.vType .one, .sort .one)
           | "Row" => return (.vType .zero, .rowSort)
           | "Label" => return (.vType .zero, .labelSort)
-          | _ => TCM.throw (.unboundVariable name.name name.span #[])
+          | _ =>
+            -- Recover: record the error and return a placeholder so the
+            -- rest of the expression (and any other unbound references it
+            -- contains) can still be elaborated and reported. The term is
+            -- `panic` because the module has errors and won't reach codegen;
+            -- the type is a fresh meta so `ensurePi`/unification can still
+            -- make progress at use sites.
+            TCM.addError (.unboundVariable name.name name.span #[])
+            let tyMeta ← TCM.freshMetaVal (.vType .zero)
+            return (tyMeta, .panic s!"unbound variable `{name.name}`")
 
     -- Literals
     | .lit (.int n _) => return (.vPrimTy .int, .lit (.int n))

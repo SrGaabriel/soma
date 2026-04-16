@@ -643,6 +643,15 @@ fn detect_shell() -> String {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn dirs_path() -> PathBuf {
+    BaseDirs::new()
+        .map(|b| b.config_dir().to_path_buf())
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string())).join(".config")
+        })
+}
+
 pub fn self_uninstall(yes: bool) -> Result<()> {
     use std::io::{self, Write};
 

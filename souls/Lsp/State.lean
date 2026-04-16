@@ -238,15 +238,19 @@ end CompiledModule
 
 /-- LSP server state -/
 structure LspState where
-  /-- Compiled modules by file path -/
+  /-- Compiled modules keyed by canonical file path -/
   modules : Std.HashMap String CompiledModule := {}
   /-- Workspace root path -/
   workspaceRoot : Option String := none
   /-- Reverse dependency map: module name → modules that import it -/
   reverseDeps : Std.HashMap String (Std.HashSet String) := {}
-  /-- Module name to file path mapping -/
+  /-- Module name → canonical file path -/
   moduleNameToPath : Std.HashMap String String := {}
-  /-- Known haoma project roots (to avoid re-discovery) -/
+  /-- Canonical file path → module name (reverse index of `moduleNameToPath`) -/
+  pathToModuleName : Std.HashMap String String := {}
+  /-- Module name → original client URI (preserved verbatim for VFS lookups) -/
+  moduleUris : Std.HashMap String String := {}
+  /-- Known haoma project roots (canonical paths) -/
   knownProjectRoots : Std.HashSet String := {}
   /-- All loaded haoma project metadata -/
   haomaProjects : Array Haoma.ProjectMetadata := #[]
@@ -266,15 +270,15 @@ namespace LspState
 
 /-- Get a module by file path -/
 def getModule (s : LspState) (filePath : String) : Option CompiledModule :=
-  s.modules.get? filePath
+  s.modules.get? (normalizePath filePath)
 
 /-- Set a module -/
 def setModule (s : LspState) (filePath : String) (m : CompiledModule) : LspState :=
-  { s with modules := s.modules.insert filePath m }
+  { s with modules := s.modules.insert (normalizePath filePath) m }
 
 /-- Remove a module -/
 def removeModule (s : LspState) (filePath : String) : LspState :=
-  { s with modules := s.modules.erase filePath }
+  { s with modules := s.modules.erase (normalizePath filePath) }
 
 /-- Get all modules -/
 def allModules (s : LspState) : Array CompiledModule :=
@@ -295,13 +299,28 @@ def lookupSymbolGlobal (s : LspState) (name : String) : Option (CompiledModule �
 def allSymbols (s : LspState) : Array DefinitionSite :=
   s.allModules.foldl (fun acc m => acc ++ m.symbols.allDefinitions) #[]
 
-/-- Register module name to file path mapping -/
+/-- Register module name ↔ canonical file path mapping -/
 def registerModulePath (s : LspState) (moduleName : String) (filePath : String) : LspState :=
-  { s with moduleNameToPath := s.moduleNameToPath.insert moduleName filePath }
+  let canonical := normalizePath filePath
+  { s with
+    moduleNameToPath := s.moduleNameToPath.insert moduleName canonical
+    pathToModuleName := s.pathToModuleName.insert canonical moduleName }
 
-/-- Get file path for a module name -/
+/-- Get canonical file path for a module name -/
 def getModulePath (s : LspState) (moduleName : String) : Option String :=
   s.moduleNameToPath.get? moduleName
+
+/-- Get module name for a file path (O(1) via reverse index) -/
+def nameForPath (s : LspState) (filePath : String) : Option String :=
+  s.pathToModuleName.get? (normalizePath filePath)
+
+/-- Register the original client URI for a module -/
+def registerModuleUri (s : LspState) (moduleName : String) (uri : String) : LspState :=
+  { s with moduleUris := s.moduleUris.insert moduleName uri }
+
+/-- Get the original client URI for a module, if we've seen it -/
+def getModuleUri (s : LspState) (moduleName : String) : Option String :=
+  s.moduleUris.get? moduleName
 
 /-- Add a reverse dependency: depModule is imported by importerModule -/
 def addReverseDep (s : LspState) (depModule : String) (importerModule : String) : LspState :=
@@ -356,25 +375,23 @@ def getTransitiveDependents (s : LspState) (moduleName : String) : Array String 
 
 /-- Add a haoma project and register its modules -/
 def addHaomaProject (s : LspState) (metadata : Haoma.ProjectMetadata) : LspState :=
-  -- Find the root package to get its path
   let rootPkg := metadata.packages.find? (·.is_root)
   let s' := match rootPkg with
     | some pkg => { s with knownProjectRoots := s.knownProjectRoots.insert (normalizePath pkg.root) }
     | none => s
-  -- Add to projects list
   let s'' := { s' with haomaProjects := s'.haomaProjects.push metadata }
-  -- Register all module paths from haoma metadata
   metadata.modules.foldl (fun acc mod =>
-    acc.registerModulePath mod.name (normalizePath mod.path)
+    acc.registerModulePath mod.name mod.path
   ) s''
 
 /-- Check if a project root is already known -/
 def hasProjectRoot (s : LspState) (root : String) : Bool :=
-  s.knownProjectRoots.contains root
+  s.knownProjectRoots.contains (normalizePath root)
 
 /-- Check if a file path belongs to a known project -/
 def isFileInKnownProject (s : LspState) (filePath : String) : Bool :=
-  s.knownProjectRoots.any (filePath.startsWith ·)
+  let p := normalizePath filePath
+  s.knownProjectRoots.any (p.startsWith ·)
 
 /-- Collect all checked modules that precede a given module in topological order -/
 def checkedDepsForModule (s : LspState) (moduleName : String) : Std.HashMap String CheckedModule :=

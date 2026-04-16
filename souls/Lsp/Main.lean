@@ -149,15 +149,9 @@ def tryDiscoverProjectForFile (ctx : RequestContext LspState) (filePath : String
       let _ ← loadHaomaProject ctx projectRoot
       progress.report (message := some "Done") (percentage := some 100)
 
-/-- Find the haoma module name for a file path -/
-private def moduleNameForFile (state : LspState) (filePath : String) : Option String :=
-  let normalized := normalizePath filePath
-  state.moduleNameToPath.fold (init := none) fun acc name path =>
-    if path == normalized then some name else acc
-
 /-- Look up the module name for a file path and compute its checked deps -/
 private def depsForFile (state : LspState) (filePath : String) : Std.HashMap String CheckedModule :=
-  match moduleNameForFile state filePath with
+  match state.nameForPath filePath with
   | some name => state.checkedDepsForModule name
   | none => {}
 
@@ -165,21 +159,24 @@ private def depsForFile (state : LspState) (filePath : String) : Std.HashMap Str
 def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
   let content := params.textDocument.text
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
   let version := params.textDocument.version
 
   -- Lazy discovery: try to load haoma project if file is not in a known project
   tryDiscoverProjectForFile ctx filePath
 
   let state ← ctx.getUserState
-  let modName? := moduleNameForFile state filePath
+  let modName? := state.nameForPath filePath
   let checkedDeps := depsForFile state filePath
 
   let existingChecked := modName?.bind state.checkedModules.get?
   let mod := analyzeSource filePath content none checkedDeps state.preludeSymbols modName? existingChecked
 
   -- Update state
-  ctx.modifyUserState fun s => s.setModule filePath mod
+  ctx.modifyUserState fun s =>
+    s.setModule filePath mod
+     |>.registerModulePath mod.name filePath
+     |>.registerModuleUri mod.name uri
 
   -- Publish diagnostics immediately on open
   let lspDiags := convertDiagnostics mod.sourceFile mod.diagnostics
@@ -190,7 +187,7 @@ def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentP
 /-- Handle textDocument/didChange -/
 def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   -- Get updated content from VFS
   let some content ← ctx.getDocumentContent uri | return
@@ -198,7 +195,7 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   -- Get old module for incremental analysis
   let state ← ctx.getUserState
   let oldModule? := state.getModule filePath
-  let modName? := moduleNameForFile state filePath
+  let modName? := state.nameForPath filePath
   let checkedDeps := depsForFile state filePath
 
   -- Incremental analysis (reuses NodeIds and symbols where possible)
@@ -209,9 +206,10 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
 
   -- Update state: module, path mapping, and reverse dependencies
   ctx.modifyUserState fun s =>
-    let s' := s.setModule filePath mod
-    let s'' := s'.registerModulePath mod.name filePath
-    s''.updateReverseDeps mod.name importedModules
+    s.setModule filePath mod
+     |>.registerModulePath mod.name filePath
+     |>.registerModuleUri mod.name uri
+     |>.updateReverseDeps mod.name importedModules
 
   -- Get version for diagnostics
   let some snap ← ctx.getDocument uri | return
@@ -226,22 +224,22 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   let dependentModuleNames := state'.getTransitiveDependents mod.name
 
   for depModName in dependentModuleNames do
-    if let some depFilePath := state'.getModulePath depModName then
-      let depUri := pathToUri depFilePath
-      if let some depContent ← ctx.getDocumentContent depUri then
-        let depOldModule? := state'.getModule depFilePath
-        let depCheckedDeps := state'.checkedDepsForModule depModName
-        let depMod := analyzeSource depFilePath depContent depOldModule? depCheckedDeps state'.preludeSymbols (some depModName)
+    if let some depUri := state'.getModuleUri depModName then
+      if let some depFilePath := state'.getModulePath depModName then
+        if let some depContent ← ctx.getDocumentContent depUri then
+          let depOldModule? := state'.getModule depFilePath
+          let depCheckedDeps := state'.checkedDepsForModule depModName
+          let depMod := analyzeSource depFilePath depContent depOldModule? depCheckedDeps state'.preludeSymbols (some depModName)
 
-        ctx.modifyUserState fun s => s.setModule depFilePath depMod
+          ctx.modifyUserState fun s => s.setModule depFilePath depMod
 
-        let depLspDiags := convertDiagnostics depMod.sourceFile depMod.diagnostics
-        ctx.publishDiagnostics { uri := depUri, diagnostics := depLspDiags }
+          let depLspDiags := convertDiagnostics depMod.sourceFile depMod.diagnostics
+          ctx.publishDiagnostics { uri := depUri, diagnostics := depLspDiags }
 
 /-- Handle textDocument/didClose -/
 def handleDidClose (ctx : RequestContext LspState) (params : DidCloseTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   -- Remove from state
   ctx.modifyUserState fun s => s.removeModule filePath
@@ -254,16 +252,19 @@ def handleDidClose (ctx : RequestContext LspState) (params : DidCloseTextDocumen
 /-- Handle textDocument/didSave -/
 def handleDidSave (ctx : RequestContext LspState) (params : DidSaveTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   -- On save, do full analysis and publish all diagnostics
   let some content ← ctx.getDocumentContent uri | return
   let state ← ctx.getUserState
-  let modName? := moduleNameForFile state filePath
+  let modName? := state.nameForPath filePath
   let checkedDeps := depsForFile state filePath
   let mod := analyzeSource filePath content none checkedDeps state.preludeSymbols modName?
 
-  ctx.modifyUserState fun s => s.setModule filePath mod
+  ctx.modifyUserState fun s =>
+    s.setModule filePath mod
+     |>.registerModulePath mod.name filePath
+     |>.registerModuleUri mod.name uri
 
   let lspDiags := convertDiagnostics mod.sourceFile mod.diagnostics
   let some snap ← ctx.getDocument uri | return
@@ -274,7 +275,7 @@ def handleDidSave (ctx : RequestContext LspState) (params : DidSaveTextDocumentP
 /-- Handle textDocument/hover -/
 def handleHover (ctx : RequestContext LspState) (params : HoverParams) : IO (Option Hover) := do
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   -- Get cached module (never reanalyze here)
   let state ← ctx.getUserState
@@ -302,7 +303,7 @@ def handleDefinition (ctx : RequestContext LspState) (params : TextDocumentPosit
   ctx.logInfo "definition: start"
 
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
   ctx.logInfo s!"definition: uri={uri}"
 
   -- Get cached module (never re-analyze here)
@@ -340,7 +341,7 @@ def handleDefinition (ctx : RequestContext LspState) (params : TextDocumentPosit
 /-- Handle textDocument/completion -/
 def handleCompletion (ctx : RequestContext LspState) (params : CompletionParams) : IO CompletionList := do
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   -- Get cached module (never re-analyze here)
   let state ← ctx.getUserState
@@ -404,7 +405,7 @@ def handleDocumentSymbol (ctx : RequestContext LspState) (params : Lean.Json) : 
     td.getObjValAs? String "uri"
   ) |>.toOption |>.getD ""
 
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   -- Get cached module
   let state ← ctx.getUserState
@@ -448,7 +449,7 @@ def handleDocumentSymbol (ctx : RequestContext LspState) (params : Lean.Json) : 
 /-- Handle textDocument/references -/
 def handleReferences (ctx : RequestContext LspState) (params : ReferenceParams) : IO (Array Location) := do
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   let state ← ctx.getUserState
   let some mod := state.getModule filePath | return #[]
@@ -472,7 +473,7 @@ def handleReferences (ctx : RequestContext LspState) (params : ReferenceParams) 
 def handleSemanticTokensFull (ctx : RequestContext LspState) (params : SemanticTokensParams)
     : IO Lapis.Protocol.Generated.SemanticTokens := do
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   let state ← ctx.getUserState
   let some mod := state.getModule filePath | return emptyTokens
@@ -483,7 +484,7 @@ open Lapis.Protocol.Generated in
 def handleInlayHint (ctx : RequestContext LspState) (params : InlayHintParams)
     : IO (Array InlayHint) := do
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   let state ← ctx.getUserState
   let some mod := state.getModule filePath | return #[]
@@ -507,7 +508,7 @@ open Lapis.Protocol.Generated in
 def handleSignatureHelp (ctx : RequestContext LspState) (params : SignatureHelpParams)
     : IO (Option SignatureHelp) := do
   let uri := params.textDocument.uri
-  let filePath := uriToPath uri
+  let filePath := normalizePath (uriToPath uri)
 
   let state ← ctx.getUserState
   let some mod := state.getModule filePath | return none
