@@ -336,6 +336,8 @@ def remapInstRefs (inst : ClosedInst) (idMap : Std.HashMap Nat Nat) : ClosedInst
   | .makeClosure ref env => .makeClosure (remapFuncRefId ref idMap) env
   | .makeClosurePoly ref tyArgs env => .makeClosurePoly (remapFuncRefId ref idMap) tyArgs env
   | .makeClosureDyn _ _ _ => inst
+  | .stackClosure ref env => .stackClosure (remapFuncRefId ref idMap) env
+  | .stackClosurePoly ref tyArgs env => .stackClosurePoly (remapFuncRefId ref idMap) tyArgs env
   | _ => inst
 
 def remapFuncRefs (f : ClosedFunc) (idMap : Std.HashMap Nat Nat) : ClosedFunc :=
@@ -376,6 +378,8 @@ private def collectFuncRefsInst (inst : Inst n) (acc : Array FuncId) : Array Fun
   | .makeClosure ref env => fromFuncRef ref (fromOperand env acc)
   | .makeClosurePoly ref _ env => fromFuncRef ref (fromOperand env acc)
   | .makeClosureDyn fnClo env _ => fromOperand env (fromOperand fnClo acc)
+  | .stackClosure ref env => fromFuncRef ref (fromOperand env acc)
+  | .stackClosurePoly ref _ env => fromFuncRef ref (fromOperand env acc)
   | .phi pairs _ => pairs.foldl (fun a (op, _) => fromOperand op a) acc
   | .select c t e => fromOperand e (fromOperand t (fromOperand c acc))
   | .callClosure clo args _ => fromOperands args (fromOperand clo acc)
@@ -497,6 +501,7 @@ def isFullyMonomorphic (m : Module) : Bool :=
             | .callPoly _ _ _ _ => false
             | .callExternPoly _ _ _ _ => false
             | .makeClosurePoly _ _ _ => false
+            | .stackClosurePoly _ _ _ => false
             | _ => true
 
 /-- Report remaining polymorphism -/
@@ -520,6 +525,8 @@ def reportPolymorphism (m : Module) : Array String :=
                     issues := issues.push s!"Function {f.sig.name} has callExternPoly to \"{name}\" with {typeArgs.size} type args"
                 | .makeClosurePoly funcRef typeArgs _ =>
                     issues := issues.push s!"Function {f.sig.name} has makeClosurePoly to {funcRef} with {typeArgs.size} type args"
+                | .stackClosurePoly funcRef typeArgs _ =>
+                    issues := issues.push s!"Function {f.sig.name} has stackClosurePoly to {funcRef} with {typeArgs.size} type args"
                 | _ => pure ()
           pure issues
         acc ++ funcIssues

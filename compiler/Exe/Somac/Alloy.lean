@@ -18,6 +18,7 @@ import Somac.Alloy.ArithAccum
 import Somac.Alloy.ListIntrinsics
 import Somac.Alloy.ElemSize
 import Somac.Alloy.ConsInline
+import Somac.Alloy.ClosureEscape
 
 namespace Somac.Alloy
 
@@ -33,6 +34,7 @@ export ElemSize (refineElemSizes)
 export ConsInline (inlineConsFastPath)
 export Borrow (borrowModule BorrowStats)
 export Reuse (reuseModule)
+export ClosureEscape (escapeModule EscapeStats)
 export Merge (merge mergeModules)
 export Serialize (serializeModule deserializeModule writeAlloyBin readAlloyBin)
 

@@ -409,6 +409,26 @@ def allocaArray (ty : LLVMType) (numElems : LLVMValue) (align : Option Nat := no
     : FuncBuilder LocalRef :=
   emit (.alloca ty (some numElems) align)
 
+/-- Emit an `alloca` at the top of the function's entry block -/
+def entryAlloca (ty : LLVMType) (align : Option Nat := none) : FuncBuilder LocalRef := do
+  let s ← get
+  let inst : LLVMInst := .alloca ty none align
+  match s.currentBlock, s.entryLabel with
+  | some cur, some entry =>
+    if cur == entry then
+      let ref ← freshLocal
+      let stmt := LLVMStmt.mk (some ref) inst
+      modify fun s =>
+        let s := { s with currentStmts := #[stmt] ++ s.currentStmts }
+        match inst.instResultTy with
+        | some t => { s with localTypes := s.localTypes.insert ref.id t }
+        | none => s
+      pure ref
+    else
+      insertInEntryBlock inst
+  | _, _ =>
+    alloca ty align
+
 /-- Load from pointer -/
 def load (ty : LLVMType) (ptr : LLVMValue) (align : Option Nat := none)
     : FuncBuilder LocalRef :=

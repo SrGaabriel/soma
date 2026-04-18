@@ -6,8 +6,6 @@ structure ToolPaths where
   llc : String := "llc"
   /-- Path to clang (C/C++ compiler and linker) -/
   clang : String := "clang"
-  /-- Path to cc (system C compiler for linking, typically gcc) -/
-  cc : String := "cc"
   /-- Path to ar (archive tool) -/
   ar : String := "ar"
   /-- Path to tar (tape archive) -/
@@ -126,7 +124,6 @@ def findRuntime (sysroot : Option String) : IO (Option System.FilePath) := do
       | .ok path => return some path
       | .error e =>
         IO.eprintln e
-
   return none
 
 /-- Check if a tool is available -/
@@ -188,8 +185,7 @@ def linkExecutable
   if isWindowsTarget then
     args := args.push "-lgcc"
 
-  let result ← runCommand tools.cc args
-
+  let result ← runCommand tools.clang args
   if result.exitCode == 0 then
     pure (.ok ())
   else

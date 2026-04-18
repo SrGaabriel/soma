@@ -194,6 +194,11 @@ def ppInst (cfg : Config) : Inst n → String
   | .makeClosurePoly func typeArgs env =>
     let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
     s!"{colorKeyword cfg "makeclosure.poly"} {ppFuncRef cfg func}<{tyArgsStr}>, {ppOperand cfg env}"
+  | .stackClosure func env =>
+    s!"{colorKeyword cfg "stackclosure"} {ppFuncRef cfg func}, {ppOperand cfg env}"
+  | .stackClosurePoly func typeArgs env =>
+    let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
+    s!"{colorKeyword cfg "stackclosure.poly"} {ppFuncRef cfg func}<{tyArgsStr}>, {ppOperand cfg env}"
   | .callPoly func typeArgs args retTy =>
     let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
     let argsStr := String.intercalate ", " (args.toList.map (ppOperand cfg))

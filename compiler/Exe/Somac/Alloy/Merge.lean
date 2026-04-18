@@ -141,6 +141,8 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :
   | .makeClosure funcRef env => .makeClosure (remapRef funcRef) (remapOp env)
   | .makeClosurePoly funcRef typeArgs env => .makeClosurePoly (remapRef funcRef) typeArgs (remapOp env)
   | .makeClosureDyn fn env ty => .makeClosureDyn (remapOp fn) (remapOp env) ty
+  | .stackClosure funcRef env => .stackClosure (remapRef funcRef) (remapOp env)
+  | .stackClosurePoly funcRef typeArgs env => .stackClosurePoly (remapRef funcRef) typeArgs (remapOp env)
   | .closureFunc closure => .closureFunc (remapOp closure)
   | .closureEnv closure => .closureEnv (remapOp closure)
   | .phi incoming ty =>
@@ -333,7 +335,8 @@ def collectUnresolvedRefs (mod : Module) : Std.HashSet WrapperNeeded := Id.run d
       for block in cfg.allBlocks do
         for stmt in block.stmts do
           match stmt.inst with
-          | .makeClosure ref _ | .makeClosurePoly ref _ _ =>
+          | .makeClosure ref _ | .makeClosurePoly ref _ _
+          | .stackClosure ref _ | .stackClosurePoly ref _ _ =>
             match ref with
             | .primOp op => result := result.insert (.primOp op)
             | .intrinsic op => result := result.insert (.intrinsicOp op)
@@ -362,6 +365,8 @@ def resolveInstFuncRefs (resolver : FuncRefResolver) (inst : Inst n) : Inst n :=
   | .makeClosure ref env => .makeClosure (resolver.resolveToLocal ref) env
   | .makeClosurePoly ref typeArgs env => .makeClosurePoly (resolver.resolveToLocal ref) typeArgs env
   | .makeClosureDyn fn env ty => .makeClosureDyn fn env ty
+  | .stackClosure ref env => .stackClosure (resolver.resolveToLocal ref) env
+  | .stackClosurePoly ref typeArgs env => .stackClosurePoly (resolver.resolveToLocal ref) typeArgs env
   | .callExtern name args retTy =>
     -- Check if the extern function is now available as a local function in the merged module
     match resolver.nameToFuncId.get? name with

@@ -1295,9 +1295,9 @@ def getOrCreateTrampoline (arity : Nat) : CodegenM String := do
   modify fun s => { s with trampolineCache := s.trampolineCache.insert name name }
   return name
 
-/-- Shared closure allocation logic for makeClosure and makeClosurePoly -/
-private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
-    : CodegenM (Option (LocalRef × ClosedTy)) := do
+/-- Write the closure header and env slots into an already-allocated buffer -/
+private def initClosureBuffer (closurePtr : LocalRef) (funcRef : FuncRef) (env : Operand)
+    : CodegenM (ClosedTy × Nat) := do
   let funcId := match funcRef with
     | .local id => id
     | _ => FuncId.mk 0
@@ -1319,9 +1319,6 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
   let envSlotCount : Nat := if isEmptyEnv then 0 else envFieldCount
   let ps := (← get).ptrSize
   let closureHeaderSize := ps + ps
-  let closureByteSize : Int := Int.ofNat (closureHeaderSize + envSlotCount * ps)
-  let closurePtr ← CodegenM.withFuncBuilder do
-    FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int closureByteSize 64))]
   -- Store arity (field 0 of closureHeaderTy)
   let arityAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 0])
   CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat closureArity) 8) (.local arityAddr))
@@ -1366,6 +1363,45 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
     match ← CodegenM.getFuncSig funcId.id with
     | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
     | none => pure (.closure #[] (.prim .i64))
+  pure (closureTyAlloy, envSlotCount)
+
+/-- Closure allocation logic -/
+private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
+    : CodegenM (Option (LocalRef × ClosedTy)) := do
+  let (envLLVMTy, _) ← convertOperandWithTy env
+  let envAlloTy ← operandTy env
+  let isEmptyEnv := isZeroWidthLLVM envAlloTy
+  let envFieldCount : Nat := if isEmptyEnv then 0
+    else match envLLVMTy with
+      | .struct _ fields => if fields.size > 1 then fields.size else 1
+      | _ => 1
+  let envSlotCount : Nat := if isEmptyEnv then 0 else envFieldCount
+  let ps := (← get).ptrSize
+  let closureHeaderSize := ps + ps
+  let closureByteSize : Int := Int.ofNat (closureHeaderSize + envSlotCount * ps)
+  let closurePtr ← CodegenM.withFuncBuilder do
+    FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int closureByteSize 64))]
+  let (closureTyAlloy, _) ← initClosureBuffer closurePtr funcRef env
+  pure (some (closurePtr, closureTyAlloy))
+
+private def emitStackClosureImpl (funcRef : FuncRef) (env : Operand)
+    : CodegenM (Option (LocalRef × ClosedTy)) := do
+  let (envLLVMTy, _) ← convertOperandWithTy env
+  let envAlloTy ← operandTy env
+  let isEmptyEnv := isZeroWidthLLVM envAlloTy
+  let envFieldCount : Nat := if isEmptyEnv then 0
+    else match envLLVMTy with
+      | .struct _ fields => if fields.size > 1 then fields.size else 1
+      | _ => 1
+  let envSlotCount : Nat := if isEmptyEnv then 0 else envFieldCount
+  let ps := (← get).ptrSize
+  -- Total slots: header occupies two ptr-sized slots (arity+pad + funcPtr)
+  let totalSlots : Nat := envSlotCount + 2
+  -- Alloca `[totalSlots x ptr]` — natural ptr alignment matches closureHeaderTy
+  let bufferTy : LLVMType := .array totalSlots .ptr
+  let closurePtr ← CodegenM.withFuncBuilder do
+    FuncBuilder.entryAlloca bufferTy (some ps)
+  let (closureTyAlloy, _) ← initClosureBuffer closurePtr funcRef env
   pure (some (closurePtr, closureTyAlloy))
 
 /-- Lower an Alloy instruction to LLVM, returning result ref and result type -/
@@ -1795,6 +1831,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .makeClosure funcRef env => emitMakeClosureImpl funcRef env
   | .makeClosurePoly funcRef _typeArgs env => emitMakeClosureImpl funcRef env
+
+  | .stackClosure funcRef env => emitStackClosureImpl funcRef env
+  | .stackClosurePoly funcRef _typeArgs env => emitStackClosureImpl funcRef env
 
   | .makeClosureDyn fnClosure env resultTy =>
     -- The trampoline unpacks both from a composite env buffer and forwards the call
@@ -2311,7 +2350,10 @@ def instReferencedLocals (inst : ClosedInst) : Array Nat :=
   | .extractField v _ => collectOp v
   | .getFieldPtr v _ _ => collectOp v
   | .makeClosure _ env => collectOp env
+  | .makeClosurePoly _ _ env => collectOp env
   | .makeClosureDyn fnClo env _ => collectOp fnClo ++ collectOp env
+  | .stackClosure _ env => collectOp env
+  | .stackClosurePoly _ _ env => collectOp env
   | .malloc sz => collectOp sz
   | .free ptr => collectOp ptr
   | .callIntrinsic _ args _ => collectOps args

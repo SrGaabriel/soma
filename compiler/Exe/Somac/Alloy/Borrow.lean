@@ -58,6 +58,8 @@ private def instEscapesLocal (inst : ClosedInst) (lid : LocalId) : Bool :=
   | .makeClosure _ env => isOp env
   | .makeClosurePoly _ _ env => isOp env
   | .makeClosureDyn _ env _ => isOp env
+  | .stackClosure _ env => isOp env
+  | .stackClosurePoly _ _ env => isOp env
   -- Criterion 4: wrapped in SUP
   | .lazySup _ src _ => isOp src
   -- Storing to memory

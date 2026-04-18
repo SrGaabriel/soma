@@ -310,7 +310,8 @@ def collectWrappersNeeded (mod : Module) : Std.HashSet WrapperNeeded := Id.run d
       for block in cfg.allBlocks do
         for stmt in block.stmts do
           match stmt.inst with
-          | .makeClosure funcRef _ | .makeClosurePoly funcRef _ _ =>
+          | .makeClosure funcRef _ | .makeClosurePoly funcRef _ _
+          | .stackClosure funcRef _ | .stackClosurePoly funcRef _ _ =>
             match funcRef with
             | .primOp op => result := result.insert (.primOp op)
             | .intrinsic op => result := result.insert (.intrinsicOp op)

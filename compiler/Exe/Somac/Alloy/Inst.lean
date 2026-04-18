@@ -86,6 +86,12 @@ inductive Inst : Nat → Type where
   /-- Create closure from a dynamically-resolved function (itself a closure) -/
   | makeClosureDyn : Operand → Operand → Ty n → Inst n
 
+  /-- Create a stack-allocated closure (monomorphic) -/
+  | stackClosure : FuncRef → Operand → Inst n
+
+  /-- Stack-allocated polymorphic closure counterpart to makeClosurePoly -/
+  | stackClosurePoly : FuncRef → Array (Ty n) → Operand → Inst n
+
   /-- Get function pointer from closure -/
   | closureFunc : Operand → Inst n
 
@@ -180,6 +186,9 @@ def instantiate : Inst n → TyEnv n → ClosedInst
       .makeClosurePoly func (tyArgs.map (Somac.Alloy.instantiate · env)) envOp
   | .makeClosure func envOp, _ => .makeClosure func envOp
   | .makeClosureDyn fnClosure envOp ty, env => .makeClosureDyn fnClosure envOp (Somac.Alloy.instantiate ty env)
+  | .stackClosure func envOp, _ => .stackClosure func envOp
+  | .stackClosurePoly func tyArgs envOp, env =>
+      .stackClosurePoly func (tyArgs.map (Somac.Alloy.instantiate · env)) envOp
   | .closureFunc closure, _ => .closureFunc closure
   | .closureEnv closure, _ => .closureEnv closure
   | .phi incoming ty, env => .phi incoming (Somac.Alloy.instantiate ty env)
@@ -234,6 +243,8 @@ def resultTy : ClosedInst → Option ClosedTy
   | .makeClosurePoly _ _ _ => none
   | .makeClosure _ _ => none
   | .makeClosureDyn _ _ ty => some ty
+  | .stackClosure _ _ => none
+  | .stackClosurePoly _ _ _ => none
   | .closureFunc _ => none
   | .closureEnv _ => some .rawPtr
   | .phi _ ty => some ty
@@ -297,6 +308,10 @@ private def toStringAux : Inst n → String
       s!"makeclosure.poly {funcRef}<{ts}>, {env}"
   | .makeClosure funcRef env => s!"makeclosure {funcRef}, {env}"
   | .makeClosureDyn fnClosure env ty => s!"makeclosure.dyn {fnClosure}, {env} : {ty}"
+  | .stackClosure funcRef env => s!"stackclosure {funcRef}, {env}"
+  | .stackClosurePoly funcRef typeArgs env =>
+      let ts := String.intercalate ", " (typeArgs.toList.map Ty.toString)
+      s!"stackclosure.poly {funcRef}<{ts}>, {env}"
   | .closureFunc closure => s!"closure.func {closure}"
   | .closureEnv closure => s!"closure.env {closure}"
   | .phi incoming _ =>
@@ -348,6 +363,8 @@ def operands : Inst n → Array (Operand)
   | .makeClosure _ env => #[env]
   | .makeClosurePoly _ _ env => #[env]
   | .makeClosureDyn f env _ => #[f, env]
+  | .stackClosure _ env => #[env]
+  | .stackClosurePoly _ _ env => #[env]
   | .taggedLit _ fields _ => fields
   | .reuseTaggedLit _ fields r _ => fields ++ #[r]
   | .structLit fields _ => fields
@@ -409,6 +426,8 @@ def mapOperands (inst : Inst 0) (f : Operand → Operand) : Inst 0 :=
   | .makeClosure ref env => .makeClosure ref (f env)
   | .makeClosurePoly ref tys env => .makeClosurePoly ref tys (f env)
   | .makeClosureDyn fn env ty => .makeClosureDyn (f fn) (f env) ty
+  | .stackClosure ref env => .stackClosure ref (f env)
+  | .stackClosurePoly ref tys env => .stackClosurePoly ref tys (f env)
   | .closureFunc o => .closureFunc (f o)
   | .closureEnv o => .closureEnv (f o)
   | .phi incoming ty => .phi (incoming.map fun (op, bid) => (f op, bid)) ty

@@ -264,6 +264,15 @@ def compileModules
     if consCount > 0 then
       IO.println s!"  Cons fast-path inlining: {consCount} function(s) with inlined prepend"
 
+    let (escaped, escapeStats) := Alloy.ClosureEscape.escapeModule optimized
+    if !escapeStats.isEmpty then
+      let promotedMsg := s!"{escapeStats.promoted} closure(s) promoted to stack"
+      let erasesMsg := if escapeStats.erasesEliminated > 0 then
+        s!", {escapeStats.erasesEliminated} erase(s) eliminated"
+      else ""
+      IO.println s!"  Closure escape analysis: {promotedMsg}{erasesMsg}"
+    optimized := escaped
+
     let (borrowed, borrowStats) := Alloy.Borrow.borrowModule optimized
     if borrowStats.borrowedParams > 0 then
       let cloneMsg := if borrowStats.clonesEliminated > 0 then
