@@ -153,6 +153,12 @@ def x86_64_windows_gnu : TargetSpec := {
   arch := .x86_64, os := .windows, env := "gnu"
 }
 
+def x86_64_windows_msvc : TargetSpec := {
+  llvmTarget := "x86_64-pc-windows-msvc"
+  dataLayout := "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+  arch := .x86_64, os := .windows, env := "msvc"
+}
+
 def x86_64_linux_gnu : TargetSpec := {
   llvmTarget := "x86_64-pc-linux-gnu"
   dataLayout := "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
@@ -193,6 +199,7 @@ def wasm32 : TargetSpec := {
 def fromName? (name : String) : Option TargetSpec :=
   match name with
   | "x86_64-windows-gnu" | "x86_64-w64-mingw32" => some x86_64_windows_gnu
+  | "x86_64-windows-msvc" | "x86_64-pc-windows-msvc" => some x86_64_windows_msvc
   | "x86_64-linux-gnu" | "x86_64-pc-linux-gnu" => some x86_64_linux_gnu
   | "x86_64-linux-musl" | "x86_64-pc-linux-musl" => some x86_64_linux_musl
   | "x86_64-macos" | "x86_64-apple-darwin" => some x86_64_macos

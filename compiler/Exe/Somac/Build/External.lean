@@ -17,8 +17,40 @@ structure ToolPaths where
 /-- Default tool paths -/
 def defaultTools : ToolPaths := {}
 
-/-- Runtime archive name -/
-def runtimeArchiveFile : String := "libsoma_runtime.a"
+/-- The C runtime / object-file ABI the host toolchain produces -/
+inductive ClangAbi where
+  | gnu
+  | msvc
+  | other (name : String)
+  deriving Inhabited, Repr, BEq
+
+namespace ClangAbi
+
+def name : ClangAbi → String
+  | .gnu => "gnu"
+  | .msvc => "msvc"
+  | .other s => s
+
+instance : ToString ClangAbi := ⟨name⟩
+
+/-- Derive the ABI from a triple's final segment -/
+def fromTriple (triple : String) : ClangAbi :=
+  let lower := triple.toLower
+  if lower.endsWith "-msvc" then .msvc
+  else if lower.endsWith "-gnu" || lower.endsWith "-mingw32" then .gnu
+  else
+    let parts := lower.splitOn "-"
+    match parts.getLast? with
+    | some last => .other last
+    | none => .other ""
+
+end ClangAbi
+
+/-- File name of the runtime archive inside zig-out-<abi> -/
+def runtimeArchiveName : String := "libsoma_runtime.a"
+
+def runtimeArchiveFileFor (abi : ClangAbi) : String :=
+  s!"libsoma_runtime-{abi.name}.a"
 
 /-- Find the sysroot directory using the standard discovery order -/
 def findSysroot (explicit : Option String) : IO (Option System.FilePath) := do
@@ -80,50 +112,82 @@ def runCommand (cmd : String) (args : Array String) (cwd : Option String := none
   let exitCode ← proc.wait
   pure { exitCode, stdout, stderr }
 
+/-- Query clang for its default target triple -/
+def detectClangTriple (tools : ToolPaths) : IO String := do
+  let result ← runCommand tools.clang #["-print-target-triple"]
+  if result.exitCode == 0 then
+    pure result.stdout.trimAscii.toString
+  else
+    pure ""
+
+/-- Detect clang's default ABI. -/
+def detectClangAbi (tools : ToolPaths) : IO ClangAbi := do
+  let triple ← detectClangTriple tools
+  pure (ClangAbi.fromTriple triple)
+
+/-- Derive the ABI we should target for an artifact -/
+def abiForTarget (tools : ToolPaths) (llvmTarget : Option String) : IO ClangAbi := do
+  match llvmTarget with
+  | some triple =>
+    let abi := ClangAbi.fromTriple triple
+    match abi with
+    | .other _ => detectClangAbi tools
+    | _ => pure abi
+  | none => detectClangAbi tools
+
 /-- Candidate dev-mode locations for the runtime tree -/
 private def devRuntimeDirs : IO (Array System.FilePath) := do
   let cwd ← IO.currentDir
   pure #[cwd / ".." / "runtime", cwd / "runtime"]
 
-private def zigArchiveSubpath : System.FilePath :=
-  System.FilePath.mk "zig-out" / runtimeArchiveFile
+/-- Per-ABI install prefix under the runtime source dir -/
+private def zigOutDirFor (abi : ClangAbi) : System.FilePath :=
+  System.FilePath.mk s!"zig-out-{abi.name}"
 
+/-- Archive path inside an ABI-specific zig-out tree -/
+private def zigArchiveSubpathFor (abi : ClangAbi) : System.FilePath :=
+  zigOutDirFor abi / runtimeArchiveName
+
+/-- Invoke `zig build` in the runtime source directory -/
 private def buildRuntimeArchive
-    (zig : String) (runtimeDir : System.FilePath)
+    (zig : String) (runtimeDir : System.FilePath) (abi : ClangAbi)
     : IO (Except String System.FilePath) := do
-  let result ← runCommand zig #["build"] (cwd := some runtimeDir.toString)
+  let prefixDir := zigOutDirFor abi
+  let mut args : Array String := #["build", "-p", prefixDir.toString]
+  if System.Platform.isWindows then
+    match abi with
+    | .gnu  => args := args.push "-Dtarget=x86_64-windows-gnu"
+    | .msvc => args := args.push "-Dtarget=x86_64-windows-msvc"
+    | .other _ => pure ()
+  let result ← runCommand zig args (cwd := some runtimeDir.toString)
   if result.exitCode ≠ 0 then
     pure (.error s!"zig build failed in {runtimeDir} (exit {result.exitCode}):\n{result.stderr}")
   else
-    let path := runtimeDir / zigArchiveSubpath
+    let path := runtimeDir / zigArchiveSubpathFor abi
     if ← path.pathExists then
       pure (.ok path)
     else
       pure (.error s!"zig build succeeded but {path} was not produced")
 
-/-- Find the prebuilt runtime archive -/
-def findRuntime (sysroot : Option String) : IO (Option System.FilePath) := do
+/-- Find the runtime archive for the requested ABI -/
+def findRuntime (sysroot : Option String) (abi : ClangAbi) : IO (Option System.FilePath) := do
   if let some sysrootPath ← findSysroot sysroot then
-    let runtimePath := sysrootPath / "lib" / runtimeArchiveFile
-    if ← runtimePath.pathExists then
-      return some runtimePath
+    let abiPath := sysrootPath / "lib" / runtimeArchiveFileFor abi
+    if ← abiPath.pathExists then return some abiPath
 
   let devDirs ← devRuntimeDirs
 
   for dir in devDirs do
-    let flat := dir / runtimeArchiveFile
-    if ← flat.pathExists then return some flat
-    let zigOut := dir / zigArchiveSubpath
-    if ← zigOut.pathExists then return some zigOut
+    let abiZigOut := dir / zigArchiveSubpathFor abi
+    if ← abiZigOut.pathExists then return some abiZigOut
 
   for dir in devDirs do
     let buildZig := dir / "build.zig"
     if ← buildZig.pathExists then
-      IO.println s!"runtime archive not found; running `zig build` in {dir}"
-      match ← buildRuntimeArchive defaultTools.zig dir with
+      IO.println s!"runtime archive for {abi} not found; running `zig build` in {dir}"
+      match ← buildRuntimeArchive defaultTools.zig dir abi with
       | .ok path => return some path
-      | .error e =>
-        IO.eprintln e
+      | .error e => IO.eprintln e
   return none
 
 /-- Check if a tool is available -/
@@ -141,7 +205,11 @@ def compileToObject
     (llvmTarget : Option String := none)
     : IO (Except String Unit) := do
   let optFlag := s!"-O{min optLevel 3}"
-  let mut args := #["-c", optFlag, "-o", oPath.toString, llPath.toString]
+  let mut args := #[
+    "-c", optFlag,
+    "-rtlib=compiler-rt",
+    "-o", oPath.toString, llPath.toString
+  ]
 
   if lto then
     args := args.push "-flto"
@@ -165,12 +233,16 @@ def linkExecutable
     (optLevel : Nat := 2)
     (lto : Bool := false)
     (llvmTarget : Option String := none)
-    (isWindowsTarget : Bool := System.Platform.isWindows)
+    (abi : ClangAbi := .other "")
     : IO (Except String Unit) := do
-  let _ := llvmTarget
   let optFlag := s!"-O{min optLevel 3}"
 
   let mut args := #[optFlag, "-o", output.toString]
+
+  if let some triple := llvmTarget then
+    args := #["-target", triple] ++ args
+
+  args := args.push "-rtlib=compiler-rt"
 
   if lto then
     args := args.push "-flto"
@@ -182,8 +254,9 @@ def linkExecutable
   if let some rt := runtime then
     args := args.push rt.toString
 
-  if isWindowsTarget then
-    args := args.push "-lgcc"
+  match abi with
+  | .gnu => args := args.push "-lgcc"
+  | _ => pure ()
 
   let result ← runCommand tools.clang args
   if result.exitCode == 0 then
@@ -197,7 +270,6 @@ def createArchive
     (objs : Array System.FilePath)
     (output : System.FilePath)
     : IO (Except String Unit) := do
-  -- ar rcs output.a obj1.o obj2.o ...
   let mut args := #["rcs", output.toString]
   for obj in objs do
     args := args.push obj.toString
@@ -257,18 +329,18 @@ def compileAndLink
     (sysroot : Option String := none)
     (lto : Bool := false)
     (llvmTarget : Option String := none)
-    (isWindowsTarget : Bool := System.Platform.isWindows)
     : IO (Except String Unit) := do
   let oPath := output.withExtension "o"
+  let abi ← abiForTarget tools llvmTarget
 
   match ← compileToObject tools llPath oPath optLevel lto llvmTarget with
   | .error e => pure (.error e)
   | .ok () =>
     let runtimePath ← match runtime with
       | some r => pure (some r)
-      | none => findRuntime sysroot
+      | none => findRuntime sysroot abi
 
-    match ← linkExecutable tools #[oPath] output runtimePath optLevel lto llvmTarget isWindowsTarget with
+    match ← linkExecutable tools #[oPath] output runtimePath optLevel lto llvmTarget abi with
     | .error e => pure (.error e)
     | .ok () =>
       unless keepIntermediates do

@@ -53,7 +53,6 @@ def generateOutput
   let tools := External.defaultTools
   let optLevel := opts.resolvedOptLevel
   let llvmTarget := some targetSpec.llvmTarget
-  let isWin := targetSpec.os.isWindowsABI
 
   match ext with
   | some "ll" =>
@@ -81,7 +80,7 @@ def generateOutput
       IO.FS.writeFile llTemp llvmIR
 
       IO.println s!"Compiling to executable..."
-      let result ← External.compileAndLink tools llTemp outputPath none optLevel false opts.sysroot opts.lto llvmTarget isWin
+      let result ← External.compileAndLink tools llTemp outputPath none optLevel false opts.sysroot opts.lto llvmTarget
 
       match result with
       | .ok () =>
@@ -181,7 +180,15 @@ def build (opts : BuildOptions) : IO BuildResult := do
         IO.eprintln s!"Library packaging failed: {e}"
         pure (BuildResult.failed #[])
     else
-      let targetSpec ← Soma.Driver.TargetSpec.resolve opts.target
+      let targetSpec ← do
+        let base ← Soma.Driver.TargetSpec.resolve opts.target
+        if opts.target.isNone && base.os == Soma.Driver.TargetOS.windows then
+          let detected ← External.detectClangAbi External.defaultTools
+          match detected with
+          | .msvc => pure Soma.Driver.TargetSpec.x86_64_windows_msvc
+          | _ => pure base
+        else
+          pure base
       let dataLayout := if targetSpec.dataLayout.isEmpty then none else some targetSpec.dataLayout
       let compileResult ← compileModules
         result.packageName
