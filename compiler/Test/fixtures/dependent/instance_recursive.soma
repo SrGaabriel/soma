@@ -1,0 +1,16 @@
+// expect: success
+
+class Add (a : Type) where
+    add : a -> a -> a
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+instance Add Nat where
+    def add : Nat -> Nat -> Nat
+        | Nat::Zero, m => m
+        | Nat::Succ n, m => Nat::Succ (add n m)
+
+def two : Nat := Nat::Succ (Nat::Succ Nat::Zero)
+def four : Nat := add two two

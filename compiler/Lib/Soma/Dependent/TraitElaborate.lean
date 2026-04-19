@@ -524,41 +524,47 @@ partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
   -- Extract method names and types from the concrete record type
   let methodTypes ← extractRecordFields recordTy
 
-  -- Elaborate each method implementation against its expected type
-  let mut fields : List (String × Value) := []
-  let mut typedFns : Array Soma.Core.TypedFunction := #[]
-  let mut methodExprs : Array (String × Expr) := #[]
+  let mut jobs : Array (Soma.Core.UntypedFunction × Value) := #[]
+  let mut selfRefs : Array (String × QualifiedName × Value) := #[]
   for method in methods do
     let methodName := method.name.display
     match methodTypes.find? (fun (name, _) => name == methodName) with
     | some (_, expectedType) =>
-      let pendingBefore := (← TCM.getPendingInstances).size
-      let result ← elaborateMethodImpl method expectedType
+      jobs := jobs.push (method, expectedType)
+      selfRefs := selfRefs.push (methodName, method.name, expectedType)
+    | none => pure ()
 
-      -- For constrained instances: substitute constraint dict metas with
-      -- fvar Exprs in the method body, so abstractFVar can find them later.
-      let (lambdaExpr, coreBody) ←
-        if constraintDicts.isEmpty then
+  -- Elaborate each method implementation against its expected type
+  let mut fields : List (String × Value) := []
+  let mut typedFns : Array Soma.Core.TypedFunction := #[]
+  let mut methodExprs : Array (String × Expr) := #[]
+  for (method, expectedType) in jobs do
+    let methodName := method.name.display
+    let pendingBefore := (← TCM.getPendingInstances).size
+    let result ← TCM.withMethodSelfRefs selfRefs do
+      elaborateMethodImpl method expectedType
+
+    let (lambdaExpr, coreBody) ←
+      if constraintDicts.isEmpty then
+        pure (result.lambdaExpr, result.coreBody)
+      else
+        let subst ← buildConstraintDictSubst constraintDicts pendingBefore
+        if subst.isEmpty then
           pure (result.lambdaExpr, result.coreBody)
         else
-          let subst ← buildConstraintDictSubst constraintDicts pendingBefore
-          if subst.isEmpty then
-            pure (result.lambdaExpr, result.coreBody)
-          else
-            pure (applyMvarSubst result.lambdaExpr subst,
-                  applyMvarSubst result.coreBody subst)
+          pure (applyMvarSubst result.lambdaExpr subst,
+                applyMvarSubst result.coreBody subst)
 
-      fields := (methodName, result.value) :: fields
-      methodExprs := methodExprs.push (methodName, lambdaExpr)
-      typedFns := typedFns.push {
-        name := method.name
-        params := result.params
-        body := coreBody
-        fnType := result.fnType
-        closureInfo := method.closureInfo
-        attrs := method.attrs
-      }
-    | none => pure ()
+    fields := (methodName, result.value) :: fields
+    methodExprs := methodExprs.push (methodName, lambdaExpr)
+    typedFns := typedFns.push {
+      name := method.name
+      params := result.params
+      body := coreBody
+      fnType := result.fnType
+      closureInfo := method.closureInfo
+      attrs := method.attrs
+    }
 
   return {
     value := Value.vRecordVal fields.reverse
@@ -803,53 +809,48 @@ def elaborateInstanceValue (typeArgs : Array Value)
     (params : Array TypeVarBinder)
     (constraintDicts : Array ConstraintDictEntry := #[])
     : TCM InstanceElabResult := do
+  let mut jobs : Array (Soma.Core.UntypedFunction × Value) := #[]
+  let mut selfRefs : Array (String × QualifiedName × Value) := #[]
+  for method in methods do
+    match methodSignatures.find? (fun (name, _) => name.display == method.name.display) with
+    | some (_, sigSyntax) =>
+      let expectedType ← substituteMethodType sigSyntax params typeArgs
+      jobs := jobs.push (method, expectedType)
+      selfRefs := selfRefs.push (method.name.display, method.name, expectedType)
+    | none => pure ()
+
   let mut fields : List (String × Value) := []
   let mut typedFns : Array Soma.Core.TypedFunction := #[]
   let mut methodExprs : Array (String × Expr) := #[]
 
-  for method in methods do
-    -- Find the corresponding method signature
-    let methodSig? := methodSignatures.find? fun (name, _) =>
-      name.display == method.name.display
+  for (method, expectedType) in jobs do
+    let pendingBefore := (← TCM.getPendingInstances).size
 
-    match methodSig? with
-    | none =>
-      -- Method not in class - skip
-      pure ()
-    | some (_, sigSyntax) =>
-      -- Substitute type arguments into the method signature
-      let expectedType ← substituteMethodType sigSyntax params typeArgs
+    let result ← TCM.withMethodSelfRefs selfRefs do
+      elaborateMethodImpl method expectedType
 
-      -- Record pending instance count for constraint dict substitution.
-      let pendingBefore := (← TCM.getPendingInstances).size
-
-      -- Elaborate the method implementation
-      let result ← elaborateMethodImpl method expectedType
-
-      -- For constrained instances: substitute constraint dict metas with
-      -- fvar Exprs in the method body.
-      let (lambdaExpr, coreBody) ←
-        if constraintDicts.isEmpty then
+    let (lambdaExpr, coreBody) ←
+      if constraintDicts.isEmpty then
+        pure (result.lambdaExpr, result.coreBody)
+      else
+        let subst ← buildConstraintDictSubst constraintDicts pendingBefore
+        if subst.isEmpty then
           pure (result.lambdaExpr, result.coreBody)
         else
-          let subst ← buildConstraintDictSubst constraintDicts pendingBefore
-          if subst.isEmpty then
-            pure (result.lambdaExpr, result.coreBody)
-          else
-            let le := applyMvarSubst result.lambdaExpr subst
-            let cb := applyMvarSubst result.coreBody subst
-            pure (le, cb)
+          let le := applyMvarSubst result.lambdaExpr subst
+          let cb := applyMvarSubst result.coreBody subst
+          pure (le, cb)
 
-      fields := (method.name.display, result.value) :: fields
-      methodExprs := methodExprs.push (method.name.display, lambdaExpr)
-      typedFns := typedFns.push {
-        name := method.name
-        params := result.params
-        body := coreBody
-        fnType := result.fnType
-        closureInfo := method.closureInfo
-        attrs := method.attrs
-      }
+    fields := (method.name.display, result.value) :: fields
+    methodExprs := methodExprs.push (method.name.display, lambdaExpr)
+    typedFns := typedFns.push {
+      name := method.name
+      params := result.params
+      body := coreBody
+      fnType := result.fnType
+      closureInfo := method.closureInfo
+      attrs := method.attrs
+    }
 
   return {
     value := Value.vRecordVal fields.reverse

@@ -783,6 +783,11 @@ where
         let tyExpr ← quoteValueToExpr entry.type
         return (entry.type, .fvar entry.fvarId tyExpr)
       | none =>
+        if name.path.isEmpty then
+          if let some (qn, ty) ← TCM.lookupMethodSelfRef name.name then
+            TCM.recordGlobalDep qn
+            let tyExpr ← quoteValueToExpr ty
+            return (ty, .const qn tyExpr)
         -- Check globals (functions, constructors, data types)
         match ← TCM.lookupGlobal name.path name.name with
         | some info =>

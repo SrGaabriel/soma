@@ -105,6 +105,7 @@ structure TypeConvCtx (n : Nat) where
   primTypes : PrimTypeRegistry
   inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {}
   abbrevEnv : Soma.Dependent.AbbrevEnv := {}
+  inProgressInductives : Std.HashSet Soma.Unique := {}
   deriving Inhabited
 
 /-- Build the primitive type registry from the wired-in type registry -/
@@ -548,30 +549,33 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
     match ctx.primTypes.get? dId with
     | some prim => convertPrimToAlloyTy prim params ctx
     | none =>
-      match ctx.inductives.get? ⟨dId⟩ with
-      | some indInfo =>
-        if indInfo.ctors.size == 1 then
-          let ctor := indInfo.ctors[0]!
-          let instantiatedTy := applyCtorTypeArgs ctor.type params
-          let fields := extractCtorFieldTypes instantiatedTy ctx
-          let fieldNames := indInfo.fieldNames
-          let namedFields := fields.mapIdx fun i ty =>
-            let name := if h : i < fieldNames.size then fieldNames[i] else s!"field{i}"
-            (name, ty)
-          let kept := namedFields.filter fun (_, ty) => !Ty.isZeroWidth ty
-          if kept.isEmpty then .prim .unit
-          else if kept.size == 1 then kept[0]!.2
-          else .struct kept
-        else
-          let variants := indInfo.ctors.map fun ctor =>
-            let fields := extractCtorFieldTypes ctor.type ctx
-            (ctor.tag, fields)
-          .tagged (.prim .u32) variants
-      | none =>
-        -- Try unfolding as a type abbreviation
-        match Somac.Circuit.Lower.unfoldValue val ctx.abbrevEnv with
-        | .vDataType _ _ => .tagged (.prim .u32) #[] -- genuine data type, not an alias
-        | unfolded => convertValueTypeWithMapping unfolded ctx
+      if ctx.inProgressInductives.contains dId then
+        .rawPtr
+      else
+        match ctx.inductives.get? ⟨dId⟩ with
+        | some indInfo =>
+          let ctx' := { ctx with inProgressInductives := ctx.inProgressInductives.insert dId }
+          if indInfo.ctors.size == 1 then
+            let ctor := indInfo.ctors[0]!
+            let instantiatedTy := applyCtorTypeArgs ctor.type params
+            let fields := extractCtorFieldTypes instantiatedTy ctx'
+            let fieldNames := indInfo.fieldNames
+            let namedFields := fields.mapIdx fun i ty =>
+              let name := if h : i < fieldNames.size then fieldNames[i] else s!"field{i}"
+              (name, ty)
+            let kept := namedFields.filter fun (_, ty) => !Ty.isZeroWidth ty
+            if kept.isEmpty then .prim .unit
+            else if kept.size == 1 then kept[0]!.2
+            else .struct kept
+          else
+            let variants := indInfo.ctors.map fun ctor =>
+              let fields := extractCtorFieldTypes ctor.type ctx'
+              (ctor.tag, fields)
+            .tagged (.prim .u32) variants
+        | none =>
+          match Somac.Circuit.Lower.unfoldValue val ctx.abbrevEnv with
+          | .vDataType _ _ => .tagged (.prim .u32) #[]
+          | unfolded => convertValueTypeWithMapping unfolded ctx
   | Value.vConstructor _ _ _ _ => .rawPtr
   | Value.vRecord row =>
     let fields := extractRowFieldsForStruct row ctx

@@ -1,0 +1,2 @@
+class Add (a : Type) where
+    add : a -> a -> a

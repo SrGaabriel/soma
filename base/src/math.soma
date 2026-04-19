@@ -1,0 +1,11 @@
+use base::op::{Add, add}
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+instance Add Nat where
+    def add : Nat -> Nat -> Nat
+        | Nat::Zero, m => m
+        | Nat::Succ n, m => Nat::Succ (add n m)
+

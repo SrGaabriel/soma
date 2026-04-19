@@ -550,8 +550,20 @@ def buildGlobalsAndInstances
 
   let fullInstanceEnv := mergeInstanceEnv seedInstanceEnv moduleInstanceEnv
 
+  let fullGlobalsWithInstanceFns := instanceTypedFns.foldl (init := fullGlobals) fun g fn =>
+    match g.getDef fn.name with
+    | some _ => g
+    | none =>
+      g.registerAnonymous {
+        name := fn.name
+        type := fn.fnType
+        value := none
+        isConstructor := false
+        origin := Soma.Dependent.DeclarationOrigin.instanceMethod
+      }
+
   return {
-    globals := fullGlobals
+    globals := fullGlobalsWithInstanceFns
     instanceEnv := fullInstanceEnv
     abbrevEnv := fullAbbrevEnv
     instanceMap := instanceMap

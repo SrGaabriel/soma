@@ -101,6 +101,7 @@ inductive DeclarationOrigin where
   | constructor
   | projection
   | traitMethod
+  | instanceMethod
   | intrinsic
   | extern
   | generated
@@ -505,6 +506,13 @@ def register (g : Globals) (ns : Array String) (displayName : String) (info : Gl
   match info.intrinsic with
   | some i =>
     { g' with intrinsics := g'.intrinsics.insert info.name i }
+  | none => g'
+
+/-- Register a declaration by QualifiedName only without inserting it into the namespace tree -/
+def registerAnonymous (g : Globals) (info : GlobalInfo) : Globals :=
+  let g' := { g with defs := g.defs.insert info.name info }
+  match info.intrinsic with
+  | some i => { g' with intrinsics := g'.intrinsics.insert info.name i }
   | none => g'
 
 /-- Look up a declaration by its QualifiedName -/
@@ -1037,6 +1045,8 @@ structure TCContext where
   instanceEnv : InstanceEnv := InstanceEnv.empty
   /-- Type abbreviations (elaborated, merged from dependencies) -/
   abbrevEnv : AbbrevEnv := {}
+  /-- Unqualified-name overrides -/
+  methodSelfRefs : Std.HashMap String (Soma.Core.QualifiedName × Value) := {}
   /-- Current span (for error reporting) -/
   currentSpan : Span := Span.uninhabited
   /-- Are we in erased context? (under a 0-quantity binder) -/
@@ -1169,6 +1179,20 @@ def recordLocalBindingType (nameSpan : Span) (ty : Value) : TCM Unit := do
 def lookupLocal (name : String) : TCM (Option CtxEntry) := do
   let ctx ← getCtx
   return ctx.lookupLocal name
+
+/-- Install a batch of method self-reference overrides for the duration of `m` -/
+def withMethodSelfRefs (entries : Array (String × Soma.Core.QualifiedName × Value))
+    (m : TCM α) : TCM α :=
+  withReader (fun ctx =>
+    let merged := entries.foldl (init := ctx.methodSelfRefs) fun acc (name, qn, ty) =>
+      acc.insert name (qn, ty)
+    { ctx with methodSelfRefs := merged }) m
+
+/-- Look up a method self-reference override by unqualified name -/
+def lookupMethodSelfRef (name : String)
+    : TCM (Option (Soma.Core.QualifiedName × Value)) := do
+  let ctx ← getCtx
+  return ctx.methodSelfRefs.get? name
 
 /-- Record a dependency on a global definition (for incremental checking) -/
 def recordGlobalDep (qn : Soma.Core.QualifiedName) : TCM Unit := do
