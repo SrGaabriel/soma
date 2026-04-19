@@ -31,7 +31,7 @@ def extractImportInfo (tree : RedTree) (node : RedNode) : Option ImportInfo := d
   let pathNode ← findChild? tree node .importPath
   let pathTokens := getTokens tree pathNode
   let pathText := pathTokens
-    |>.filter (·.tokenKind? != some .slash)
+    |>.filter (·.tokenKind? != some .doubleColon)
     |>.toList
     |>.filterMap (·.text?)
     |> String.intercalate "/"
@@ -552,17 +552,92 @@ def getModulePathCompletions (state : LspState) (partialPath : String)
       results := results.push { label := modName, insertText := modName, kind := .module, detail := some "module" }
   return results
 
-/-- Get field completions for a type -/
-def getFieldCompletions (globals : Globals) (_name : String)
-    : Array CompletionEntry := Id.run do
+/-- Walk up from a node to find the nearest ancestor of a given SyntaxKind -/
+partial def findAncestorOfKind (tree : RedTree) (node : RedNode) (kind : SyntaxKind) : Option RedNode :=
+  if node.syntaxKind? == some kind then some node
+  else match tree.parent? node with
+    | some parent => findAncestorOfKind tree parent kind
+    | none => none
+
+/-- Extract path segments from an importPath node -/
+def extractImportPathSegments (tree : RedTree) (importPathNode : RedNode) : Array String :=
+  (getTokens tree importPathNode).filterMap fun t =>
+    match t.tokenKind? with
+    | some .lowerIdent | some .upperIdent => t.text?
+    | _ => none
+
+/-- Extract the partial word ending at `offset` in `source` -/
+def extractPartialWord (source : String) (offset : Nat) : String :=
+  let before := (source.take offset).toString
+  let rev := before.toList.reverse
+  let taken := rev.takeWhile fun c => c.isAlphanum || c == '_'
+  String.ofList taken.reverse
+
+def parseDotPrefix (source : String) (offset : Nat) : Option (String × String) :=
+  let before := (source.take offset).toString
+  let rev := before.toList.reverse
+  let (partialChars, afterPartial) := rev.span fun c => c.isAlphanum || c == '_'
+  match afterPartial with
+  | '.' :: restAfterDot =>
+    match restAfterDot with
+    | '.' :: _ => none
+    | _ =>
+      let (lhsChars, _) := restAfterDot.span fun c => c.isAlphanum || c == '_'
+      if lhsChars.isEmpty then none
+      else some (String.ofList lhsChars.reverse, String.ofList partialChars.reverse)
+  | _ => none
+
+/-- Source of field information for projection completion -/
+inductive FieldSource where
+  | anonRecord (recordTy : Value)
+  | namedType (qn : Soma.Core.QualifiedName)
+
+/-- Convert an elaborated `Value` type to a `FieldSource` if it names a record -/
+private def fieldSourceOfType (ty : Value) : Option FieldSource :=
+  match ty with
+  | .vRecord _ => some (.anonRecord ty)
+  | .vDataType id _ => some (.namedType (Soma.Core.QualifiedName.ofUnique id))
+  | _ => none
+
+/-- Resolve a reference name to the source of its fields (for projection completion) -/
+def resolveFieldSource (name : String) (offset : Nat) (mod : CompiledModule)
+    : Option FieldSource := do
+  let globals ← mod.globals
+  let currentNs := mod.name.splitOn "/" |>.toArray
+  match mod.scopeMap.resolve name offset with
+  | some binding =>
+    match mod.localTypes.get? binding.nameSpan.start.byteOffset with
+    | some ty => fieldSourceOfType ty
+    | none =>
+      let annot ← binding.typeAnnotation
+      let afterWs := annot.toList.dropWhile Char.isWhitespace
+      let head := String.ofList (afterWs.takeWhile fun c => c.isAlphanum || c == '_')
+      guard (!head.isEmpty)
+      let qn ← globals.resolve currentNs #[] head
+      some (.namedType qn)
+  | none =>
+    let info ← resolveViaGlobals globals currentNs #[] name
+    fieldSourceOfType info.type
+
+/-- Build completion entries for the fields of a record-like type -/
+def getFieldCompletionsFromSource (globals : Globals) (source : FieldSource)
+    (partialName : String) : Array CompletionEntry := Id.run do
   let mut results : Array CompletionEntry := #[]
-  for (typeQn, fields) in globals.recordFields.toArray do
-    for fieldName in fields do
-      let isDuplicate := results.any fun e => e.label == fieldName
-      if !isDuplicate then
-        let typeStr := (globals.getDef typeQn).map fun info =>
-          s!"{info.name.display}.{fieldName}"
-        results := results.push { label := fieldName, insertText := fieldName, kind := .field, detail := typeStr }
+  match source with
+  | .anonRecord recordTy =>
+    for (fname, fty) in recordTy.recordFields do
+      if partialName.isEmpty || fname.startsWith partialName then
+        results := results.push
+          { label := fname, insertText := fname, kind := .field
+          , detail := some (valueToString fty) }
+  | .namedType qn =>
+    if let some fieldNames := globals.recordFields.get? qn then
+      for fname in fieldNames do
+        if partialName.isEmpty || fname.startsWith partialName then
+          let detail := (globals.getDef qn).map fun info =>
+            s!"field of {info.name.display}"
+          results := results.push
+            { label := fname, insertText := fname, kind := .field, detail }
   return results
 
 /-- CST-based completions -/
@@ -602,7 +677,8 @@ def getCompletionsAt (offset : Nat) (mod : CompiledModule) (allModules : Array C
     (state : Option LspState := none) (liveContent : Option String := none)
     (cursorLine : Option Nat := none) (cursorCol : Option Nat := none)
     : Array CompletionEntry := Id.run do
-  let context := match findNodeAtPosition offset mod.tree with
+  let nodeAtPos := findNodeAtPosition offset mod.tree
+  let context := match nodeAtPos with
     | some nodeInfo => nodeInfo.context
     | none => .unknown
 
@@ -618,16 +694,21 @@ def getCompletionsAt (offset : Nat) (mod : CompiledModule) (allModules : Array C
           ((lines[line]).take col).toString
         else ""
       | _, _, _ => ((mod.sourceContent.take offset).toString)
+    let cursorPos := textBeforeCursor.length
 
-    let (path, partialName) := parseQualifiedPrefix textBeforeCursor textBeforeCursor.length
+    let inImportItems := match context with
+      | .inImportItems => true
+      | _ => false
+    if !inImportItems then
+      if let some (lhsName, partialField) := parseDotPrefix textBeforeCursor cursorPos then
+        if let some source := resolveFieldSource lhsName offset mod then
+          return getFieldCompletionsFromSource globals source partialField
+
+    let (path, partialName) := parseQualifiedPrefix textBeforeCursor cursorPos
     if !path.isEmpty then
       let relativePath := currentNs.toList ++ path.toList
-      pure ()
       if let some ns := globals.root.getAt? relativePath then
-        let results := completionsFromNamespace ns globals partialName
-
-        return results
-      pure ()
+        return completionsFromNamespace ns globals partialName
       if let some ns := globals.root.getAt? path.toList then
         return completionsFromNamespace ns globals partialName
       -- Try via imports: first segment might be an imported module name
@@ -639,20 +720,32 @@ def getCompletionsAt (offset : Nat) (mod : CompiledModule) (allModules : Array C
             return completionsFromNamespace ns globals partialName
       | [] => pure ()
 
-    -- Module path completions for import declarations
     match context with
-    | .inImport | .inImportItems =>
+    | .inImport =>
       if let some st := state then
-        return getModulePathCompletions st ""
+        return getModulePathCompletions st (extractPartialWord textBeforeCursor cursorPos)
       else return #[]
+    | .inImportItems =>
+      let partialWord := extractPartialWord textBeforeCursor cursorPos
+      match nodeAtPos with
+      | some nodeInfo =>
+        match findAncestorOfKind mod.tree nodeInfo.node .declUse with
+        | some useNode =>
+          match findChild? mod.tree useNode .importPath with
+          | some pathNode =>
+            let segments := extractImportPathSegments mod.tree pathNode
+            match globals.root.getAt? segments.toList with
+            | some ns => return completionsFromNamespace ns globals partialWord
+            | none => return #[]
+          | none => return #[]
+        | none => return #[]
+      | none => return #[]
     | .afterDot _ =>
-      -- Field completions
-      return getFieldCompletions globals ""
+      return #[]
     | _ =>
       -- Standard completions from Globals
       return getGlobalsCompletionsForContext context globals currentNs mod.abbrevEnv
 
-  pure ()
   -- CST fallback when Globals unavailable
   let cstCompletions := getCompletionsForContextCst context mod allModules
   return cstCompletions.map fun def_ =>

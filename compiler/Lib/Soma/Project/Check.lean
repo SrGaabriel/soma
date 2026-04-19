@@ -145,6 +145,7 @@ structure CheckedModule where
   metas : Soma.Core.MetaState := .empty
   /-- Final unique ID counter from elaboration (for lambda lifting) -/
   uniqueNextId : Nat := 0
+  localTypes : Std.HashMap Nat Soma.Core.Value := {}
 
 namespace CheckedModule
 
@@ -576,6 +577,8 @@ structure TypeCheckResult where
   uniqueNextId : Nat := 0
   /-- Metavariable solutions from type checking (for resolving implicit type args) -/
   metas : Soma.Core.MetaState := .empty
+  /-- Elaborated types of local bindings, keyed by the start byte offset of the binding's name span -/
+  localTypes : Std.HashMap Nat Soma.Core.Value := {}
   deriving Inhabited
 
 def typeCheckModule
@@ -669,6 +672,7 @@ def typeCheckModule
       (init := fnResult.allUsedGlobals) fun acc qn => acc.insert qn
     uniqueNextId := fnResult.finalState.uniqueSupply.nextId
     metas := fnResult.finalState.metas
+    localTypes := fnResult.finalState.localTypes
   }
 
 /-- Extract public symbols from a type-checked module -/
@@ -1042,6 +1046,7 @@ def checkModule
     usages := tcResult.usages
     metas := tcResult.metas
     uniqueNextId := tcResult.uniqueNextId
+    localTypes := tcResult.localTypes
   }
 
   (elabRes.diagnostics ++ importDiags ++ allDiags ++ unusedImportDiags, some checkedModule, supply'')
@@ -1132,6 +1137,7 @@ def checkModuleIncremental
     usages := tcResult.usages
     metas := tcResult.metas
     uniqueNextId := tcResult.uniqueNextId
+    localTypes := tcResult.localTypes
   }
 
   (elabRes.diagnostics ++ importDiags ++ allDiags ++ unusedImportDiags, some checkedModule, supply'')

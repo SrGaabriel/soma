@@ -401,7 +401,8 @@ partial def findFieldInRow (row : Value) (fieldName : String) (span : Span) : TC
     let available ← collectRowFields row
     TCM.throw (.fieldNotFound fieldName row span available none)
   | _ =>
-    TCM.throw (.fieldNotFound fieldName row span #[] none)
+    let available ← collectRowFields row
+    TCM.throw (.fieldNotFound fieldName row span available none)
 
 /-- If a type is a type-class application, instantiate its class record type -/
 private def normalizeRecordLikeType (ty : Value) (span : Span := Span.uninhabited) : TCM Value := do
@@ -513,7 +514,8 @@ partial def findFieldInRowByLabelVal (row : Value) (lookupLabel : Value) (span :
       | .vLabelLit name => name
       | .vNeutral _ (.nVar v) => v.name
       | _ => "<label>"
-    TCM.throw (.fieldNotFound labelStr row' span #[] none)
+    let available ← collectRowFields row'
+    TCM.throw (.fieldNotFound labelStr row' span available none)
 
 /-- Infer polymorphic field access (`rec @l`). -/
 partial def inferPolymorphicFieldAccess
@@ -805,7 +807,8 @@ where
             -- `panic` because the module has errors and won't reach codegen;
             -- the type is a fresh meta so `ensurePi`/unification can still
             -- make progress at use sites.
-            TCM.addError (.unboundVariable name.name name.span #[])
+            let suggestions ← TCM.suggestSimilarNames name.name
+            TCM.addError (.unboundVariable name.name name.span suggestions)
             let tyMeta ← TCM.freshMetaVal (.vType .zero)
             return (tyMeta, .panic s!"unbound variable `{name.name}`")
 
@@ -1057,6 +1060,7 @@ partial def inferSyntaxLamBody
   | (name, _tyAnnot) :: rest =>
     let paramTy ← TCM.freshMetaVal (.vType .zero)
     let bindingId ← TCM.freshLocalId name.name
+    TCM.recordLocalBindingType name.span paramTy
     -- Inference mode has no expected Pi to read quantities from, so every
     -- parameter binds at `.omega`
     withCheckedBinding name.name bindingId paramTy .omega .explicit span do
@@ -1090,6 +1094,7 @@ partial def checkSyntaxLamBody
         let x := Value.vNeutral dom (.nVar ⟨name.name, lvl⟩)
         applyClosure cod x
       let bindingId ← TCM.freshLocalId name.name
+      TCM.recordLocalBindingType name.span dom
       withCheckedBinding name.name bindingId dom qty binder span do
         match ← TCM.lookupLocal name.name with
         | some entry =>
@@ -1100,6 +1105,7 @@ partial def checkSyntaxLamBody
     | _ =>
       let paramTy ← TCM.freshMetaVal (.vType .zero)
       let bindingId ← TCM.freshLocalId name.name
+      TCM.recordLocalBindingType name.span paramTy
       TCM.withBinding name.name bindingId paramTy .omega .explicit span do
         match ← TCM.lookupLocal name.name with
         | some entry =>

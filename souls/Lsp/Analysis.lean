@@ -105,6 +105,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
       abbrevEnv := some cm.abbrevEnv
       incrementalState := some cm.incrementalState
       scopeMap := scopeMap
+      localTypes := cm.localTypes
     }
   | none =>
 
@@ -128,6 +129,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
   let instanceEnv := checkedModule?.map (·.instanceEnv)
   let abbrevEnv := checkedModule?.map (·.abbrevEnv)
   let incrState := checkedModule?.map (·.incrementalState)
+  let localTypes := (checkedModule?.map (·.localTypes)).getD {}
 
   let allDiags := frontendDiags ++ astLowerDiags ++ checkDiags
 
@@ -146,6 +148,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
     abbrevEnv := abbrevEnv
     incrementalState := incrState
     scopeMap := scopeMap
+    localTypes := localTypes
   }
 
 /-- Analyze a source file incrementally using prior state -/
@@ -225,6 +228,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   let instanceEnv := _checkedModule.map (·.instanceEnv) |>.orElse fun _ => oldModule.instanceEnv
   let abbrevEnv := _checkedModule.map (·.abbrevEnv) |>.orElse fun _ => oldModule.abbrevEnv
   let incrState := _checkedModule.map (·.incrementalState) |>.orElse fun _ => oldModule.incrementalState
+  let localTypes := (_checkedModule.map (·.localTypes)).getD oldModule.localTypes
 
   let allDiags := frontendDiags ++ astLowerDiags ++ checkDiags
 
@@ -243,6 +247,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     abbrevEnv := abbrevEnv
     incrementalState := incrState
     scopeMap := scopeMap
+    localTypes := localTypes
   }
 
 /-- Analyze a source file, using incremental analysis if old module is available -/

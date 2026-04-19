@@ -3,6 +3,7 @@ import Soma.Core.Level
 import Soma.Core.Quantity
 import Soma.Core.Quote
 import Soma.Syntax.Diagnostic
+import Soma.Dependent.Suggest
 
 namespace Soma.Dependent
 
@@ -71,7 +72,7 @@ inductive ConstraintOrigin where
   | letBinding (name : String) (span : Span)
   /-- From return type checking -/
   | returnType (fnName : String) (span : Span)
-  /-- Unknown/legacy origin -/
+  /-- No origin information recorded -/
   | unknown
   deriving Repr, Inhabited
 
@@ -265,13 +266,6 @@ inductive TCError where
       (availableFields : Array String)
       (inferredRecordType : Option ConstraintOrigin)
 
-  /-- Constructor not found in data type -/
-  | constructorNotFound
-      (ctor : String)
-      (dataTy : Value)
-      (span : Span)
-      (availableCtors : Array String)
-
   /-- Wrong number of arguments to constructor -/
   | wrongConstructorArity
       (ctor : String)
@@ -305,7 +299,6 @@ inductive TCError where
 
   /-- Unsolved metavariable after elaboration -/
   | unsolvedMeta
-      (id : MetaId)
       (ty : Value)
       (span : Span)
       (relatedConstraints : Array MetaConstraintInfo)
@@ -355,17 +348,6 @@ inductive TCError where
       (span : Span)
       (searchPath : Array String)
 
-  /-- Overlapping instances found -/
-  | overlappingInstances
-      (classId : Unique)
-      (instanceIds : Array Unique)
-      (span : Span)
-
-  /-- Unknown type class -/
-  | unknownClass
-      (classId : Unique)
-      (span : Span)
-
   /-- Termination check failed for @[total] function -/
   | terminationCheckFailed
       (fnName : Soma.Core.QualifiedName)
@@ -385,13 +367,6 @@ inductive TCError where
       (reason : String)
       (span : Span)
       (violatingPosition : Option Span)
-
-  /-- Recursive call not structurally decreasing -/
-  | nonStructuralRecursion
-      (fnName : Soma.Core.QualifiedName)
-      (callSpan : Span)
-      (expectedArg : Option (Nat × String))
-      (actualArg : Option String)
 
   /-- Impossible constructor pattern: indices conflict with scrutinee type -/
   | impossiblePattern
@@ -422,13 +397,12 @@ def span : TCError → Span
   | .unboundVariable _ s _ => s
   | .unboundGlobal _ s _ => s
   | .fieldNotFound _ _ s _ _ => s
-  | .constructorNotFound _ _ s _ => s
   | .wrongConstructorArity _ _ _ s => s
   | .quantityMismatch _ _ _ s => s
   | .linearNotUsed _ s => s
   | .linearUsedMultiple _ _ s => s
   | .erasedUsedAtRuntime _ s _ => s
-  | .unsolvedMeta _ _ s _ _ => s
+  | .unsolvedMeta _ s _ _ => s
   | .unsolvedHole _ _ s => s
   | .ambiguousImplicit _ s _ _ => s
   | .cannotInfer _ s _ => s
@@ -436,12 +410,9 @@ def span : TCError → Span
   | .noInstance _ _ s _ _ => s
   | .instanceCycle _ s _ => s
   | .instanceDepthExceeded _ s _ => s
-  | .overlappingInstances _ _ s => s
-  | .unknownClass _ s => s
   | .terminationCheckFailed _ _ s _ _ => s
   | .partialInTypeIndex _ s => s
   | .positivityViolation _ _ s _ => s
-  | .nonStructuralRecursion _ s _ _ => s
   | .impossiblePattern _ _ _ s => s
   | .nonExhaustiveMatch _ _ s => s
 
@@ -493,13 +464,25 @@ def toDiagnostic : TCError → Diagnostic
       else s!"type mismatch {purposeStr}"
     let baseLabels := #[Label.secondary expectedSpan "expected type from here"]
     let stepLabels := chainToLabels steps
+    let help : Option String := match purpose with
+      | .functionBody fn =>
+        some s!"change `{fn}`'s return type or the body to match"
+      | .functionArg fn idx =>
+        some s!"pass a value of type `{expected}` as argument #{idx + 1} to `{fn}`"
+      | .ifCondition => some "`if` conditions must have type `Bool`"
+      | .ifBranches => some "both branches of an `if` must have the same type"
+      | .caseArms => some "every arm of a `case` must produce the same type"
+      | .patternMatch => some "the pattern doesn't match the scrutinee's type"
+      | .letBinding nm => some s!"the value bound to `{nm}` doesn't match its annotation"
+      | .typeAnnotation => some "the expression doesn't match its type annotation"
+      | _ => none
     { severity := .error
     , code := some "E1002"
     , message := msg
     , primaryLabel := Label.primary actualSpan s!"expected `{expected}`, found `{actual}`"
     , secondaryLabels := baseLabels ++ stepLabels
     , notes := chainToNotes steps
-    , help := none
+    , help
     }
 
   | .expectedFunction actual span origin =>
@@ -509,6 +492,7 @@ def toDiagnostic : TCError → Diagnostic
     Diagnostic.error "expected function type" span s!"`{actual}` is not a function"
       |>.withCode "E1003"
       |>.withNote "function application requires a function type (Π-type)"
+      |>.withHelp "did you mean field access (`.x`) or forget parentheses?"
       |> fun d => { d with notes := d.notes ++ originNote }
 
   | .expectedSigma actual span origin =>
@@ -518,6 +502,7 @@ def toDiagnostic : TCError → Diagnostic
     Diagnostic.error "expected pair type" span s!"`{actual}` is not a pair"
       |>.withCode "E1004"
       |>.withNote "pair projection requires a dependent pair type (Σ-type)"
+      |>.withHelp "construct the pair with `(x, y)` before projecting with `.1` or `.2`"
       |> fun d => { d with notes := d.notes ++ originNote }
 
   | .expectedType actual span context =>
@@ -527,28 +512,34 @@ def toDiagnostic : TCError → Diagnostic
     Diagnostic.error "expected a type" span s!"`{actual}` is not a type{contextNote}"
       |>.withCode "E1005"
       |>.withNote "types have type `Type`"
+      |>.withHelp "only type-level expressions are allowed here"
 
   | .expectedRecord actual span availableFields =>
     let fieldsNote := if availableFields.isEmpty then #[]
       else #[s!"available fields: {String.intercalate ", " availableFields.toList}"]
+    let help := "field access (`.x`) and record literals require a record type"
     Diagnostic.error "expected record type" span s!"`{actual}` is not a record"
       |>.withCode "E1006"
+      |>.withHelp help
       |> fun d => { d with notes := d.notes ++ fieldsNote }
 
   | .expectedVariant actual span =>
     Diagnostic.error "expected variant type" span s!"`{actual}` is not a variant"
       |>.withCode "E1007"
+      |>.withHelp "variant injection (`.Label`) requires a variant type"
 
   | .unboundVariable name span suggestions =>
-    let help := if suggestions.isEmpty then s!"did you mean to define `{name}`?"
-      else s!"did you mean: {String.intercalate ", " suggestions.toList}?"
+    let help := match Soma.Dependent.Suggest.formatSuggestions suggestions with
+      | some hint => hint
+      | none => s!"bind `{name}` with `let` or add a parameter, or check imports"
     Diagnostic.error s!"unknown variable `{name}`" span "not found in scope"
       |>.withCode "E1008"
       |>.withHelp help
 
   | .unboundGlobal name span suggestions =>
-    let help := if suggestions.isEmpty then "check that the definition is imported"
-      else s!"did you mean: {String.intercalate ", " suggestions.toList}?"
+    let help := match Soma.Dependent.Suggest.formatSuggestions suggestions with
+      | some hint => hint
+      | none => s!"define `{name}` or add a `use` import that brings it into scope"
     Diagnostic.error s!"unknown definition `{name}`" span "not found"
       |>.withCode "E1009"
       |>.withHelp help
@@ -559,15 +550,14 @@ def toDiagnostic : TCError → Diagnostic
     let originNote := match origin with
       | some o => #[s!"record type inferred from: {o.describe}"]
       | none => #[]
-    Diagnostic.error s!"field `{field}` not found" span s!"not in `{recordTy}`{fieldsNote}"
+    let diag := Diagnostic.error s!"field `{field}` not found" span
+        s!"not in `{recordTy}`{fieldsNote}"
       |>.withCode "E1010"
-      |> fun d => { d with notes := d.notes ++ originNote }
-
-  | .constructorNotFound ctor dataTy span availableCtors =>
-    let ctorsNote := if availableCtors.isEmpty then ""
-      else s!"\navailable constructors: {String.intercalate ", " availableCtors.toList}"
-    Diagnostic.error s!"constructor `{ctor}` not found" span s!"not in `{dataTy}`{ctorsNote}"
-      |>.withCode "E1011"
+    let withHelp := match Soma.Dependent.Suggest.formatSuggestions
+        (Soma.Dependent.Suggest.suggestSimilar field availableFields) with
+      | some hint => diag.withHelp hint
+      | none => diag
+    { withHelp with notes := withHelp.notes ++ originNote }
 
   | .wrongConstructorArity ctor expected actual span =>
     let args := if expected == 1 then "argument" else "arguments"
@@ -610,7 +600,7 @@ def toDiagnostic : TCError → Diagnostic
     , help := some "change the quantity to `ω` or `1` if runtime access is needed"
     }
 
-  | .unsolvedMeta id ty span relatedConstraints suggestedFix =>
+  | .unsolvedMeta ty span relatedConstraints suggestedFix =>
     let constraintNotes := if relatedConstraints.isEmpty then #[]
       else
         let items := relatedConstraints.map fun c =>
@@ -618,7 +608,7 @@ def toDiagnostic : TCError → Diagnostic
           s!"  • {c.description}{blockedStr}"
         #[s!"Related constraints:\n{String.intercalate "\n" items.toList}"]
     let help := suggestedFix.getD "add a type annotation to help inference"
-    Diagnostic.error s!"unsolved metavariable `{id}`" span s!"has type `{ty}`"
+    Diagnostic.error "could not infer a type here" span s!"expected a value of type `{ty}`"
       |>.withCode "E1017"
       |>.withHelp help
       |> fun d => { d with notes := d.notes ++ constraintNotes }
@@ -691,20 +681,6 @@ def toDiagnostic : TCError → Diagnostic
       |>.withHelp "simplify instance constraints or increase search depth"
       |> fun d => { d with notes := d.notes ++ pathNote }
 
-  | .overlappingInstances classId instanceIds span =>
-    let className := classId.original
-    let names := instanceIds.toList.map (·.original) |> String.intercalate ", "
-    Diagnostic.error s!"overlapping instances for `{className}`" span
-        s!"found multiple matching instances: {names}"
-      |>.withCode "E1024"
-      |>.withNote "exactly one instance must match"
-
-  | .unknownClass classId span =>
-    let className := classId.original
-    Diagnostic.error s!"unknown type class `{className}`" span "class not defined"
-      |>.withCode "E1025"
-      |>.withHelp s!"define class `{className}` or check the spelling"
-
   | .terminationCheckFailed fnName reason span failingCalls triedArguments =>
     let callLabels := failingCalls.map fun s => Label.secondary s "recursive call here"
     let triedNote := if triedArguments.isEmpty then #[]
@@ -739,26 +715,6 @@ def toDiagnostic : TCError → Diagnostic
     , secondaryLabels := secondaryLabels
     , notes := #["data types must be strictly positive to prevent paradoxes"]
     , help := some "ensure the type only appears in positive positions in constructors"
-    }
-
-  | .nonStructuralRecursion fnName callSpan expectedArg actualArg =>
-    let expectedNote := match expectedArg with
-      | some (idx, name) => s!"expected argument {idx + 1} (`{name}`) to decrease"
-      | none => "could not identify a decreasing argument"
-    let actualNote := match actualArg with
-      | some arg => s!"actual argument: `{arg}`"
-      | none => ""
-    let notes := #[
-      "for @[total] functions, each recursive call must decrease some argument",
-      expectedNote
-    ] ++ (if actualNote.isEmpty then #[] else #[actualNote])
-    { severity := .error
-    , code := some "E1029"
-    , message := s!"non-structural recursion in `{fnName.display}`"
-    , primaryLabel := Label.primary callSpan "recursive call is not on a structurally smaller argument"
-    , secondaryLabels := #[]
-    , notes := notes
-    , help := some "use pattern matching to obtain structurally smaller subterms"
     }
 
   | .impossiblePattern ctor ctorResultTy scrutTy span =>

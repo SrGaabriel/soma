@@ -383,6 +383,14 @@ def Neutral.var (name : String) (lvl : DeBruijnLvl) : Neutral :=
 def Neutral.mkMeta (id : Nat) : Neutral :=
   Neutral.nMeta ⟨id⟩
 
+/-- Provenance of a metavariable -/
+inductive MetaOrigin where
+  /-- Regular inference -/
+  | user
+  /-- Synthesized during error recovery -/
+  | errorRecovery
+  deriving Repr, BEq, Inhabited
+
 /-- Information about a metavariable -/
 structure MetaInfo where
   /-- The type of the metavariable -/
@@ -398,6 +406,8 @@ structure MetaInfo where
   /-- When this meta was created for an implicit Pi binder's type parameter,
       the de Bruijn level of that binder -/
   piLevel : Option Nat := none
+  /-- Why this meta was created -/
+  origin : MetaOrigin := .user
   deriving Inhabited
 
 /-- A constraint index for tracking which constraints involve which metas -/
@@ -491,9 +501,9 @@ structure MetaState where
 def MetaState.empty : MetaState := ⟨{}, 0, {}⟩
 
 def MetaState.fresh (state : MetaState) (ty : Value) (ctx : List (String × Value × Quantity))
-    (piLevel : Option Nat := none) : MetaId × MetaState :=
+    (piLevel : Option Nat := none) (origin : MetaOrigin := .user) : MetaId × MetaState :=
   let id := state.nextId
-  let info : MetaInfo := { type := ty, context := ctx, piLevel := piLevel }
+  let info : MetaInfo := { type := ty, context := ctx, piLevel := piLevel, origin := origin }
   let metas := state.metas.insert id info
   (⟨id⟩, { state with metas := metas, nextId := id + 1 })
 

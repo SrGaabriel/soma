@@ -1,5 +1,5 @@
-use base::core::{<>, >>, >>=}
-use base::ffi::{CString, CInt, CLong, to_cstring, from_cstring, ptr_cast, ptr_add, ptr_write}
+use base::core::{<>, >>=}
+use base::ffi::{CString, CInt, CLong, to_cstring, from_cstring}
 use base::io::{pure_io}
 use base::prim::{Ptr, IO, String, Unit, Word8, Int32, Int64}
 
@@ -9,14 +9,10 @@ def add64 : Int64 -> Int64 -> Int64
 record Path where
     value : String
 
-def {</>} : Path -> Path -> Path
-    | (Path::New p1), (Path::New p2) => Path::New (p1 <> "/" <> p2)
-
-def to_string : Path -> String
-    | (Path::New p) => p
-
-def from_string : String -> Path
-    | p => Path::New p
+def {</>} (p1 : Path) (p2 : Path) : Path :=
+    let value1 := p1.value in
+    let value2 := p2.value in
+    Path::New (value1 <> "/" <> value2)
 
 record FileHandle where
     ptr : Ptr Unit
@@ -48,33 +44,33 @@ def c_calloc : CLong -> CLong -> IO (Ptr Word8)
 @[extern "remove"]
 def c_remove : CString -> IO CInt
 
-def open : Path -> String -> IO FileHandle
-    | (Path::New path), mode => compose
-        let cpath := to_cstring path
-        let cmode := to_cstring mode
-        bind handle <- c_fopen cpath cmode
-        pure_io (FileHandle::New handle)
+def open (path : Path) (mode : String) : IO FileHandle := compose
+    let cpath := to_cstring (path.value)
+    let cmode := to_cstring mode
+    bind handle <- c_fopen cpath cmode
+    pure_io (FileHandle::New handle)
 
-def close : FileHandle -> IO CInt
-    | (FileHandle::New ptr) => c_fclose ptr
+def close (handle : FileHandle) : IO CInt :=
+    c_fclose (handle.ptr)
 
-def create : Path -> IO FileHandle
-    | path => open path "w"
+def create (path : Path) : IO FileHandle := open path "w"
 
-def flush : FileHandle -> IO CInt
-    | (FileHandle::New ptr) => c_fflush ptr
+def flush (handle : FileHandle) : IO CInt :=
+    c_fflush (handle.ptr)
 
-def write : FileHandle -> String -> IO CInt
-    | (FileHandle::New ptr), s => c_fputs (to_cstring s) ptr
+def write (handle : FileHandle) (content : String) : IO CInt := compose
+    let ccontent := to_cstring content
+    c_fputs ccontent (handle.ptr)
 
-def read_to_string : FileHandle -> IO String
-    | (FileHandle::New ptr) => compose
-        c_fseek ptr (0 :: Int64) (2 :: Int32)
-        bind size <- c_ftell ptr
-        c_fseek ptr (0 :: Int64) (0 :: Int32)
-        bind buf <- c_calloc (add64 size (1 :: Int64)) (1 :: Int64)
-        c_fread buf (1 :: Int64) size ptr
-        pure_io (from_cstring buf)
+def read_to_string (handle : FileHandle) : IO String := compose
+    let ptr := handle.ptr
+    c_fseek ptr (0 :: Int64) (2 :: Int32)
+    bind size <- c_ftell ptr
+    c_fseek ptr (0 :: Int64) (0 :: Int32)
+    bind buf <- c_calloc (add64 size (1 :: Int64)) (1 :: Int64)
+    c_fread buf (1 :: Int64) size ptr
+    pure_io (from_cstring buf)
 
-def remove : Path -> IO CInt
-    | (Path::New path) => c_remove (to_cstring path)
+def remove (path : Path) : IO CInt := compose
+    let cpath := to_cstring (path.value)
+    c_remove cpath

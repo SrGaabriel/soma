@@ -93,8 +93,6 @@ partial def collectExprVars : Expr → List String
   | .ann e _ => collectExprVars e
   | _ => []
 
--- Backwards-compatible alias
-abbrev collectTermVars := collectExprVars
 
 /-- Convert an Expr to its structural shape for analysis -/
 partial def analyzeExprShape : Expr → TermShape
@@ -117,8 +115,6 @@ partial def analyzeExprShape : Expr → TermShape
     else
       .app (analyzeExprShape head) (args.map analyzeExprShape |>.toArray)
 
--- Backwards-compatible alias
-abbrev analyzeTermShape := analyzeExprShape
 
 /-- The structural shape of a pattern -/
 inductive PatternShape where

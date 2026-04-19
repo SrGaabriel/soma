@@ -1,5 +1,6 @@
 import Soma.Dependent.Error
 import Soma.Dependent.Monad
+import Soma.Dependent.Suggest
 import Soma.Dependent.Convert
 import Soma.Dependent.Coverage
 import Soma.Dependent.Infer

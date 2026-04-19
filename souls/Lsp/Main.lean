@@ -27,18 +27,43 @@ open Soma.Project (ModuleGraph ModuleInfo buildDependencyGraph
 open Soma.Project.Check (CheckedModule parseModuleFile parseModuleFiles checkModule
   checkModulesInOrder mergeGlobals extractPreludeSymbols)
 
+/-- Format the body of a Soma diagnostic for LSP display -/
+private def renderDiagMessage (diag : Soma.Syntax.Diagnostic) : String :=
+  let codePrefix := match diag.code with
+    | some c => s!"[{c}] "
+    | none => ""
+  let primaryLine := if diag.primaryLabel.message.isEmpty
+      || diag.primaryLabel.message == diag.message then ""
+    else s!"\n{diag.primaryLabel.message}"
+  let noteLines := diag.notes.foldl (fun acc n => acc ++ "\n" ++ "note: " ++ n) ""
+  let helpLine := match diag.help with
+    | some h => s!"\nhelp: {h}"
+    | none => ""
+  s!"{codePrefix}{diag.message}{primaryLine}{noteLines}{helpLine}"
+
+/-- Build LSP `DiagnosticRelatedInformation` for each secondary label -/
+private def secondaryLabelsToRelated (sf : SourceFile) (uri : String)
+    (labels : Array Soma.Syntax.Label) : Array DiagnosticRelatedInformation :=
+  labels.map fun lbl =>
+    { location := { uri, range := spanToRange sf lbl.span }
+    , message := if lbl.message.isEmpty then "related" else lbl.message }
+
 /-- Convert Soma diagnostics to LSP format -/
-def convertDiagnostics (sf : SourceFile) (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
+def convertDiagnostics (sf : SourceFile) (uri : String) (diags : Soma.Syntax.Diagnostics)
+    : Array Diagnostic :=
   diags.map fun diag =>
     let range := spanToRange sf diag.span
+    let related := secondaryLabelsToRelated sf uri diag.secondaryLabels
     { range := range
     , severity := some (match diag.severity with
         | .error => .error
         | .warning => .warning
         | .info => .information
         | .hint => .hint)
+    , code := diag.code
     , source := some "soma"
-    , message := diag.message
+    , message := renderDiagMessage diag
+    , relatedInformation := if related.isEmpty then none else some related
     : Diagnostic }
 
 /-- Load a single haoma project: discover modules, parse, and type-check all from source -/
@@ -179,7 +204,7 @@ def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentP
      |>.registerModuleUri mod.name uri
 
   -- Publish diagnostics immediately on open
-  let lspDiags := convertDiagnostics mod.sourceFile mod.diagnostics
+  let lspDiags := convertDiagnostics mod.sourceFile uri mod.diagnostics
   ctx.publishDiagnostics { uri, version := some version, diagnostics := lspDiags }
 
   ctx.logInfo s!"Opened: {uri} ({mod.symbols.allNames.size} symbols, {mod.diagnostics.size} diagnostics)"
@@ -216,7 +241,7 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   let version := snap.version
 
   -- Publish diagnostics for the changed module
-  let lspDiags := convertDiagnostics mod.sourceFile mod.diagnostics
+  let lspDiags := convertDiagnostics mod.sourceFile uri mod.diagnostics
   ctx.publishDiagnostics { uri, version := some version, diagnostics := lspDiags }
 
   -- Find and re-analyze dependent modules
@@ -233,7 +258,7 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
 
           ctx.modifyUserState fun s => s.setModule depFilePath depMod
 
-          let depLspDiags := convertDiagnostics depMod.sourceFile depMod.diagnostics
+          let depLspDiags := convertDiagnostics depMod.sourceFile depUri depMod.diagnostics
           ctx.publishDiagnostics { uri := depUri, diagnostics := depLspDiags }
 
 /-- Handle textDocument/didClose -/
@@ -266,7 +291,7 @@ def handleDidSave (ctx : RequestContext LspState) (params : DidSaveTextDocumentP
      |>.registerModulePath mod.name filePath
      |>.registerModuleUri mod.name uri
 
-  let lspDiags := convertDiagnostics mod.sourceFile mod.diagnostics
+  let lspDiags := convertDiagnostics mod.sourceFile uri mod.diagnostics
   let some snap ← ctx.getDocument uri | return
   ctx.publishDiagnostics { uri, version := some snap.version, diagnostics := lspDiags }
 

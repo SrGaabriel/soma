@@ -194,6 +194,7 @@ structure CompiledModule where
   abbrevEnv : Option AbbrevEnv := none
   /-- Local scope map for position-aware local symbol resolution -/
   scopeMap : ScopeMap := {}
+  localTypes : Std.HashMap Nat Soma.Core.Value := {}
   deriving Inhabited
 
 namespace CompiledModule

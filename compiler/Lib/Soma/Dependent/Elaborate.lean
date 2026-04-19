@@ -171,10 +171,8 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
         TCM.recordGlobalDep qn
         return Value.vDataType qn.id []
     | none =>
-      TCM.throw (.cannotInfer
-        s!"unknown type constructor `{name.name}`"
-        name.span
-        none)
+      let suggestions ← TCM.suggestSimilarTypeNames name.name
+      TCM.throw (.unboundGlobal name.name name.span suggestions)
 
   -- Type application: F A
   | .app fn arg span =>

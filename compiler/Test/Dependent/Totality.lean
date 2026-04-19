@@ -594,7 +594,10 @@ def testRunEmpty : IO TestResult := do
 
 def testSmallerTracking : IO TestResult := do
   let action : TermM Bool := do
-    TermM.markSmallerThan "y" 0 "x"
+    TermM.addBinding {
+      name := "y", paramIdx := 0, paramName := "x"
+      path := .ctorArg .root "pattern" 0, depth := 1
+    }
     let result ← TermM.isSmallerThan "y"
     return result.isSome
   match action.run' with

@@ -12,7 +12,7 @@ mutual
 partial def neutralToString (neu : Neutral) : String :=
   match neu with
   | .nVar v => v.name
-  | .nMeta id => s!"?{id.id}"
+  | .nMeta _ => "{unknown}"
   | .nApp fn arg => s!"{neutralToString fn} {valueToString arg}"
   | .nFst pair => s!"{neutralToString pair}.1"
   | .nSnd pair => s!"{neutralToString pair}.2"

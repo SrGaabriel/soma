@@ -10,6 +10,7 @@ import Lsp.Loc
 namespace Lsp
 
 open Soma.Syntax
+open Soma.Dependent (Globals GlobalInfo)
 open Lapis.Server.SemanticTokens
 open Lapis.Protocol.Generated
 
@@ -93,9 +94,53 @@ partial def isInFunctionPosition (tree : RedTree) (node : RedNode) : Bool :=
       isInFunctionPosition tree parent
     | _ => false
 
+/-- Walk up through `.triviaToken` wrappers to find the semantic parent node -/
+private partial def semanticParent? (tree : RedTree) (node : RedNode) : Option RedNode :=
+  match tree.parent? node with
+  | none => none
+  | some p =>
+    if p.syntaxKind? == some .triviaToken then semanticParent? tree p
+    else some p
+
+/-- Classify an identifier based on the CST kind of its enclosing node -/
+def classifyByContext (tree : RedTree) (node : RedNode) (kind : TokenKind)
+    : Option SemanticTokenTypes := Id.run do
+  let some parent := semanticParent? tree node | return none
+  match parent.syntaxKind? with
+  | some .exprFieldAccess =>
+    if kind == .lowerIdent then return some .property
+  | some .exprProjection =>
+    -- Structure: [Type, dot, field]
+    if kind == .upperIdent then return some .type
+    if kind == .lowerIdent then return some .property
+  | some .recordField =>
+    if kind == .lowerIdent then return some .property
+  | some .exprVariant | some .patVariant =>
+    return some .enumMember
+  | some .name =>
+    -- `.name` wraps constructor names in patterns and declaration names
+    match tree.parent? parent with
+    | some gp =>
+      if gp.syntaxKind? == some .patCon && kind == .upperIdent then
+        return some .enumMember
+    | none => pure ()
+  | _ => pure ()
+  return none
+
+/-- Map a `GlobalInfo` to an LSP `SymbolKind` so imported symbols classify correctly -/
+private def globalInfoToSymbolKind (info : GlobalInfo) : SymbolKind :=
+  if info.isConstructor then .constructor
+  else match info.origin with
+    | .typeDecl => .type
+    | .constructor => .constructor
+    | .projection => .field
+    | .traitMethod => .method
+    | .intrinsic | .extern => .function
+    | _ => .function
+
 /-- Determine the semantic token type for an identifier based on context and symbols -/
 def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
-    (scopeMap : ScopeMap)
+    (scopeMap : ScopeMap) (globals : Option Globals) (moduleName : String)
     : Option (SemanticTokenTypes × Array SemanticTokenModifiers) := do
   let text ← node.text?
   let kind ← node.tokenKind?
@@ -113,6 +158,9 @@ def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
   if isInImportPath tree node then
     return (.namespace, modifiers)
 
+  if let some ctxType := classifyByContext tree node kind then
+    return (ctxType, modifiers)
+
   -- Check if in function position (head of application)
   let isFnPos := isInFunctionPosition tree node
 
@@ -122,33 +170,36 @@ def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
     return (tokenType, modifiers)
 
   -- Then try module-level symbol table
-  match symbols.lookupDefinition text with
-  | some def_ =>
+  if let some def_ := symbols.lookupDefinition text then
     let tokenType := symbolKindToTokenType def_.kind
-    -- Override to function if in function position and it's a variable
     let tokenType := if isFnPos && tokenType == .variable then .function else tokenType
     return (tokenType, modifiers)
-  | none =>
-    -- Fallback based on token kind
-    match kind with
-    | .upperIdent =>
-      -- Could be a type or constructor - default to type
-      return (.type, modifiers)
-    | .lowerIdent =>
-      -- Check context to determine if it's a type variable
-      let context := deriveContext tree node
-      match context with
-      | .inTypeSignature | .inTypeExpr =>
-        return (.typeParameter, modifiers)
-      | _ =>
-        -- If in function position, treat as function
-        if isFnPos then return (.function, modifiers)
-        return (.variable, modifiers)
-    | _ => none
+
+  if let some g := globals then
+    let currentNs := moduleName.splitOn "/" |>.toArray
+    if let some qn := g.resolve currentNs #[] text then
+      if let some info := g.getDef qn then
+        let tokenType := symbolKindToTokenType (globalInfoToSymbolKind info)
+        let tokenType := if isFnPos && tokenType == .variable then .function else tokenType
+        return (tokenType, modifiers)
+
+  match kind with
+  | .upperIdent =>
+    return (.type, modifiers)
+  | .lowerIdent =>
+    let context := deriveContext tree node
+    match context with
+    | .inTypeSignature | .inTypeExpr =>
+      return (.typeParameter, modifiers)
+    | _ =>
+      if isFnPos then return (.function, modifiers)
+      return (.variable, modifiers)
+  | _ => none
 
 /-- Collect a single semantic token from a RedNode -/
 def collectTokenFromNode (tree : RedTree) (sf : SourceFile) (node : RedNode)
-    (symbols : SymbolTable) (scopeMap : ScopeMap) : Option Token := do
+    (symbols : SymbolTable) (scopeMap : ScopeMap) (globals : Option Globals)
+    (moduleName : String) : Option Token := do
   guard node.isToken
   guard (!node.green.isTrivia)
 
@@ -175,7 +226,8 @@ def collectTokenFromNode (tree : RedTree) (sf : SourceFile) (node : RedNode)
 
   -- Classify the token
   if kind.isNameLike then
-    let (tokenType, modifiers) ← classifyIdentifier tree node symbols scopeMap
+    let (tokenType, modifiers) ←
+      classifyIdentifier tree node symbols scopeMap globals moduleName
     return Token.ofType line character length tokenType modifiers
   else
     let tokenType ← tokenKindToTokenType? kind
@@ -187,10 +239,12 @@ def collectSemanticTokens (mod : CompiledModule) : Array Token := Id.run do
   let sf := mod.sourceFile
   let symbols := mod.symbols
   let scopeMap := mod.scopeMap
+  let globals := mod.globals
+  let moduleName := mod.name
   let mut tokens : Array Token := #[]
 
   for node in tree.nodes do
-    if let some token := collectTokenFromNode tree sf node symbols scopeMap then
+    if let some token := collectTokenFromNode tree sf node symbols scopeMap globals moduleName then
       tokens := tokens.push token
 
   return tokens

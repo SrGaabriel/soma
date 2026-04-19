@@ -5,6 +5,7 @@ import Soma.Core.Eval
 import Soma.Core.Expr
 import Soma.Core.Intrinsic
 import Soma.Dependent.Error
+import Soma.Dependent.Suggest
 import Soma.Core.Module
 import Soma.Syntax.Source
 import Std.Data.HashMap
@@ -874,6 +875,8 @@ structure TCState where
   uniqueSupply : Soma.UniqueSupply := Soma.UniqueSupply.initial ""
   /-- Dependencies on global definitions (for incremental checking) -/
   globalDeps : Std.HashSet Soma.Core.QualifiedName := {}
+  /-- Elaborated types of local bindings, keyed by the start byte offset of the binding's name span -/
+  localTypes : Std.HashMap Nat Value := {}
   deriving Inhabited
 
 namespace TCState
@@ -886,9 +889,10 @@ def forModule (moduleName : String) : TCState :=
 
 /-- Create a fresh metavariable -/
 def freshMeta (s : TCState) (ty : Value) (ctx : List CtxEntry)
-    (piLevel : Option Nat := none) : MetaId × TCState :=
+    (piLevel : Option Nat := none) (origin : Soma.Core.MetaOrigin := .user)
+    : MetaId × TCState :=
   let ctxList := ctx.map fun e => (e.name, e.type, e.qty)
-  let (id, metas') := s.metas.fresh ty ctxList (piLevel := piLevel)
+  let (id, metas') := s.metas.fresh ty ctxList (piLevel := piLevel) (origin := origin)
   (id, { s with metas := metas' })
 
 /-- Create a fresh level variable -/
@@ -904,12 +908,11 @@ def solveMeta (s : TCState) (id : MetaId) (v : Value) : TCState :=
 def lookupMeta (s : TCState) (id : MetaId) : Option MetaInfo :=
   s.metas.lookup id
 
-/-- Add a postponed constraint (simple version, for backward compatibility) -/
+/-- Add a postponed constraint without dependency tracking -/
 def postpone (s : TCState) (c : Constraint) : TCState :=
-  -- Create a tracked constraint with empty metas (will be populated by caller)
   let tc : TrackedConstraint := {
     constraint := c
-    constraintId := ⟨0⟩ -- will be assigned when properly tracked
+    constraintId := ⟨0⟩ -- assigned lazily when the constraint is registered
     metas := #[]
     origin := .unknown
     parentConstraints := #[]
@@ -1157,6 +1160,11 @@ def withBinding (name : String) (bindingId : Unique) (ty : Value)
     (qty : Quantity) (binder : BinderInfo) (span : Span) (m : TCM α) : TCM α :=
   withReader (·.extend name bindingId ty qty binder span) m
 
+/-- Record the elaborated type of a local binding, keyed by the start byte offset of the binding's name span -/
+def recordLocalBindingType (nameSpan : Span) (ty : Value) : TCM Unit := do
+  modifyState fun s =>
+    { s with localTypes := s.localTypes.insert nameSpan.start.byteOffset ty }
+
 /-- Look up a local variable -/
 def lookupLocal (name : String) : TCM (Option CtxEntry) := do
   let ctx ← getCtx
@@ -1187,6 +1195,32 @@ def lookupGlobalNoDep (path : Array String) (name : String) : TCM (Option Global
 def lookupGlobalByQN (qn : Soma.Core.QualifiedName) : TCM (Option GlobalInfo) := do
   let ctx ← getCtx
   return ctx.globals.getDef qn
+
+/-- Collect the simple names of all locally-bound variables for typo suggestion -/
+def localBindingNames : TCM (Array String) := do
+  let ctx ← getCtx
+  return ctx.localsByName.toArray.map (·.1)
+
+/-- Collect the simple names of all known global declarations -/
+def globalDeclarationNames : TCM (Array String) := do
+  let ctx ← getCtx
+  let fromTree := ctx.globals.root.collectPaths #[] |>.map (·.2.1)
+  let fromImports := ctx.globals.imports.toArray.map (·.1)
+  return fromTree ++ fromImports
+
+/-- Suggest names similar to `target` from the local context first, then globals.
+    Used to produce "did you mean X?" hints for unbound-identifier errors. -/
+def suggestSimilarNames (target : String) (limit : Nat := 3) : TCM (Array String) := do
+  let locals ← localBindingNames
+  let localHits := Soma.Dependent.Suggest.suggestSimilar target locals limit
+  if !localHits.isEmpty then return localHits
+  let globals ← globalDeclarationNames
+  return Soma.Dependent.Suggest.suggestSimilar target globals limit
+
+/-- Suggest type-level names similar to `target` -/
+def suggestSimilarTypeNames (target : String) (limit : Nat := 3) : TCM (Array String) := do
+  let globals ← globalDeclarationNames
+  return Soma.Dependent.Suggest.suggestSimilar target globals limit
 
 
 /-- Look up all declarations registered under a wired-in role -/
@@ -1315,10 +1349,11 @@ def getErrors : TCM (Array TCError) := do
   return state.errors
 
 /-- Create a fresh metavariable of the given type -/
-def freshMeta (ty : Value) (piLevel : Option Nat := none) : TCM MetaId := do
+def freshMeta (ty : Value) (piLevel : Option Nat := none)
+    (origin : Soma.Core.MetaOrigin := .user) : TCM MetaId := do
   let ctx ← getCtx
   let state ← getState
-  let (id, state') := state.freshMeta ty ctx.locals (piLevel := piLevel)
+  let (id, state') := state.freshMeta ty ctx.locals (piLevel := piLevel) (origin := origin)
   set state'
   return id
 
@@ -1327,8 +1362,8 @@ def getMetaCount : TCM Nat := do
   return state.metas.nextId
 
 /-- Create a fresh metavariable and return it as a Value -/
-def freshMetaVal (ty : Value) : TCM Value := do
-  let id ← freshMeta ty
+def freshMetaVal (ty : Value) (origin : Soma.Core.MetaOrigin := .user) : TCM Value := do
+  let id ← freshMeta ty (origin := origin)
   return .vNeutral ty (.nMeta id)
 
 /-- Solve a metavariable -/
@@ -1442,7 +1477,7 @@ def getPostponedTracked : TCM (Array TrackedConstraint) := do
   let state ← getState
   return state.postponed
 
-/-- Get all postponed constraints (returns just Constraints for backward compat) -/
+/-- Get all postponed constraints stripped of their tracking metadata -/
 def getPostponed : TCM (Array Constraint) := do
   let state ← getState
   return state.postponed.map (·.constraint)
@@ -1820,10 +1855,9 @@ def recoverWithM (action : TCM α) (mkDefault : TCM α) : TCM α := do
     addError e
     mkDefault
 
-/-- Create an error placeholder value (a neutral with an error meta).
-    Used when type checking fails but we need to continue. -/
+/-- Create an error placeholder value -/
 def errorPlaceholder (ty : Value) (_span : Span) : TCM Value := do
-  let metaId ← freshMeta ty
+  let metaId ← freshMeta ty (origin := .errorRecovery)
   return .vNeutral ty (.nMeta metaId)
 
 /-- Create a Type placeholder for when we can't infer a type -/

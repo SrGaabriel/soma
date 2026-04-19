@@ -237,35 +237,13 @@ def withBindings (bindings : Array BindingInfo) (action : TermM α) : TermM α :
   modifyState fun s => { s with ctx := saved }
   return result
 
--- Legacy compatibility
-def markSmallerThan (varName : String) (paramIdx : Nat) (paramName : String) : TermM Unit := do
-  addBinding {
-    name := varName
-    paramIdx := paramIdx
-    paramName := paramName
-    path := .ctorArg .root "pattern" 0
-    depth := 1
-  }
-
-def markAllSmallerThan (varNames : List String) (paramIdx : Nat) (paramName : String) : TermM Unit := do
-  for name in varNames do
-    markSmallerThan name paramIdx paramName
-
+/-- Look up a variable's smaller-than relation to a parameter. Returns the
+    `(paramIdx, paramName)` pair when the binding is strictly smaller. -/
 def isSmallerThan (varName : String) : TermM (Option (Nat × String)) := do
   let ctx ← getContext
   match ctx.lookup varName with
   | some info => if info.isSmaller then return some (info.paramIdx, info.paramName) else return none
   | none => return none
-
-def withSmallerBindings (bindings : List (String × Nat × String)) (action : TermM α) : TermM α := do
-  let infos := bindings.map fun (name, paramIdx, paramName) => {
-    name := name
-    paramIdx := paramIdx
-    paramName := paramName
-    path := .ctorArg .root "pattern" 0
-    depth := 1
-  }
-  withBindings infos.toArray action
 
 def getSizeContext : TermM TerminationContext := getContext
 
