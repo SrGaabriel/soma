@@ -120,12 +120,29 @@ def wordAtPosition (sf : SourceFile) (pos : Position) : Option String :=
     if start == stop then none
     else some (String.Pos.Raw.extract lineContent ⟨start⟩ ⟨stop⟩)
 
-/-- Convert a file path to a file URI -/
+/-- Normalize a file path to the canonical form expected -/
+def normalizePath (path : String) : String :=
+  let p := if path.startsWith "\\\\?\\" then path.drop 4 |>.copy
+    else if path.startsWith "//?/" then path.drop 4 |>.copy
+    else path
+  let p := p.map fun c => if c == '\\' then '/' else c
+  let p := if p.length > 2 then
+    match p.get? ⟨0⟩, p.get? ⟨2⟩ with
+    | some '/', some ':' => p.drop 1 |>.copy
+    | _, _ => p
+  else p
+  if p.length > 1 && p.get? ⟨1⟩ == some ':' then
+    let drive := (p.get ⟨0⟩).toLower
+    s!"{drive}{p.drop 1 |>.copy}"
+  else p
+
+/-- Convert a file path to a `file://` URI -/
 def pathToUri (path : String) : String :=
   if path.startsWith "file://" then path
   else
-    let pfx := if path.length > 1 && path.get? ⟨1⟩ == some ':' then "/" else ""
-    "file://" ++ pfx ++ path
+    let normalized := normalizePath path
+    let pfx := if normalized.length > 1 && normalized.get? ⟨1⟩ == some ':' then "/" else ""
+    "file://" ++ pfx ++ normalized
 
 /-- Decode percent-encoded characters in a URI path -/
 private partial def decodePercent (s : String) : String :=
@@ -157,22 +174,5 @@ def uriToPath (uri : String) : String :=
     | some '/', some ':' => decoded.drop 1 |>.copy
     | _, _ => decoded
   else decoded
-
-/-- Normalize a file path for cross-platform comparison -/
-def normalizePath (path : String) : String :=
-  let p := if path.startsWith "\\\\?\\" then path.drop 4 |>.copy
-    else if path.startsWith "//?/" then path.drop 4 |>.copy
-    else path
-  let p := p.map fun c => if c == '\\' then '/' else c
-  let p := if p.length > 2 then
-    match p.get? ⟨0⟩, p.get? ⟨2⟩ with
-    | some '/', some ':' => p.drop 1 |>.copy
-    | _, _ => p
-  else p
-  -- Lowercase drive letter (C:/ → c:/)
-  if p.length > 1 && p.get? ⟨1⟩ == some ':' then
-    let drive := (p.get ⟨0⟩).toLower
-    s!"{drive}{p.drop 1 |>.copy}"
-  else p
 
 end Lsp

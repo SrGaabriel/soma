@@ -29,7 +29,7 @@ open Soma.Dependent.Incremental (DefId DefCache DefKind DepGraph IncrementalStat
 
 /-- Derive module name from file path -/
 def moduleNameFromPath (filePath : String) : String :=
-  let parts := filePath.splitOn "/"
+  let parts := filePath.splitOn "::"
   let fileName := parts.getLast!
   let nameParts := fileName.splitOn "."
   if nameParts.isEmpty then fileName else nameParts.head!

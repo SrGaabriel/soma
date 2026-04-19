@@ -955,8 +955,13 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
 
   let seedEnv ← TCM.getInstanceEnv
   let mut registry := ClassRegistry.empty
+  let builtinModule := Soma.Dependent.builtinModule
   for (classUnique, _) in seedEnv.classes.toList do
-    registry := registry.register classUnique.original classUnique
+    if classUnique.module != builtinModule then
+      registry := registry.register classUnique.original classUnique
+  for (classUnique, _) in seedEnv.classes.toList do
+    if classUnique.module == builtinModule && !registry.byName.contains classUnique.original then
+      registry := registry.register classUnique.original classUnique
 
   -- First pass: elaborate all type classes and build the registry
   for typeClass in module.typeClasses do
@@ -1029,8 +1034,13 @@ def buildInstanceEnvFromModuleIncremental
   -- Pre-populate registry from the seed instance env (dependency classes)
   let seedEnv ← TCM.getInstanceEnv
   let mut registry := ClassRegistry.empty
+  let builtinModule := Soma.Dependent.builtinModule
   for (classUnique, _) in seedEnv.classes.toList do
-    registry := registry.register classUnique.original classUnique
+    if classUnique.module != builtinModule then
+      registry := registry.register classUnique.original classUnique
+  for (classUnique, _) in seedEnv.classes.toList do
+    if classUnique.module == builtinModule && !registry.byName.contains classUnique.original then
+      registry := registry.register classUnique.original classUnique
 
   -- First pass: elaborate type classes, reusing cached ones when possible
   for typeClass in module.typeClasses do

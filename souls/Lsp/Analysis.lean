@@ -21,7 +21,7 @@ open Soma.Project.Check (moduleNameFromPath fileIdFromPath)
 
 /-- Extract imported module paths from a symbol table -/
 def extractImportedModules (symbols : SymbolTable) : Array String :=
-  symbols.imports.map (·.modulePath)
+  symbols.imports.map fun imp => imp.modulePath
 
 /-- Build declNodeIds mapping from definitions -/
 def buildDeclNodeIds (defs : Array CstDefinition) : Std.HashMap NodeId String :=
@@ -63,7 +63,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
     (checkedDeps : Std.HashMap String Soma.Project.Check.CheckedModule := {})
     (preludeSymbols : Array String := #[])
     (moduleName? : Option String := none)
-    (existingChecked : Option Soma.Project.Check.CheckedModule := none) : CompiledModule := Id.run do
+    (_existingChecked : Option Soma.Project.Check.CheckedModule := none) : CompiledModule := Id.run do
   let moduleName := moduleName?.getD (moduleNameFromPath filePath)
   let fileId := fileIdFromPath filePath
 
@@ -87,27 +87,6 @@ def analyzeSourceFresh (filePath : String) (content : String)
   -- Build declAsts cache for future incremental updates
   let allDeclIds := collectDeclNodeIds parsedTree
   let (declAsts, _) := lowerDeclarationsByIds parsedTree allDeclIds
-
-  match existingChecked with
-  | some cm =>
-    return {
-      name := moduleName
-      filePath := filePath
-      parsedTree := parsedTree
-      ast := some ast
-      symbols := symbols
-      diagnostics := frontendDiags ++ astLowerDiags
-      declNodeIds := declNodeIds
-      declAsts := declAsts
-      elabResult := none
-      globals := some cm.globals
-      instanceEnv := some cm.instanceEnv
-      abbrevEnv := some cm.abbrevEnv
-      incrementalState := some cm.incrementalState
-      scopeMap := scopeMap
-      localTypes := cm.localTypes
-    }
-  | none =>
 
   -- Phase 7: Use checkModule from the compiler pipeline for type checking
   let modName := Soma.Project.ModuleName.fromString moduleName
@@ -284,41 +263,6 @@ def treeErrorsToDiagnostics (tree : RedTree) : Diagnostics :=
 /-- Merge diagnostics from multiple sources -/
 def mergeDiagnostics (sources : Array Diagnostics) : Diagnostics :=
   sources.foldl (· ++ ·) #[]
-
-/-- Resolve a symbol name to its definition, checking imports -/
-def resolveSymbol (name : String) (currentMod : CompiledModule) (allModules : Array CompiledModule)
-    : Option DefinitionSite :=
-  match currentMod.symbols.lookupDefinition name with
-  | some def_ => some def_
-  | none =>
-    let fromImports := currentMod.symbols.imports.findSome? fun imp =>
-      let shouldCheck := imp.items.isEmpty || imp.items.contains name
-      if shouldCheck then
-        allModules.findSome? fun mod =>
-          if mod.name == imp.modulePath || mod.filePath.endsWith imp.modulePath then
-            mod.symbols.lookupDefinition name
-          else none
-      else none
-    match fromImports with
-    | some def_ => some def_
-    | none => allModules.findSome? fun mod => mod.symbols.lookupDefinition name
-
-/-- Get all visible symbols at a position (for completion) -/
-def visibleSymbols (currentMod : CompiledModule) (allModules : Array CompiledModule)
-    : Array DefinitionSite :=
-  let localDefs := currentMod.symbols.allDefinitions
-  let importedDefs := currentMod.symbols.imports.foldl (init := #[]) fun acc imp =>
-    allModules.foldl (init := acc) fun acc2 mod =>
-      if mod.name == imp.modulePath || mod.filePath.endsWith imp.modulePath then
-        if imp.items.isEmpty then
-          acc2 ++ mod.symbols.allDefinitions
-        else
-          imp.items.foldl (init := acc2) fun acc3 itemName =>
-            match mod.symbols.lookupDefinition itemName with
-            | some def_ => acc3.push def_
-            | none => acc3
-      else acc2
-  localDefs ++ importedDefs
 
 /-- Check if a file is a Soma source file -/
 def isSomaFile (path : String) : Bool :=

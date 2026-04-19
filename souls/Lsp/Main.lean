@@ -349,15 +349,23 @@ def handleDefinition (ctx : RequestContext LspState) (params : TextDocumentPosit
   let seedSymbols := state.seedSymbolsForModule mod.name
 
   -- Find definition (uses cached symbol table and checked deps)
-  let some (defPath, defSpan) := getDefinitionAt offset mod allMods seedSymbols | do
+  let some (defPath, defSpan) := getDefinitionAt offset mod allMods (some state) seedSymbols | do
     ctx.logInfo "definition: no definition found"
     return none
 
   ctx.logInfo s!"definition: found at {defPath}"
-  let targetSf := if defPath == filePath then mod.sourceFile
-    else match state.allModules.find? (·.filePath == defPath) with
-      | some targetMod => targetMod.sourceFile
-      | none => mod.sourceFile
+  let defPathNorm := normalizePath defPath
+  let targetSf :=
+    if defPathNorm == filePath then mod.sourceFile
+    else match allMods.find? (·.filePath == defPathNorm) with
+      | some m => m.sourceFile
+      | none =>
+        match state.pathToModuleName.get? defPathNorm with
+        | some modName =>
+          match state.checkedModules.get? modName with
+          | some cm => cm.sourceFile
+          | none => mod.sourceFile
+        | none => mod.sourceFile
   return some {
     uri := pathToUri defPath
     range := spanToRange targetSf defSpan
@@ -483,12 +491,12 @@ def handleReferences (ctx : RequestContext LspState) (params : ReferenceParams) 
   let offset := positionToOffset mod.sourceFile params.position
 
   let allMods := state.allModules
-  let refs := findAllReferences word allMods (some offset)
+  let refs := findReferencesForCursor mod offset word allMods
 
   return refs.map fun (path, span) => {
     uri := pathToUri path
     range := spanToRange (
-      match state.allModules.find? (·.filePath == path) with
+      match allMods.find? (·.filePath == path) with
       | some m => m.sourceFile
       | none => mod.sourceFile
     ) span

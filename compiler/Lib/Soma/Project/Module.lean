@@ -23,9 +23,9 @@ instance : Ord ModuleName where
     | .eq => compare m1.path.toList m2.path.toList
     | other => other
 
-/-- Parse a module name from a string like "myapp/Utils/String" -/
+/-- Parse a module name from a string -/
 def parse (s : String) : Option ModuleName :=
-  let parts := s.splitOn "/"
+  let parts := s.splitOn "::"
   match parts with
   | [] => none
   | [single] => some { package := single, path := #[] }
@@ -34,7 +34,7 @@ def parse (s : String) : Option ModuleName :=
 /-- Convert to the canonical string representation -/
 def toString (m : ModuleName) : String :=
   if m.path.isEmpty then m.package
-  else m.package ++ "/" ++ String.intercalate "/" m.path.toList
+  else m.package ++ "::" ++ String.intercalate "::" m.path.toList
 
 instance : ToString ModuleName := ⟨ModuleName.toString⟩
 

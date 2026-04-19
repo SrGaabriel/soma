@@ -34,7 +34,7 @@ def extractImportInfo (tree : RedTree) (node : RedNode) : Option ImportInfo := d
     |>.filter (·.tokenKind? != some .doubleColon)
     |>.toList
     |>.filterMap (·.text?)
-    |> String.intercalate "/"
+    |> String.intercalate "::"
 
   let items := match findChild? tree node .importItems with
     | some itemsNode =>
@@ -177,27 +177,43 @@ def resolveViaGlobals (globals : Globals) (currentNs : Array String)
 def moduleOfQualifiedName (qn : QualifiedName) : String :=
   qn.id.module
 
+/-- Assemble the metadata line shown beneath a hover's signature block -/
+private def hoverMetadata (kindStr : String) (moduleName : Option String)
+    (extra : Option String := none) : String :=
+  let modPart := match moduleName with
+    | some m => s!" · `{m}`"
+    | none => ""
+  let extraPart := match extra with
+    | some e => s!" · {e}"
+    | none => ""
+  s!"{kindStr}{modPart}{extraPart}"
+
+/-- Extra "expands to" note for type aliases, shown in the metadata line -/
+private def abbrevNote (globals : Option Globals) (abbrevEnv : Option AbbrevEnv)
+    (qn : Soma.Core.QualifiedName) : Option String :=
+  let _ := globals
+  match abbrevEnv with
+  | some env =>
+    match env.get? qn with
+    | some info => some s!"expands to `{valueToString info.expansion}`"
+    | none => none
+  | none => none
+
 /-- Format hover for a global declaration resolved through Globals -/
 def formatGlobalHover (info : GlobalInfo) (abbrevEnv : Option AbbrevEnv := none) : String :=
   let name := info.name.display
   let typeStr := valueToString info.type
   let kindStr := toString (globalInfoToSymbolKind info)
   let moduleName := moduleOfQualifiedName info.name
-  let abbrevNote := match abbrevEnv with
-    | some env =>
-      match env.get? info.name with
-      | some abbrevInfo =>
-        let expansionStr := valueToString abbrevInfo.expansion
-        s!"\n\n*expands to* `{expansionStr}`"
-      | none => ""
-    | none => ""
-  s!"```soma\n{name} :: {typeStr}\n```\n\n*{kindStr}* from `{moduleName}`{abbrevNote}"
+  let extra := abbrevNote none abbrevEnv info.name
+  mkHoverDoc s!"{name} : {typeStr}" (hoverMetadata kindStr (some moduleName) extra)
 
 /-- Format hover for an abbreviation resolved through AbbrevEnv -/
 def formatAbbrevHover (name : String) (abbrevInfo : AbbrevInfo) : String :=
   let expansionStr := valueToString abbrevInfo.expansion
   let arityStr := if abbrevInfo.arity > 0 then s!" ({abbrevInfo.arity} parameters)" else ""
-  s!"```soma\nalias {name}{arityStr} = {expansionStr}\n```\n\n*type alias* from `{abbrevInfo.abbrevId.module}`"
+  mkHoverDoc s!"alias {name}{arityStr} = {expansionStr}"
+    (hoverMetadata "type alias" (some abbrevInfo.abbrevId.module))
 
 /-- Format hover content for a definition -/
 def formatDefinitionHover (def_ : DefinitionSite) (globals : Option Globals := none)
@@ -210,19 +226,13 @@ def formatDefinitionHover (def_ : DefinitionSite) (globals : Option Globals := n
         globals.bind fun g =>
           (g.resolve #[] #[] def_.name |>.bind g.getDef)
           |>.map fun info => valueToString info.type
-  let abbrevNote := match abbrevEnv with
-    | some env =>
-      let resolved : Option AbbrevInfo :=
-        globals.bind (fun g => g.resolve #[] #[] def_.name) |>.bind (fun qn => env.get? qn)
-      match resolved with
-      | some ai => s!"\n\n*expands to* `{valueToString ai.expansion}`"
-      | none => ""
-    | none => ""
+  let extra : Option String :=
+    globals.bind (fun g => g.resolve #[] #[] def_.name)
+      |>.bind (abbrevNote globals abbrevEnv)
+  let metadata := hoverMetadata kindStr (some def_.moduleName) extra
   match typeStr with
-  | some sig =>
-      s!"```soma\n{def_.name} :: {sig}\n```\n\n*{kindStr}* from `{def_.moduleName}`{abbrevNote}"
-  | none =>
-      s!"**{def_.name}**\n\n*{kindStr}* from `{def_.moduleName}`{abbrevNote}"
+  | some sig => mkHoverDoc s!"{def_.name} : {sig}" metadata
+  | none => mkHoverDoc def_.name metadata
 
 /-- Convert compiler SymbolKind to LSP SymbolKind for display -/
 def compilerSymbolKindToString : Soma.Project.SymbolKind → String
@@ -244,7 +254,7 @@ def compilerSymbolKindToString : Soma.Project.SymbolKind → String
 def formatExternalSymbolHover (sym : Symbol) (ty : Value) : String :=
   let kindStr := compilerSymbolKindToString sym.kind
   let typeStr := valueToString ty
-  s!"```soma\n{sym.name} :: {typeStr}\n```\n\n*{kindStr}* from `{sym.module}`"
+  mkHoverDoc s!"{sym.name} : {typeStr}" (hoverMetadata kindStr (some sym.module))
 
 /-- Look up a name in seedSymbols -/
 def lookupInSeedSymbols (name : String) (seedSymbols : SymbolEnv) : Option (Symbol × Value) :=
@@ -253,32 +263,41 @@ def lookupInSeedSymbols (name : String) (seedSymbols : SymbolEnv) : Option (Symb
 /-- Format hover for a keyword -/
 def formatKeywordHover (kind : TokenKind) (text : String) : String :=
   let desc := match kind with
-    | .kw_def => "Define a function or value"
-    | .kw_let => "Local binding"
-    | .kw_in => "Body of let expression"
-    | .kw_case => "Pattern matching"
-    | .kw_if => "Conditional expression"
-    | .kw_then => "Then branch of if"
-    | .kw_else => "Else branch of if"
-    | .kw_inductive => "Define an inductive type"
-    | .kw_struct => "Define a record type"
-    | .kw_trait => "Define a type class"
-    | .kw_instance => "Define a type class instance"
-    | .kw_where => "Begin definition body or constraints"
-    | .kw_with => "Add constraints"
-    | .kw_use => "Import a module"
-    | .kw_pub => "Public visibility modifier"
-    | .kw_forall => "Universal quantification"
-    | .kw_bind => "Monadic bind block"
-    | .kw_compose => "Applicative compose block"
-    | .kw_abbrev => "Define a type alias"
+    | .kw_def => "Define a function or value."
+    | .kw_let => "Introduce a local binding."
+    | .kw_in => "Body of a `let` expression."
+    | .kw_case => "Pattern matching."
+    | .kw_if => "Conditional expression."
+    | .kw_then => "`then` branch of an `if` expression."
+    | .kw_else => "`else` branch of an `if` expression."
+    | .kw_inductive => "Define an inductive type."
+    | .kw_struct => "Define a record type."
+    | .kw_trait => "Define a type class."
+    | .kw_instance => "Define a type class instance."
+    | .kw_where => "Begin definition body or constraints."
+    | .kw_with => "Add constraints."
+    | .kw_use => "Import a module."
+    | .kw_pub => "Public visibility modifier."
+    | .kw_forall => "Universal quantification."
+    | .kw_bind => "Monadic `bind` block."
+    | .kw_compose => "Applicative `compose` block."
+    | .kw_abbrev => "Define a type alias."
+    | .true_ | .false_ => "Boolean literal."
     | _ => kind.describe
-  s!"**{text}** — {desc}"
+  mkHoverDoc text "keyword" (some desc)
 
-/-- Format hover for a syntax construct -/
-def formatSyntaxHover (kind : SyntaxKind) (text : String) : String :=
-  let preview := if text.length > 50 then (text.take 50 |>.copy) ++ "..." else text
-  s!"*{kind.describe}*\n```soma\n{preview}\n```"
+/-- Human-readable name for a literal token's type -/
+private def literalTypeName (kind : TokenKind) : Option String :=
+  match kind with
+  | .number => some "Int"
+  | .string _ => some "String"
+  | .true_ | .false_ => some "Bool"
+  | _ => none
+
+/-- Format hover for a literal token with type in the code block, raw value in the docs -/
+def formatLiteralHover (kind : TokenKind) (text : String) : Option String := do
+  let tyName ← literalTypeName kind
+  some (mkHoverDoc tyName "" (some s!"value: `{text}`"))
 
 /-- Extract qualified path segments from an exprVar parent node -/
 def extractQualifiedPath (tree : RedTree) (node : RedNode) : Array String × String :=
@@ -298,6 +317,57 @@ def extractQualifiedPath (tree : RedTree) (node : RedNode) : Array String × Str
     | _ => (#[], node.text?.getD "")
   | none => (#[], node.text?.getD "")
 
+/-- Walk up from a node looking for a `.importPath` ancestor -/
+partial def importPathPrefixAt (tree : RedTree) (node : RedNode) : Option (Array String) :=
+  go (tree.parent? node)
+where
+  go : Option RedNode → Option (Array String)
+    | none => none
+    | some parent =>
+      if parent.syntaxKind? == some .importPath then
+        Id.run do
+          let mut segs : Array String := #[]
+          for t in getTokens tree parent do
+            match t.tokenKind? with
+            | some .lowerIdent | some .upperIdent =>
+              if let some txt := t.text? then segs := segs.push txt
+              if t.id == node.id then return some segs
+            | _ => pure ()
+          some segs
+      else go (tree.parent? parent)
+
+/-- Walk up from a node to find an enclosing `.attribute` node -/
+partial def findAttributeAncestor (tree : RedTree) (node : RedNode) : Option RedNode :=
+  match tree.parent? node with
+  | none => none
+  | some p =>
+    if p.syntaxKind? == some .attribute then some p
+    else findAttributeAncestor tree p
+
+/-- Short description for a known attribute name -/
+def attributeDoc (name : String) : Option String :=
+  match name with
+  | "extern" => some "Declares an externally-defined function."
+  | "intrinsic" => some "Marks a declaration as a compiler intrinsic."
+  | "wired_in" => some "Binds this declaration to a well-known compiler role."
+  | "total" => some "Asserts that this function terminates on all inputs."
+  | "inline" => some "Hint to inline this function at call sites."
+  | "noinline" => some "Hint to never inline this function."
+  | _ => none
+
+/-- Hover for built-in sorts and universe names that aren't declared anywhere -/
+def builtinSortHover (name : String) : Option String :=
+  match name with
+  | "Type" | "Type0" => some (mkHoverDoc "Type" "sort"
+      (some "The universe of ordinary types."))
+  | "Type1" => some (mkHoverDoc "Type1" "sort"
+      (some "The universe one level above `Type` that contains `Type` itself."))
+  | "Row" => some (mkHoverDoc "Row" "sort"
+      (some "The sort of row types used by records and variants."))
+  | "Label" => some (mkHoverDoc "Label" "sort"
+      (some "The sort of record/variant field labels."))
+  | _ => none
+
 /-- Get hover information at a position -/
 def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array CompiledModule)
     (seedSymbols : SymbolEnv := {}) : Option (String × Span) := do
@@ -308,18 +378,32 @@ def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array Compile
 
   let span := mod.tree.spanOf nodeInfo.node
 
-  -- Check if it's a token
+  if let some attrNode := findAttributeAncestor mod.tree nodeInfo.node then
+    let attrName := (getTokens mod.tree attrNode).findSome? fun t =>
+      match t.tokenKind? with
+      | some .lowerIdent => t.text?
+      | _ => none
+    match attrName with
+    | some name =>
+      return (mkHoverDoc s!"@[{name}]" "attribute" (attributeDoc name), span)
+    | none => pure ()
+
   if nodeInfo.node.isToken then
     let text ← nodeInfo.node.text?
     let kind ← nodeInfo.node.tokenKind?
 
     if kind.isNameLike then
+      if let some hov := builtinSortHover text then
+        return (hov, span)
+      if let some segs := importPathPrefixAt mod.tree nodeInfo.node then
+        let qualified := String.intercalate "::" segs.toList
+        return (mkHoverDoc qualified "module", span)
       if let some local_ := mod.scopeMap.resolveByNodeId nodeInfo.node.id then
         return (formatLocalBindingHover local_, span)
       if let some local_ := mod.scopeMap.resolve text offset then
         return (formatLocalBindingHover local_, span)
       if let some globals := mod.globals then
-        let currentNs := mod.name.splitOn "/" |>.toArray
+        let currentNs := mod.name.splitOn "::" |>.toArray
         let (qualPath, _qualName) := extractQualifiedPath mod.tree nodeInfo.node
         if let some info := resolveViaGlobals globals currentNs qualPath text then
           return (formatGlobalHover info mod.abbrevEnv, span)
@@ -328,7 +412,7 @@ def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array Compile
       for other in allModules do
         if other.filePath != mod.filePath then
           if let some globals := other.globals then
-            let otherNs := other.name.splitOn "/" |>.toArray
+            let otherNs := other.name.splitOn "::" |>.toArray
             if let some info := resolveViaGlobals globals otherNs #[] text then
               return (formatGlobalHover info other.abbrevEnv, span)
           if let some def_ := other.symbols.lookupDefinition text then
@@ -336,70 +420,89 @@ def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array Compile
       if let some (sym, ty) := lookupInSeedSymbols text seedSymbols then
         return (formatExternalSymbolHover sym ty, span)
       -- Unknown identifier/operator
-      return (s!"**{text}** — *unknown*", span)
+      return (mkHoverDoc text "unknown identifier", span)
+    else if let some lit := formatLiteralHover kind text then
+      return (lit, span)
     else if kind.isKeyword then
       return (formatKeywordHover kind text, span)
     else
-      -- Punctuation
-      return (s!"`{text}` — {kind.describe}", span)
-  else
-    -- Interior node
-    if let some kind := nodeInfo.node.syntaxKind? then
-      match nodeInfo.node.green with
-      | .error msg _ _ =>
-          return (s!"**Error** at {span.start.line}:{span.start.column}\n\n{msg}", span)
-      | .missing expected =>
-          return (s!"**Missing** at {span.start.line}:{span.start.column}\n\nExpected: {expected.describe}", span)
-      | _ =>
-          let text := nodeText mod.tree nodeInfo.node
-          return (formatSyntaxHover kind text, span)
-    else
       none
+  else
+    match nodeInfo.node.green with
+    | .error msg _ _ =>
+        some (s!"**Error** at {span.start.line}:{span.start.column}\n\n{msg}", span)
+    | .missing expected =>
+        some (s!"**Missing** at {span.start.line}:{span.start.column}\n\nExpected: {expected.describe}", span)
+    | _ => none
+
+/-- Walk a Syntax.Module and find the span -/
+private def findDeclNameSpanInAst (name : String) (mod : Soma.Syntax.Module) : Option Span := Id.run do
+  for decl in mod.decls do
+    if let some q := decl.name? then
+      if q.name == name then return some q.span
+    match decl with
+    | .inductive _ _ _ ctors _ _ =>
+      for ctor in ctors do
+        if ctor.name.name == name then return some ctor.name.span
+    | .record _ _ _ con fields _ =>
+      if con.name == name then return some con.span
+      for field in fields do
+        match field.name with
+        | some q => if q.name == name then return some q.span
+        | none => pure ()
+    | .trait _ _ _ _ methods _ =>
+      for m in methods do
+        if m.name.name == name then return some m.name.span
+    | _ => pure ()
+  none
 
 /-- Find definition location for a name, using Globals as primary source -/
 def findDefinitionLocation (name : String) (mod : CompiledModule) (allModules : Array CompiledModule)
-    (seedSymbols : SymbolEnv := {}) (qualPath : Array String := #[]) : Option (String × Span) := do
+    (state : Option LspState := none) (seedSymbols : SymbolEnv := {})
+    (qualPath : Array String := #[]) : Option (String × Span) := do
   if let some globals := mod.globals then
-    let currentNs := mod.name.splitOn "/" |>.toArray
-    if let some _info := resolveViaGlobals globals currentNs qualPath name then
-      -- Found via Globals, now locate the definition site
-      if let some def_ := mod.symbols.lookupDefinition name then
-        return (def_.filePath, def_.nameSpan)
-      -- Check imported modules for the CST definition site
-      for imp in mod.symbols.imports do
-        for other in allModules do
-          if other.name == imp.modulePath || other.filePath.endsWith imp.modulePath then
-            if let some def_ := other.symbols.lookupDefinition name then
-              if imp.items.isEmpty || imp.items.contains name then
-                return (def_.filePath, def_.nameSpan)
-      -- Fall back to searching all modules
+    let currentNs := mod.name.splitOn "::" |>.toArray
+    if let some info := resolveViaGlobals globals currentNs qualPath name then
+      let originModule := info.name.id.module
+      if originModule == mod.name then
+        if let some def_ := mod.symbols.lookupDefinition name then
+          return (def_.filePath, def_.nameSpan)
       for other in allModules do
-        if let some def_ := other.symbols.lookupDefinition name then
-          return (other.filePath, def_.nameSpan)
+        if other.name == originModule then
+          if let some def_ := other.symbols.lookupDefinition name then
+            return (other.filePath, def_.nameSpan)
+      -- Fall back to the project-wide CheckedModule AST for unopened files.
+      if let some st := state then
+        if let some filePath := st.getModulePath originModule then
+          if let some checked := st.checkedModules.get? originModule then
+            if let some sp := findDeclNameSpanInAst name checked.resolvedAst then
+              return (filePath, sp)
+            return (filePath, Span.uninhabited)
 
   if let some def_ := mod.symbols.lookupDefinition name then
     return (def_.filePath, def_.nameSpan)
-
   for imp in mod.symbols.imports do
     for other in allModules do
       if other.name == imp.modulePath || other.filePath.endsWith imp.modulePath then
         if let some def_ := other.symbols.lookupDefinition name then
           if imp.items.isEmpty || imp.items.contains name then
             return (def_.filePath, def_.nameSpan)
-
   for other in allModules do
     if let some def_ := other.symbols.lookupDefinition name then
-      return (def_.filePath, def_.nameSpan)
+      return (other.filePath, def_.nameSpan)
 
   -- External dependencies
   if let some (sym, _) := lookupInSeedSymbols name seedSymbols then
-    return (sym.module ++ ".soma", sym.span)
+    let filePath :=
+      state.bind (·.getModulePath sym.module) |>.getD (sym.module ++ ".soma")
+    return (filePath, sym.span)
 
   none
 
 /-- Get definition at a position -/
 def getDefinitionAt (offset : Nat) (mod : CompiledModule) (allModules : Array CompiledModule)
-    (seedSymbols : SymbolEnv := {}) : Option (String × Span) := do
+    (state : Option LspState := none) (seedSymbols : SymbolEnv := {})
+    : Option (String × Span) := do
   let nodeInfo ← findNodeAtPosition offset mod.tree
 
   if nodeInfo.node.isToken then
@@ -411,7 +514,7 @@ def getDefinitionAt (offset : Nat) (mod : CompiledModule) (allModules : Array Co
       if let some local_ := mod.scopeMap.resolve text offset then
         return (mod.filePath, local_.nameSpan)
       let (qualPath, _) := extractQualifiedPath mod.tree nodeInfo.node
-      findDefinitionLocation text mod allModules seedSymbols qualPath
+      findDefinitionLocation text mod allModules state seedSymbols qualPath
     else
       none
   else
@@ -548,8 +651,14 @@ def getModulePathCompletions (state : LspState) (partialPath : String)
     : Array CompletionEntry := Id.run do
   let mut results : Array CompletionEntry := #[]
   for (modName, _) in state.moduleNameToPath.toArray do
-    if partialPath.isEmpty || modName.startsWith partialPath then
-      results := results.push { label := modName, insertText := modName, kind := .module, detail := some "module" }
+    let displayName := modName.replace "/" "::"
+    let keep := partialPath.isEmpty
+      || displayName.startsWith partialPath
+      || modName.startsWith partialPath
+    if keep then
+      results := results.push
+        { label := displayName, insertText := displayName
+        , kind := .module, detail := some "module" }
   return results
 
 /-- Walk up from a node to find the nearest ancestor of a given SyntaxKind -/
@@ -587,6 +696,18 @@ def parseDotPrefix (source : String) (offset : Nat) : Option (String × String) 
       else some (String.ofList lhsChars.reverse, String.ofList partialChars.reverse)
   | _ => none
 
+/-- Detect whether the cursor sits right after a `use` or `pub use` keyword with no path started yet -/
+def isAtUseKeyword (source : String) (offset : Nat) : Bool :=
+  let rev := ((source.take offset).toString).toList.reverse
+  let afterTrailingWs := rev.dropWhile Char.isWhitespace
+  match afterTrailingWs with
+  | 'e' :: 's' :: 'u' :: rest =>
+    -- `use` must be a standalone keyword, not the tail of another identifier.
+    match rest with
+    | [] => true
+    | c :: _ => !(c.isAlphanum || c == '_')
+  | _ => false
+
 /-- Source of field information for projection completion -/
 inductive FieldSource where
   | anonRecord (recordTy : Value)
@@ -603,7 +724,7 @@ private def fieldSourceOfType (ty : Value) : Option FieldSource :=
 def resolveFieldSource (name : String) (offset : Nat) (mod : CompiledModule)
     : Option FieldSource := do
   let globals ← mod.globals
-  let currentNs := mod.name.splitOn "/" |>.toArray
+  let currentNs := mod.name.splitOn "::" |>.toArray
   match mod.scopeMap.resolve name offset with
   | some binding =>
     match mod.localTypes.get? binding.nameSpan.start.byteOffset with
@@ -684,7 +805,7 @@ def getCompletionsAt (offset : Nat) (mod : CompiledModule) (allModules : Array C
 
   -- Check for qualified name prefix
   if let some globals := mod.globals then
-    let currentNs := mod.name.splitOn "/" |>.toArray
+    let currentNs := mod.name.splitOn "::" |>.toArray
 
     -- Extract text before cursor using line+col (avoids byte/char offset mismatch)
     let textBeforeCursor : String := match liveContent, cursorLine, cursorCol with
@@ -703,6 +824,10 @@ def getCompletionsAt (offset : Nat) (mod : CompiledModule) (allModules : Array C
       if let some (lhsName, partialField) := parseDotPrefix textBeforeCursor cursorPos then
         if let some source := resolveFieldSource lhsName offset mod then
           return getFieldCompletionsFromSource globals source partialField
+
+    if isAtUseKeyword textBeforeCursor cursorPos then
+      if let some st := state then
+        return getModulePathCompletions st ""
 
     let (path, partialName) := parseQualifiedPrefix textBeforeCursor cursorPos
     if !path.isEmpty then
@@ -764,25 +889,45 @@ private def resolveLocalBinding (name : String) (offset : Nat) (mod : CompiledMo
       offset >= b.nameSpan.start.byteOffset &&
       offset < b.nameSpan.stop.byteOffset
 
-/-- Find all references to a name in a module -/
-def findReferencesInModule (name : String) (mod : CompiledModule)
-    (targetOffset : Option Nat := none) : Array Span :=
-  match targetOffset with
-  | some offset =>
-    if let some local_ := resolveLocalBinding name offset mod then
-      mod.scopeMap.findLocalReferences local_ mod.tree
+/-- Find references in a module whose name tokens resolve to `targetQN` through the module's `Globals` -/
+def findGlobalReferencesInModule (mod : CompiledModule) (targetQN : Soma.Core.QualifiedName)
+    (name : String) : Array Span := Id.run do
+  let some globals := mod.globals | return #[]
+  let currentNs := mod.name.splitOn "::" |>.toArray
+  mod.tree.nodes.filterMap fun node => do
+    guard node.isToken
+    let kind ← node.tokenKind?
+    guard kind.isNameLike
+    let text ← node.text?
+    guard (text == name)
+    let span := mod.tree.spanOf node
+    let offset := span.start.byteOffset
+    if (mod.scopeMap.resolve text offset).isSome then none
     else
-      (mod.symbols.getReferences name).map (·.span)
-  | none =>
-    (mod.symbols.getReferences name).map (·.span)
+      let (qualPath, _) := extractQualifiedPath mod.tree node
+      match resolveViaGlobals globals currentNs qualPath text with
+      | some info => if info.name == targetQN then some span else none
+      | none => none
 
-/-- Find all references across modules -/
-def findAllReferences (name : String) (allModules : Array CompiledModule)
-    (targetOffset : Option Nat := none)
-    : Array (String × Span) :=
-  allModules.foldl (fun acc mod =>
-    let refs := findReferencesInModule name mod targetOffset
-    acc ++ refs.map (mod.filePath, ·)) #[]
+/-- Entry point for `textDocument/references` -/
+def findReferencesForCursor (originMod : CompiledModule) (offset : Nat) (name : String)
+    (allModules : Array CompiledModule) : Array (String × Span) := Id.run do
+  if let some local_ := resolveLocalBinding name offset originMod then
+    let refs := originMod.scopeMap.findLocalReferences local_ originMod.tree
+    return refs.map (originMod.filePath, ·)
+
+  if let some globals := originMod.globals then
+    let currentNs := originMod.name.splitOn "::" |>.toArray
+    let qualPath : Array String := match findNodeAtPosition offset originMod.tree with
+      | some nodeInfo => (extractQualifiedPath originMod.tree nodeInfo.node).1
+      | none => #[]
+    if let some info := resolveViaGlobals globals currentNs qualPath name then
+      let targetQN := info.name
+      return allModules.foldl (init := #[]) fun acc mod =>
+        let refs := findGlobalReferencesInModule mod targetQN name
+        acc ++ refs.map (mod.filePath, ·)
+
+  (originMod.symbols.getReferences name).map (fun r => (originMod.filePath, r.span))
 
 /-- LSP symbol kind numbers -/
 def documentSymbolKindNumber : Lsp.SymbolKind → Nat
@@ -897,7 +1042,7 @@ where
   resolveType (name : String) (mod : CompiledModule) (seedSymbols : SymbolEnv) : Option Value :=
     match mod.globals with
     | some globals =>
-      let currentNs := mod.name.splitOn "/" |>.toArray
+      let currentNs := mod.name.splitOn "::" |>.toArray
       match resolveViaGlobals globals currentNs #[] name with
       | some info => some info.type
       | none => (lookupInSeedSymbols name seedSymbols).map (·.2)

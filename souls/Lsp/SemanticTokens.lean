@@ -102,6 +102,15 @@ private partial def semanticParent? (tree : RedTree) (node : RedNode) : Option R
     if p.syntaxKind? == some .triviaToken then semanticParent? tree p
     else some p
 
+/-- Is `node` an ident-like token sitting before a `::` -/
+private def isQualifiedPathSegment (tree : RedTree) (parent : RedNode) (node : RedNode) : Bool :=
+  let tokens := getTokens tree parent
+  let idents := tokens.filter fun t =>
+    t.tokenKind? == some .lowerIdent || t.tokenKind? == some .upperIdent
+  if h : idents.size > 0 then
+    idents[idents.size - 1].id != node.id
+  else false
+
 /-- Classify an identifier based on the CST kind of its enclosing node -/
 def classifyByContext (tree : RedTree) (node : RedNode) (kind : TokenKind)
     : Option SemanticTokenTypes := Id.run do
@@ -117,8 +126,13 @@ def classifyByContext (tree : RedTree) (node : RedNode) (kind : TokenKind)
     if kind == .lowerIdent then return some .property
   | some .exprVariant | some .patVariant =>
     return some .enumMember
+  | some .exprVar | some .typeCon =>
+    if isQualifiedPathSegment tree parent node then return some .namespace
+  | some .attribute =>
+    if kind == .lowerIdent then return some .decorator
   | some .name =>
     -- `.name` wraps constructor names in patterns and declaration names
+    if isQualifiedPathSegment tree parent node then return some .namespace
     match tree.parent? parent with
     | some gp =>
       if gp.syntaxKind? == some .patCon && kind == .upperIdent then
@@ -176,7 +190,7 @@ def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
     return (tokenType, modifiers)
 
   if let some g := globals then
-    let currentNs := moduleName.splitOn "/" |>.toArray
+    let currentNs := moduleName.splitOn "::" |>.toArray
     if let some qn := g.resolve currentNs #[] text then
       if let some info := g.getDef qn then
         let tokenType := symbolKindToTokenType (globalInfoToSymbolKind info)
@@ -223,6 +237,12 @@ def collectTokenFromNode (tree : RedTree) (sf : SourceFile) (node : RedNode)
   -- Convert byte length to UTF-16 length using the token text
   let text ← node.text?
   let length := utf8LengthToUtf16 text
+
+  match semanticParent? tree node with
+  | some p =>
+    if p.syntaxKind? == some .attribute then
+      return Token.ofType line character length .decorator #[]
+  | none => pure ()
 
   -- Classify the token
   if kind.isNameLike then

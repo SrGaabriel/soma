@@ -69,7 +69,8 @@ def createPackage
   let alloyDir := tmpDir / "alloy"
   IO.FS.createDirAll alloyDir
   for (modName, alloyMod) in modules do
-    let binPath := alloyDir / (modName ++ ".alloybin")
+    let relPath := modName.replace "::" "/"
+    let binPath := alloyDir / (relPath ++ ".alloybin")
     if let some parent := binPath.parent then
       IO.FS.createDirAll parent
     Alloy.Serialize.writeAlloyBin binPath alloyMod

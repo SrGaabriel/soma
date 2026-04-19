@@ -136,6 +136,14 @@ private partial def semanticParent? (tree : RedTree) (node : RedNode) : Option R
     if p.syntaxKind? == some .triviaToken then semanticParent? tree p
     else some p
 
+/-- If `node` is a `.triviaToken` wrapper, unwrap it to the inner name-like token -/
+private def unwrapNameToken (tree : RedTree) (node : RedNode) : RedNode :=
+  if node.syntaxKind? == some .triviaToken then
+    match findToken? tree node .lowerIdent with
+    | some tok => tok
+    | none => (findToken? tree node .upperIdent).getD node
+  else node
+
 /-- Recursively collect all patVar names from a pattern subtree -/
 private def collectPatternVarNames (tree : RedTree) (node : RedNode)
     : Array (String × RedNode) := Id.run do
@@ -311,7 +319,7 @@ private def extractLetBindings (tree : RedTree) (letNode : RedNode)
 
   -- The binding is the second child (after `let` keyword)
   if h : 1 < children.size then
-    let bindingChild := children[1]
+    let bindingChild := unwrapNameToken tree children[1]
     if bindingChild.isToken && bindingChild.tokenKind? == some .lowerIdent then
       -- Simple name binding
       if let some name := bindingChild.text? then
@@ -329,7 +337,7 @@ private def extractLetBindings (tree : RedTree) (letNode : RedNode)
         }
     else
       -- Pattern binding so we collect all patVars
-      let vars := collectPatternVarNames tree bindingChild
+      let vars := collectPatternVarNames tree children[1]
       for (name, nameTok) in vars do
         result := result.push {
           name
@@ -502,7 +510,7 @@ private def extractComposeBindings (tree : RedTree) (composeNode : RedNode)
       let stmtChildren := getChildren tree child
       -- Structure: [let, name/pattern, =, value]
       if h : 1 < stmtChildren.size then
-        let bindingChild := stmtChildren[1]
+        let bindingChild := unwrapNameToken tree stmtChildren[1]
         if bindingChild.isToken && bindingChild.tokenKind? == some .lowerIdent then
           if let some name := bindingChild.text? then
             result := result.push {
@@ -514,7 +522,7 @@ private def extractComposeBindings (tree : RedTree) (composeNode : RedNode)
               scopeEnd := composeEnd
             }
         else
-          let vars := collectPatternVarNames tree bindingChild
+          let vars := collectPatternVarNames tree stmtChildren[1]
           for (name, nameTok) in vars do
             result := result.push {
               name
@@ -529,7 +537,7 @@ private def extractComposeBindings (tree : RedTree) (composeNode : RedNode)
       let stmtChildren := getChildren tree child
       -- Structure: [bind, name/pattern, <-, value]
       if h : 1 < stmtChildren.size then
-        let bindingChild := stmtChildren[1]
+        let bindingChild := unwrapNameToken tree stmtChildren[1]
         if bindingChild.isToken && bindingChild.tokenKind? == some .lowerIdent then
           if let some name := bindingChild.text? then
             result := result.push {
@@ -541,7 +549,7 @@ private def extractComposeBindings (tree : RedTree) (composeNode : RedNode)
               scopeEnd := composeEnd
             }
         else
-          let vars := collectPatternVarNames tree bindingChild
+          let vars := collectPatternVarNames tree stmtChildren[1]
           for (name, nameTok) in vars do
             result := result.push {
               name
@@ -660,11 +668,24 @@ def buildScopeMap (tree : RedTree) : ScopeMap := Id.run do
 
   return { bindings := sorted, nameIndex := nameIdx, nodeIdIndex := nodeIdIdx }
 
+/-- Build a hover string  -/
+def mkHoverDoc (signature : String) (metadata : String) (doc : Option String := none) : String := Id.run do
+  let mut parts : Array String := #[]
+  if !signature.isEmpty then
+    parts := parts.push s!"```soma\n{signature}\n```"
+    parts := parts.push "---"
+  match doc with
+  | some d => if !d.isEmpty then parts := parts.push d
+  | none => pure ()
+  if !metadata.isEmpty then
+    parts := parts.push s!"_{metadata}_"
+  return String.intercalate "\n\n" parts.toList
+
 /-- Format hover content for a local binding -/
 def formatLocalBindingHover (b : LocalBinding) : String :=
   let kindStr := b.kind.describe
   match b.typeAnnotation with
-  | some ty => s!"```soma\n{b.name} :: {ty}\n```\n\n*{kindStr}*"
-  | none    => s!"**{b.name}**\n\n*{kindStr}*"
+  | some ty => mkHoverDoc s!"{b.name} : {ty}" kindStr
+  | none    => mkHoverDoc s!"{b.name}" kindStr
 
 end Lsp

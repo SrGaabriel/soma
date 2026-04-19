@@ -34,10 +34,10 @@ inductive TopoSortResult where
   | cycles (cycles : Array DependencyCycle)
   deriving Repr
 
-/-- Convert a QualName to a module path string (/ filesystem layout) -/
+/-- Convert a QualName to a canonical module name -/
 def qualNameToModulePath (qn : QualName) : String :=
   if qn.path.isEmpty then qn.name
-  else String.intercalate "/" qn.path.toList ++ "/" ++ qn.name
+  else String.intercalate "::" qn.path.toList ++ "::" ++ qn.name
 
 /-- Extract the list of imports with their spans from a module's AST -/
 def extractImports (ast : Module) : Array ImportEdge :=
@@ -157,7 +157,7 @@ partial def findModules (packageName : String) (rootDir : System.FilePath) : IO 
 where
   extendPath (pfx name : String) : String :=
     if pfx.isEmpty then name
-    else pfx ++ "/" ++ name
+    else pfx ++ "::" ++ name
 
   go (pfx : String) (dir : System.FilePath) : IO (Array (String × System.FilePath)) := do
     let entries ← dir.readDir
@@ -169,13 +169,13 @@ where
         pure (acc ++ subResults)
       else if name.endsWith ".soma" then
         let baseName := name.dropEnd 5 |>.copy
-        let moduleName := packageName ++ "/" ++ extendPath pfx baseName
+        let moduleName := packageName ++ "::" ++ extendPath pfx baseName
         pure (acc.push (moduleName, fullPath))
       else
         pure acc
     pure results
 
 /-- The well-known prelude module name -/
-def preludeModuleName : String := "stdlib/prelude"
+def preludeModuleName : String := "stdlib::prelude"
 
 end Soma.Project

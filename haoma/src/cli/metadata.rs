@@ -147,17 +147,17 @@ fn scan_modules_recursive(
             let new_prefix = if prefix.is_empty() {
                 file_name_str.to_string()
             } else {
-                format!("{prefix}/{file_name_str}")
+                format!("{prefix}::{file_name_str}")
             };
             scan_modules_recursive(package_name, &path, &new_prefix, modules)?;
         } else if path.extension().is_some_and(|e| e == "soma") {
             let module_suffix = if prefix.is_empty() {
                 file_name_str.trim_end_matches(".soma").to_string()
             } else {
-                format!("{}/{}", prefix, file_name_str.trim_end_matches(".soma"))
+                format!("{}::{}", prefix, file_name_str.trim_end_matches(".soma"))
             };
 
-            let module_name = format!("{package_name}/{module_suffix}");
+            let module_name = format!("{package_name}::{module_suffix}");
             let abs_path = path.canonicalize().unwrap_or_else(|_| path.clone());
 
             modules.push(ModuleInfo {

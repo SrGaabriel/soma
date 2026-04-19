@@ -1,4 +1,4 @@
-use base::prim::{Int32, Bool, String, Unit, List, Pair, IO, Ptr}
+use base::prim::{Int32, String, List}
 
 @[extern "soma_strcat"]
 def strcat : String -> String -> String
