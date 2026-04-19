@@ -1365,44 +1365,48 @@ private def initClosureBuffer (closurePtr : LocalRef) (funcRef : FuncRef) (env :
     | none => pure (.closure #[] (.prim .i64))
   pure (closureTyAlloy, envSlotCount)
 
-/-- Closure allocation logic -/
+/-- Heap closure allocation -/
 private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
     : CodegenM (Option (LocalRef × ClosedTy)) := do
-  let (envLLVMTy, _) ← convertOperandWithTy env
   let envAlloTy ← operandTy env
-  let isEmptyEnv := isZeroWidthLLVM envAlloTy
-  let envFieldCount : Nat := if isEmptyEnv then 0
-    else match envLLVMTy with
-      | .struct _ fields => if fields.size > 1 then fields.size else 1
-      | _ => 1
-  let envSlotCount : Nat := if isEmptyEnv then 0 else envFieldCount
+  let totalSlots : Nat := envAlloTy.closureTotalSlotCount
   let ps := (← get).ptrSize
-  let closureHeaderSize := ps + ps
-  let closureByteSize : Int := Int.ofNat (closureHeaderSize + envSlotCount * ps)
+  let closureByteSize : Int := Int.ofNat (totalSlots * ps)
   let closurePtr ← CodegenM.withFuncBuilder do
     FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int closureByteSize 64))]
   let (closureTyAlloy, _) ← initClosureBuffer closurePtr funcRef env
   pure (some (closurePtr, closureTyAlloy))
 
+/-- Stack closure allocation -/
 private def emitStackClosureImpl (funcRef : FuncRef) (env : Operand)
     : CodegenM (Option (LocalRef × ClosedTy)) := do
-  let (envLLVMTy, _) ← convertOperandWithTy env
   let envAlloTy ← operandTy env
-  let isEmptyEnv := isZeroWidthLLVM envAlloTy
-  let envFieldCount : Nat := if isEmptyEnv then 0
-    else match envLLVMTy with
-      | .struct _ fields => if fields.size > 1 then fields.size else 1
-      | _ => 1
-  let envSlotCount : Nat := if isEmptyEnv then 0 else envFieldCount
+  let totalSlots : Nat := envAlloTy.closureTotalSlotCount
   let ps := (← get).ptrSize
-  -- Total slots: header occupies two ptr-sized slots (arity+pad + funcPtr)
-  let totalSlots : Nat := envSlotCount + 2
-  -- Alloca `[totalSlots x ptr]` — natural ptr alignment matches closureHeaderTy
   let bufferTy : LLVMType := .array totalSlots .ptr
   let closurePtr ← CodegenM.withFuncBuilder do
     FuncBuilder.entryAlloca bufferTy (some ps)
   let (closureTyAlloy, _) ← initClosureBuffer closurePtr funcRef env
   pure (some (closurePtr, closureTyAlloy))
+
+/-- Stack-allocated deep copy of a closure -/
+private def emitStackCloneImpl (src : Operand) (ty : ClosedTy) (slotCount : Nat)
+    : CodegenM (Option (LocalRef × ClosedTy)) := do
+  let (srcLLVMTy, srcVal) ← convertOperandWithTy src
+  let srcPtr ← if srcLLVMTy == .ptr then pure srcVal else ensurePtr srcLLVMTy srcVal
+  let ps := (← get).ptrSize
+  let bufferTy : LLVMType := .array slotCount .ptr
+  let byteSize : Int := Int.ofNat (slotCount * ps)
+  let bufPtr ← CodegenM.withFuncBuilder do
+    FuncBuilder.entryAlloca bufferTy (some ps)
+  CodegenM.withFuncBuilder do
+    FuncBuilder.callNamedVoid "llvm.memcpy.p0.p0.i64" #[
+      (.ptr, .local bufPtr),
+      (.ptr, srcPtr),
+      (.i64, .const (.int byteSize 64)),
+      (.i1, .const (.bool false))
+    ]
+  pure (some (bufPtr, ty))
 
 /-- Lower an Alloy instruction to LLVM, returning result ref and result type -/
 def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := do
@@ -1834,6 +1838,8 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .stackClosure funcRef env => emitStackClosureImpl funcRef env
   | .stackClosurePoly funcRef _typeArgs env => emitStackClosureImpl funcRef env
+
+  | .stackClone src ty slots => emitStackCloneImpl src ty slots
 
   | .makeClosureDyn fnClosure env resultTy =>
     -- The trampoline unpacks both from a composite env buffer and forwards the call
@@ -2354,6 +2360,7 @@ def instReferencedLocals (inst : ClosedInst) : Array Nat :=
   | .makeClosureDyn fnClo env _ => collectOp fnClo ++ collectOp env
   | .stackClosure _ env => collectOp env
   | .stackClosurePoly _ _ env => collectOp env
+  | .stackClone src _ _ => collectOp src
   | .malloc sz => collectOp sz
   | .free ptr => collectOp ptr
   | .callIntrinsic _ args _ => collectOps args

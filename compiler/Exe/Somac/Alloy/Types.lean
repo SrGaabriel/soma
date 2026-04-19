@@ -382,6 +382,23 @@ partial def supportsLazySup : Ty n → Bool
   | .var _ => true
   | ty => ty.isSomaList
 
+/-- Number of ptr-sized slots an env of this type occupies inside a closure body -/
+def closureEnvSlotCount : Ty n → Nat
+  | ty =>
+    if ty.isZeroWidth then 0
+    else match ty with
+      | .struct fields => if fields.size > 1 then fields.size else 1
+      | _ => 1
+
+/-- Total ptr-sized slot count for a closure whose env has type `envTy` -/
+def closureTotalSlotCount (envTy : Ty n) : Nat :=
+  closureEnvSlotCount envTy + 2
+
+/-- Whether a `.clone` of this type can be soundly rewritten to .stackClone` -/
+def isStackCloneable : Ty n → Bool
+  | .closure _ _ => true
+  | _ => false
+
 end Ty
 
 /-! ## Constants -/

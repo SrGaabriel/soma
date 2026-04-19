@@ -266,11 +266,16 @@ def compileModules
 
     let (escaped, escapeStats) := Alloy.ClosureEscape.escapeModule optimized
     if !escapeStats.isEmpty then
-      let promotedMsg := s!"{escapeStats.promoted} closure(s) promoted to stack"
-      let erasesMsg := if escapeStats.erasesEliminated > 0 then
-        s!", {escapeStats.erasesEliminated} erase(s) eliminated"
-      else ""
-      IO.println s!"  Closure escape analysis: {promotedMsg}{erasesMsg}"
+      let parts : Array String := #[
+        s!"{escapeStats.promotedClosures} closure(s) promoted to stack",
+        (if escapeStats.promotedClones > 0 then
+          s!"{escapeStats.promotedClones} clone(s) promoted to stack" else ""),
+        (if escapeStats.erasesEliminated > 0 then
+          s!"{escapeStats.erasesEliminated} erase(s) eliminated" else "")
+      ]
+      let nonEmpty := parts.toList.filter (· != "")
+      let summary := String.intercalate ", " nonEmpty
+      IO.println s!"  Closure escape analysis: {summary}"
     optimized := escaped
 
     let (borrowed, borrowStats) := Alloy.Borrow.borrowModule optimized

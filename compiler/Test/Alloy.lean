@@ -129,8 +129,8 @@ def testPromoteSimple : IO TestResult := do
     pure (.failed s!"expected 1 stackClosure after promotion, got {stack}")
   else if erases != 0 then
     pure (.failed s!"expected 0 erases after elision, got {erases}")
-  else if stats.promoted != 1 then
-    pure (.failed s!"expected stats.promoted=1, got {stats.promoted}")
+  else if stats.promotedClosures != 1 then
+    pure (.failed s!"expected stats.promotedClosures=1, got {stats.promotedClosures}")
   else if stats.erasesEliminated != 1 then
     pure (.failed s!"expected stats.erasesEliminated=1, got {stats.erasesEliminated}")
   else
@@ -150,8 +150,8 @@ def testEscapeViaReturn : IO TestResult := do
     pure (.failed s!"expected closure to remain on heap (1), got heap={heap}")
   else if stack != 0 then
     pure (.failed s!"expected no stack promotion, got stack={stack}")
-  else if stats.promoted != 0 then
-    pure (.failed s!"expected stats.promoted=0, got {stats.promoted}")
+  else if stats.promotedClosures != 0 then
+    pure (.failed s!"expected stats.promotedClosures=0, got {stats.promotedClosures}")
   else
     pure .passed
 
@@ -175,8 +175,8 @@ def testEscapeViaCapture : IO TestResult := do
   let (heap, stack) := closureCounts caller'
   if heap != 1 || stack != 1 then
     pure (.failed s!"expected heap=1, stack=1 (outer %1 escapes, inner %2 promoted), got heap={heap}, stack={stack}")
-  else if stats.promoted != 1 then
-    pure (.failed s!"expected stats.promoted=1, got {stats.promoted}")
+  else if stats.promotedClosures != 1 then
+    pure (.failed s!"expected stats.promotedClosures=1, got {stats.promotedClosures}")
   else
     pure .passed
 
@@ -241,8 +241,21 @@ def testClosureAsArgToItself : IO TestResult := do
   else
     pure .passed
 
-/-- Each clone counts as a heap copy, but the original is read-only and original is still promotable -/
-def testCloneIsSafe : IO TestResult := do
+/-- Count `.clone` vs `.stackClone` in a function -/
+private def cloneCounts (f : ClosedFunc) : Nat × Nat := Id.run do
+  let mut heap := 0
+  let mut stack := 0
+  if let some cfg := f.body then
+    for block in cfg.allBlocks do
+      for stmt in block.stmts do
+        match stmt.inst with
+        | .clone _ _ _ => heap := heap + 1
+        | .stackClone _ _ _ => stack := stack + 1
+        | _ => pure ()
+  (heap, stack)
+
+/-- Clone of a non-escaping closure -/
+def testCloneChainPromotes : IO TestResult := do
   let body : Array ClosedStmt := #[
     { result := some ⟨1⟩
     , inst := .makeClosure (.local ⟨0⟩) (.local ⟨0⟩) },
@@ -256,11 +269,78 @@ def testCloneIsSafe : IO TestResult := do
   let extra : Std.HashMap Nat ClosedTy := ({} : Std.HashMap Nat ClosedTy).insert 2
     (.closure #[.prim .i32] (.prim .i32))
   let caller := buildCaller 1 body (.ret (.const (.int 0 .i32))) extra
+  let (m, stats) := ClosureEscape.escapeModule (mkModule caller)
+  let caller' := m.getMonoFunc ⟨1⟩ |>.get!
+  let (heapClo, stackClo) := closureCounts caller'
+  let (heapCln, stackCln) := cloneCounts caller'
+  if heapClo != 0 || stackClo != 1 then
+    pure (.failed s!"expected closure: heap=0, stack=1; got heap={heapClo}, stack={stackClo}")
+  else if heapCln != 0 || stackCln != 1 then
+    pure (.failed s!"expected clone: heap=0, stack=1; got heap={heapCln}, stack={stackCln}")
+  else if stats.promotedClosures != 1 then
+    pure (.failed s!"expected promotedClosures=1, got {stats.promotedClosures}")
+  else if stats.promotedClones != 1 then
+    pure (.failed s!"expected promotedClones=1, got {stats.promotedClones}")
+  else if stats.erasesEliminated != 2 then
+    pure (.failed s!"expected erasesEliminated=2, got {stats.erasesEliminated}")
+  else
+    pure .passed
+
+/-- When the clone's result escapes -/
+def testEscapingCloneStaysHeap : IO TestResult := do
+  let body : Array ClosedStmt := #[
+    { result := some ⟨1⟩
+    , inst := .makeClosure (.local ⟨0⟩) (.local ⟨0⟩) },
+    { result := some ⟨2⟩
+    , inst := .clone (.local ⟨1⟩) (.closure #[.prim .i32] (.prim .i32)) 0 },
+    { result := none
+    , inst := .erase (.local ⟨1⟩) (.closure #[.prim .i32] (.prim .i32)) }
+  ]
+  let extra : Std.HashMap Nat ClosedTy := ({} : Std.HashMap Nat ClosedTy).insert 2
+    (.closure #[.prim .i32] (.prim .i32))
+  let caller := buildCaller 1 body (.ret (.local ⟨2⟩)) extra
   let (m, _) := ClosureEscape.escapeModule (mkModule caller)
   let caller' := m.getMonoFunc ⟨1⟩ |>.get!
-  let (heap, stack) := closureCounts caller'
-  if heap != 0 || stack != 1 then
-    pure (.failed s!"cloned closure's original should be promoted; got heap={heap}, stack={stack}")
+  let (heapClo, stackClo) := closureCounts caller'
+  let (heapCln, stackCln) := cloneCounts caller'
+  if heapClo != 0 || stackClo != 1 then
+    pure (.failed s!"original should be promoted; got heap={heapClo}, stack={stackClo}")
+  else if heapCln != 1 || stackCln != 0 then
+    pure (.failed s!"escaping clone should stay heap; got heap={heapCln}, stack={stackCln}")
+  else
+    pure .passed
+
+/-- Multi-step clone chain: %1 (make) → %2 (clone) → %3 (clone of %2) -/
+def testCloneChainDepth3 : IO TestResult := do
+  let body : Array ClosedStmt := #[
+    { result := some ⟨1⟩
+    , inst := .makeClosure (.local ⟨0⟩) (.local ⟨0⟩) },
+    { result := some ⟨2⟩
+    , inst := .clone (.local ⟨1⟩) (.closure #[.prim .i32] (.prim .i32)) 0 },
+    { result := some ⟨3⟩
+    , inst := .clone (.local ⟨2⟩) (.closure #[.prim .i32] (.prim .i32)) 0 },
+    { result := none
+    , inst := .erase (.local ⟨1⟩) (.closure #[.prim .i32] (.prim .i32)) },
+    { result := none
+    , inst := .erase (.local ⟨2⟩) (.closure #[.prim .i32] (.prim .i32)) },
+    { result := none
+    , inst := .erase (.local ⟨3⟩) (.closure #[.prim .i32] (.prim .i32)) }
+  ]
+  let extra : Std.HashMap Nat ClosedTy :=
+    (({} : Std.HashMap Nat ClosedTy).insert 2
+      (.closure #[.prim .i32] (.prim .i32))).insert 3
+      (.closure #[.prim .i32] (.prim .i32))
+  let caller := buildCaller 1 body (.ret (.const (.int 0 .i32))) extra
+  let (m, stats) := ClosureEscape.escapeModule (mkModule caller)
+  let caller' := m.getMonoFunc ⟨1⟩ |>.get!
+  let (heapClo, stackClo) := closureCounts caller'
+  let (heapCln, stackCln) := cloneCounts caller'
+  if heapClo != 0 || stackClo != 1 then
+    pure (.failed s!"expected closure: heap=0, stack=1; got heap={heapClo}, stack={stackClo}")
+  else if heapCln != 0 || stackCln != 2 then
+    pure (.failed s!"expected 2 stackClones; got heap={heapCln}, stack={stackCln}")
+  else if stats.promotedClones != 2 then
+    pure (.failed s!"expected promotedClones=2, got {stats.promotedClones}")
   else
     pure .passed
 
@@ -269,8 +349,8 @@ def testNoClosures : IO TestResult := do
   let body : Array ClosedStmt := #[]
   let caller := buildCaller 1 body (.ret (.const (.int 0 .i32)))
   let (_, stats) := ClosureEscape.escapeModule (mkModule caller)
-  if stats.promoted != 0 || stats.erasesEliminated != 0 then
-    pure (.failed s!"expected no-op stats on closure-free module; got {stats.promoted}/{stats.erasesEliminated}")
+  if !stats.isEmpty then
+    pure (.failed s!"expected no-op stats; got promotedClosures={stats.promotedClosures}, promotedClones={stats.promotedClones}, erases={stats.erasesEliminated}")
   else
     pure .passed
 
@@ -302,7 +382,9 @@ def run : IO TestRunner := do
   runner := runner.record "no_promotion_on_call_arg" (← testEscapeViaCallArg)
   runner := runner.record "invocation_is_safe" (← testInvocationIsSafe)
   runner := runner.record "closure_as_arg_to_itself_escapes" (← testClosureAsArgToItself)
-  runner := runner.record "clone_is_safe" (← testCloneIsSafe)
+  runner := runner.record "clone_chain_promotes" (← testCloneChainPromotes)
+  runner := runner.record "escaping_clone_stays_heap" (← testEscapingCloneStaysHeap)
+  runner := runner.record "clone_chain_depth3_promotes" (← testCloneChainDepth3)
   runner := runner.record "no_op_on_empty" (← testNoClosures)
   runner := runner.record "no_promotion_on_lazy_sup" (← testEscapeViaLazySup)
   pure runner

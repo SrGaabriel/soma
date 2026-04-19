@@ -125,6 +125,9 @@ inductive Inst : Nat → Type where
   /-- Produces a type-specialized deep copy of a value -/
   | clone : Operand → Ty n → UInt32 → Inst n
 
+  /-- Stack-allocated counterpart to `clone` -/
+  | stackClone : Operand → Ty n → Nat → Inst n
+
   /-- Panic with message -/
   | panic : Nat → Nat → Inst n
 
@@ -200,6 +203,7 @@ def instantiate : Inst n → TyEnv n → ClosedInst
   | .supProj1 src ty, env => .supProj1 src (Somac.Alloy.instantiate ty env)
   | .erase val ty, env => .erase val (Somac.Alloy.instantiate ty env)
   | .clone val ty label, env => .clone val (Somac.Alloy.instantiate ty env) label
+  | .stackClone val ty slots, env => .stackClone val (Somac.Alloy.instantiate ty env) slots
   | .panic msgIdx line, _ => .panic msgIdx line
   | .callIntrinsic op args retTy, env => .callIntrinsic op args (Somac.Alloy.instantiate retTy env)
   | .callExtern name args retTy, env => .callExtern name args (Somac.Alloy.instantiate retTy env)
@@ -256,6 +260,7 @@ def resultTy : ClosedInst → Option ClosedTy
   | .supProj1 _ ty => some ty
   | .erase _ _ => none
   | .clone _ ty _ => some ty
+  | .stackClone _ ty _ => some ty
   | .panic _ _ => none
   | .callIntrinsic op _ retTy => if op.hasResult then some retTy else none
   | .callExtern _ _ retTy => some retTy
@@ -325,6 +330,7 @@ private def toStringAux : Inst n → String
   | .supProj1 src ty => s!"sup_proj1 {src} : {ty}"
   | .erase val ty => s!"erase {val} : {ty}"
   | .clone val ty label => s!"clone {val} : {ty} &{label}"
+  | .stackClone val ty slots => s!"stackclone {val} : {ty} @{slots}slots"
   | .panic msgIdx line => s!"panic #{msgIdx} @ line {line}"
   | .callIntrinsic op args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
@@ -373,6 +379,7 @@ def operands : Inst n → Array (Operand)
   | .getPayload o _ _ _ => #[o]
   | .erase o _ => #[o]
   | .clone o _ _ => #[o]
+  | .stackClone o _ _ => #[o]
   | .closureFunc o => #[o]
   | .closureEnv o => #[o]
   | .phi incoming _ => incoming.map Prod.fst
@@ -439,6 +446,7 @@ def mapOperands (inst : Inst 0) (f : Operand → Operand) : Inst 0 :=
   | .supProj1 o ty => .supProj1 (f o) ty
   | .erase o ty => .erase (f o) ty
   | .clone o ty label => .clone (f o) ty label
+  | .stackClone o ty slots => .stackClone (f o) ty slots
   | .panic idx line => .panic idx line
 
 end Inst

@@ -227,6 +227,8 @@ def ppInst (cfg : Config) : Inst n → String
     s!"{colorKeyword cfg "erase"} {ppTy cfg ty} {ppOperand cfg val}"
   | .clone val ty label =>
     s!"{colorKeyword cfg "clone"} {ppTy cfg ty} {ppOperand cfg val} &{label}"
+  | .stackClone val ty slots =>
+    s!"{colorKeyword cfg "stackclone"} {ppTy cfg ty} {ppOperand cfg val} @{slots}"
   | .panic msgIdx line =>
     s!"{colorKeyword cfg "panic"} #{msgIdx} @ line {line}"
   | .callIntrinsic op args retTy =>
