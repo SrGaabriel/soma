@@ -599,13 +599,25 @@ def buildGlobalsAndInstances
         origin := Soma.Dependent.DeclarationOrigin.instanceMethod
       }
 
-  return {
+  let sigCtx := { baseCtx with
     globals := fullGlobalsWithInstanceFns
+    currentNamespace := moduleNs
+    instanceEnv := fullInstanceEnv
+    abbrevEnv := fullAbbrevEnv }
+  let sigResult := (Soma.Dependent.Driver.elaborateFunctionSignatures untypedModule).run sigCtx state''
+  let (globalsWithSigs, state''', sigErrors) := match sigResult with
+    | .error e => (fullGlobalsWithInstanceFns, state'', #[e])
+    | .ok (globals, st) => (globals, st, st.errors)
+
+  allErrors := allErrors ++ sigErrors
+
+  return {
+    globals := globalsWithSigs
     instanceEnv := fullInstanceEnv
     abbrevEnv := fullAbbrevEnv
     instanceMap := instanceMap
     instanceTypedFunctions := instanceTypedFns
-    finalState := state''
+    finalState := state'''
     errors := allErrors
   }
 

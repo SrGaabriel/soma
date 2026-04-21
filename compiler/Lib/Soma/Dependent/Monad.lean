@@ -39,7 +39,7 @@ structure CtxEntry where
   span : Span
   deriving Inhabited
 
-/-- A constraint that couldn't be solved immediately -/
+/-- A work item handled by the unified solver -/
 inductive Constraint where
   /-- Unify two values -/
   | unify (v1 v2 : Value) (span : Span)
@@ -49,6 +49,8 @@ inductive Constraint where
   | levelEq (l1 l2 : Level)
   /-- Solve a level ordering -/
   | levelLe (l1 l2 : Level)
+  | resolveInstance (metaId : MetaId) (classId : Unique) (args : Array Value) (span : Span)
+  | deferredInstance (metaId : MetaId) (domTy : Value) (span : Span)
   deriving Inhabited
 
 namespace Constraint
@@ -59,6 +61,8 @@ def span : Constraint → Span
   | .subtype _ _ s => s
   | .levelEq _ _ => Span.uninhabited
   | .levelLe _ _ => Span.uninhabited
+  | .resolveInstance _ _ _ s => s
+  | .deferredInstance _ _ s => s
 
 /-- Get a human-readable description of the constraint -/
 def describe : Constraint → String
@@ -66,6 +70,14 @@ def describe : Constraint → String
   | .subtype v1 v2 _ => s!"`{v1}` <: `{v2}`"
   | .levelEq l1 l2 => s!"level `{l1}` = `{l2}`"
   | .levelLe l1 l2 => s!"level `{l1}` ≤ `{l2}`"
+  | .resolveInstance _ classId _ _ => s!"resolve instance for class `{classId.original}`"
+  | .deferredInstance _ domTy _ => s!"deferred instance constraint on `{domTy}`"
+
+/-- Is this constraint an instance-resolution obligation? -/
+def isInstanceConstraint : Constraint → Bool
+  | .resolveInstance _ _ _ _ => true
+  | .deferredInstance _ _ _ => true
+  | _ => false
 
 end Constraint
 
@@ -863,7 +875,7 @@ structure TCState where
   levelSolutions : Std.HashMap Nat Level := {}
   /-- Next level variable ID -/
   nextLevelVar : Nat := 0
-  /-- Postponed constraints (tracked with IDs and meta references) -/
+  /-- Unified constraint queue — all outstanding solver work -/
   postponed : Array TrackedConstraint := #[]
   /-- Worklist of constraint IDs to retry (populated when metas are solved) -/
   worklist : Array ConstraintId := #[]
@@ -875,10 +887,6 @@ structure TCState where
   freshCounter : Nat := 0
   /-- Variable usage counts for QTT tracking (Unique -> exact count) -/
   usages : Std.HashMap Unique Nat := {}
-  /-- Pending instance constraints to be resolved -/
-  pendingInstances : Array PendingInstance := #[]
-  /-- Deferred instance metas where class info couldn't be extracted yet -/
-  deferredInstanceMetas : Array (MetaId × Value × Span) := #[]
   /-- Unique supply for generating compiler-internal names -/
   uniqueSupply : Soma.UniqueSupply := Soma.UniqueSupply.initial ""
   /-- Dependencies on global definitions (for incremental checking) -/
@@ -1003,29 +1011,68 @@ def saveUsages (s : TCState) : Std.HashMap Unique Nat :=
 def restoreUsages (s : TCState) (usages : Std.HashMap Unique Nat) : TCState :=
   { s with usages := usages }
 
-/-- Add a pending instance constraint -/
+/-- Add a pending instance constraint to the unified queue -/
 def addPendingInstance (s : TCState) (p : PendingInstance) : TCState :=
-  { s with pendingInstances := s.pendingInstances.push p }
+  let c : Constraint := .resolveInstance p.metaId p.classId p.args p.span
+  let metas : Array MetaId := #[p.metaId]
+  let (cid, metas') := s.metas.registerConstraint metas
+  let tc : TrackedConstraint := {
+    constraint := c
+    constraintId := cid
+    metas := metas
+    origin := .unknown
+    parentConstraints := #[]
+  }
+  { s with metas := metas', postponed := s.postponed.push tc }
 
-/-- Get all pending instances -/
+/-- Get all pending instance constraints from the unified queue -/
 def getPendingInstances (s : TCState) : Array PendingInstance :=
-  s.pendingInstances
+  s.postponed.filterMap fun tc =>
+    match tc.constraint with
+    | .resolveInstance metaId classId args span =>
+      some { metaId := metaId, classId := classId, args := args, span := span }
+    | _ => none
 
-/-- Clear pending instances -/
+/-- Remove all pending instance constraints from the unified queue -/
 def clearPendingInstances (s : TCState) : TCState :=
-  { s with pendingInstances := #[] }
+  let (keep, drop) := s.postponed.partition fun tc =>
+    match tc.constraint with
+    | .resolveInstance _ _ _ _ => false
+    | _ => true
+  let droppedCids := drop.map (·.constraintId)
+  let metas' := droppedCids.foldl (fun m cid => m.removeConstraint cid) s.metas
+  { s with postponed := keep, metas := metas' }
 
-/-- Add a deferred instance meta -/
+/-- Enqueue a deferred instance meta on the unified queue -/
 def addDeferredInstanceMeta (s : TCState) (metaId : MetaId) (domTy : Value) (span : Span) : TCState :=
-  { s with deferredInstanceMetas := s.deferredInstanceMetas.push (metaId, domTy, span) }
+  let c : Constraint := .deferredInstance metaId domTy span
+  let metas : Array MetaId := #[metaId]
+  let (cid, metas') := s.metas.registerConstraint metas
+  let tc : TrackedConstraint := {
+    constraint := c
+    constraintId := cid
+    metas := metas
+    origin := .unknown
+    parentConstraints := #[]
+  }
+  { s with metas := metas', postponed := s.postponed.push tc }
 
-/-- Get deferred instance metas -/
+/-- Get all deferred instance metas from the unified queue -/
 def getDeferredInstanceMetas (s : TCState) : Array (MetaId × Value × Span) :=
-  s.deferredInstanceMetas
+  s.postponed.filterMap fun tc =>
+    match tc.constraint with
+    | .deferredInstance m dom span => some (m, dom, span)
+    | _ => none
 
-/-- Clear deferred instance metas -/
+/-- Remove all deferred instance constraints from the unified queue -/
 def clearDeferredInstanceMetas (s : TCState) : TCState :=
-  { s with deferredInstanceMetas := #[] }
+  let (keep, drop) := s.postponed.partition fun tc =>
+    match tc.constraint with
+    | .deferredInstance _ _ _ => false
+    | _ => true
+  let droppedCids := drop.map (·.constraintId)
+  let metas' := droppedCids.foldl (fun m cid => m.removeConstraint cid) s.metas
+  { s with postponed := keep, metas := metas' }
 
 end TCState
 

@@ -471,18 +471,41 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
     | .ok body =>
       installSolution m spineLevels body
     | .error .occursCheck =>
-      -- Meta appears in RHS → try pruning recovery before failing
       let pruned ← tryOccursCheckPruning m spine rhs
       if pruned then
         let span ← TCM.getSpan
         TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
       else
-        let span ← TCM.getSpan
-        TCM.throw (.unificationFailed (.occursCheck m rhs) .general span #[] #[m])
+        let rhsForced ← force rhs
+        let resolved ←
+          match rhsForced with
+          | .vNeutral _ neu2 =>
+            match getMetaWithSpine neu2 with
+            | some (m2, spine2) =>
+              if m == m2 then pure false
+              else tryFlexFlexIntersection m spine m2 spine2
+            | none => pure false
+          | _ => pure false
+        if resolved then pure ()
+        else
+          let span ← TCM.getSpan
+          TCM.throw (.unificationFailed (.occursCheck m rhs) .general span #[] #[m])
     | .error .escapeCheck =>
       let _ ← tryPrune m spine rhs
-      let span ← TCM.getSpan
-      TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+      -- If RHS is itself a pattern flex-flex, intersection may still solve it
+      let rhsForced ← force rhs
+      let resolved ←
+        match rhsForced with
+        | .vNeutral _ neu2 =>
+          match getMetaWithSpine neu2 with
+          | some (m2, spine2) =>
+            if m == m2 then pure false
+            else tryFlexFlexIntersection m spine m2 spine2
+          | none => pure false
+        | _ => pure false
+      if !resolved then
+        let span ← TCM.getSpan
+        TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
 
   | none =>
     -- Not a pattern - try η-expansion to make it one
@@ -614,6 +637,12 @@ def trySolveConstraint (c : Constraint) : TCM SolveResult := do
     | .var _, _ => return .deferred
     | _, .var _ => return .deferred
     | _, _ => return .deferred
+
+  | .resolveInstance _ _ _ _ =>
+    return .deferred
+
+  | .deferredInstance _ _ _ =>
+    return .deferred
 where
   /-- Collect unsolved metavariables from two values -/
   collectUnsolvedMetas (v1 v2 : Value) : TCM (Array MetaId) := do

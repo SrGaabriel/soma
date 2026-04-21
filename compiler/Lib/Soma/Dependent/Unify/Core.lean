@@ -132,6 +132,10 @@ def collectMetasConstraint (c : Constraint) : Array MetaId :=
   | .subtype v1 v2 _ => (collectMetas v1 ++ collectMetas v2).toList.eraseDups.toArray
   | .levelEq _ _ => #[]
   | .levelLe _ _ => #[]
+  | .resolveInstance metaId _ args _ =>
+    (#[metaId] ++ args.foldl (fun acc v => acc ++ collectMetas v) #[]).toList.eraseDups.toArray
+  | .deferredInstance metaId domTy _ =>
+    (#[metaId] ++ collectMetas domTy).toList.eraseDups.toArray
 
 mutual
 

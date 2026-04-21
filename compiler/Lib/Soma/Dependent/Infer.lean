@@ -279,10 +279,14 @@ partial def buildLambdas (bindings : List (Unique × String × Soma.Core.Expr))
     let closedBody := Soma.Core.Expr.abstractFVar innerBody fvar
     .lam .explicit name domExpr closedBody
 
-/-- Quote a `Value` to a Core `Expr`. -/
+/-- Quote a `Value` to a Core `Expr` at the current elaboration depth -/
 partial def quoteValueToExpr (v : Value) : TCM Soma.Core.Expr := do
   let depth ← TCM.currentLevel
   return Soma.Core.quoteExpr depth v
+
+/-- Quote a `Value` as a type annotation -/
+partial def quoteTypeAnn (v : Value) : TCM Soma.Core.Expr := do
+  return Soma.Core.quoteExpr0 v
 
 /-- Instantiate all leading implicit binders in a type with fresh metas. -/
 partial def instantiateImplicits (ty : Value) (_span : Span) : TCM Value := do
@@ -764,13 +768,13 @@ where
       match ← TCM.lookupLocal name.name with
       | some entry =>
         useVarChecked entry.bindingId name.span
-        let tyExpr ← quoteValueToExpr entry.type
+        let tyExpr ← quoteTypeAnn entry.type
         return (entry.type, .fvar entry.fvarId tyExpr)
       | none =>
         if name.path.isEmpty then
           if let some (qn, ty) ← TCM.lookupMethodSelfRef name.name then
             TCM.recordGlobalDep qn
-            let tyExpr ← quoteValueToExpr ty
+            let tyExpr ← quoteTypeAnn ty
             return (ty, .const qn tyExpr)
         -- Check globals (functions, constructors, data types)
         match ← TCM.lookupGlobal name.path name.name with
@@ -778,7 +782,7 @@ where
           let qn := info.name
           if info.isConstructor then
             let instantiatedTy ← instantiateImplicits info.type name.span
-            let tyExpr ← quoteValueToExpr instantiatedTy
+            let tyExpr ← quoteTypeAnn instantiatedTy
             return (instantiatedTy, .const qn tyExpr)
           else if info.origin == .typeDecl then
             match ← TCM.lookupWiredPrimitiveOfGlobal qn with
@@ -790,7 +794,7 @@ where
             | none =>
               return (info.type, .dataTy qn.id #[])
           else
-            let tyExpr ← quoteValueToExpr info.type
+            let tyExpr ← quoteTypeAnn info.type
             return (info.type, .const qn tyExpr)
         | none =>
           match name.name with
@@ -1095,7 +1099,7 @@ partial def buildRowExpr
     | some tailName =>
       match ← TCM.lookupLocal tailName.name with
       | some entry =>
-        let tyExpr ← quoteValueToExpr entry.type
+        let tyExpr ← quoteTypeAnn entry.type
         pure (.fvar entry.fvarId tyExpr)
       | none =>
         let tailMeta ← TCM.freshMetaVal .vRowSort
@@ -1107,7 +1111,7 @@ partial def buildRowExpr
       | some entry =>
         match entry.type with
         | .vLabelSort =>
-          let tyExpr ← quoteValueToExpr entry.type
+          let tyExpr ← quoteTypeAnn entry.type
           pure (.fvar entry.fvarId tyExpr)
         | _ => pure (.labelLit labelName.name)
       | none => pure (.labelLit labelName.name)
