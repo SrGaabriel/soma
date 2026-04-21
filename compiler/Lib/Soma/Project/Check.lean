@@ -360,16 +360,17 @@ def buildTypedFnValue (fn : Soma.Core.TypedFunction) (globals : Globals)
   }
   pure (Soma.Core.evalCoreExpr evalCtx lambdaExpr)
 
-/-- Record `fn`'s unfoldable value on its global entry -/
+/-- Publish the results of checking `fn` onto its global entry -/
 def registerTypedFnValue (globals : Globals) (fn : Soma.Core.TypedFunction)
     (instanceEnv : InstanceEnv) (metas : Soma.Core.MetaState) : Globals :=
-  if fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome then globals
-  else
-    match globals.defs.get? fn.name with
-    | none => globals
-    | some info =>
-      let v := buildTypedFnValue fn globals instanceEnv metas
-      { globals with defs := globals.defs.insert fn.name { info with value := some v } }
+  match globals.defs.get? fn.name with
+  | none => globals
+  | some info =>
+    let isOpaque := fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome
+    let value := if isOpaque then info.value
+                 else some (buildTypedFnValue fn globals instanceEnv metas)
+    let info' := { info with type := fn.fnType, value := value }
+    { globals with defs := globals.defs.insert fn.name info' }
 
 /-- Check all functions in a module, tracking dependencies and caching results.
     This is the core function-checking loop shared by both CLI and LSP.
@@ -451,7 +452,7 @@ def checkFunctionsCore
         let syntaxHash := hashFunction fn
         let isComplete := newState.errors.isEmpty
         let cache := if isComplete then
-          match ctx.globals.getDef fn.name with
+          match currentGlobals.getDef fn.name with
           | some info => DefCache.success syntaxHash fnType DefKind.function info
           | none =>
             let info : GlobalInfo := {

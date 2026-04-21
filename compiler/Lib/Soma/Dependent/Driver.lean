@@ -366,10 +366,12 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       let declaredType ← TCM.recoverWithM
         (elaborateFunctionType typeSyntax)
         (TCM.typePlaceholder span)
+      Soma.Dependent.solvePendingInstancesOrFail
+      let declaredType' ← zonkValue declaredType
+      reportUnsolvedMetas declaredType' span
       let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
-      -- Expand abbreviations in intrinsic/extern types too
-      let declaredType' ← expandAbbrevValue declaredType
-      return (declaredType', placeholderBody, #[])
+      let declaredType'' ← expandAbbrevValue declaredType'
+      return (declaredType'', placeholderBody, #[])
     | none =>
       let ty ← TCM.freshMetaVal (.vType .zero)
       let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")

@@ -38,19 +38,13 @@ partial def zonkValue (v : Value) : TCM Value := do
     return .vPair a' b'
 
   | .vNeutral ty neu =>
-    -- First check if the neutral is a solved meta
-    match neu with
-    | .nMeta m =>
-      match ← TCM.lookupMeta m with
-      | some info =>
-        match info.solution with
-        | some sol => zonkValue sol  -- Substitute and continue zonking
-        | none => return .vNeutral (← zonkValue ty) neu  -- Unsolved
-      | none => return .vNeutral (← zonkValue ty) neu
-    | _ =>
-      let ty' ← zonkValue ty
-      let neu' ← zonkNeutral neu
-      return .vNeutral ty' neu'
+    let forced ← force v
+    match forced with
+    | .vNeutral ty' neu' =>
+      let ty'' ← zonkValue ty'
+      let neu'' ← zonkNeutral neu'
+      return .vNeutral ty'' neu''
+    | other => zonkValue other
 
   | .vPrimTy p => return .vPrimTy p
   | .vIntLit n => return .vIntLit n
