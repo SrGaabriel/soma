@@ -69,6 +69,7 @@ structure WiredInEntry where
 /-- Serializable globals -/
 structure SerializableGlobals where
   defs : Array GlobalDefEntry := #[]
+  anonymousDefs : Array GlobalInfo := #[]
   inductives : Array InductiveEntry := #[]
   ctorOwners : Array CtorOwnerEntry := #[]
   wiredIns : Array WiredInEntry := #[]
@@ -130,17 +131,20 @@ def constructorsToSerializable (ctors : Std.HashMap String Nat) : Array Construc
 /-- Convert Globals to serializable form -/
 def globalsToSerializable (g : Globals) : SerializableGlobals :=
   let pathEntries := g.root.collectPaths #[]
-  let defs := pathEntries.foldl (init := #[]) fun acc (ns, displayName, qn) =>
+  let seed : Array GlobalDefEntry × Std.HashSet Soma.Core.QualifiedName := (#[], {})
+  let (defs, covered) := pathEntries.foldl (init := seed) fun (acc, seen) (ns, displayName, qn) =>
     match g.defs.get? qn with
-    | some info => acc.push { namespacePath := ns, displayName, info }
-    | none => acc
+    | some info => (acc.push { namespacePath := ns, displayName, info }, seen.insert qn)
+    | none => (acc, seen)
+  let anonymousDefs := g.defs.fold (init := #[]) fun acc qn info =>
+    if covered.contains qn then acc else acc.push info
   let inductives := g.inductives.fold (init := #[]) fun acc typeQN info =>
     acc.push { typeQN, info }
   let ctorOwners := g.ctorToInductive.fold (init := #[]) fun acc ctorName inductiveQN =>
     acc.push { ctorName, inductiveQN }
   let wiredIns := g.wiredIn.roles.fold (init := #[]) fun acc role infos =>
     acc.push { role, infos }
-  { defs, inductives, ctorOwners, wiredIns }
+  { defs, anonymousDefs, inductives, ctorOwners, wiredIns }
 
 /-- Convert InstanceEnv to serializable form -/
 def instanceEnvToSerializable (env : InstanceEnv) : SerializableInstanceEnv :=
@@ -179,6 +183,9 @@ def globalsFromSerializable (sg : SerializableGlobals) : Globals :=
   let g := sg.defs.foldl (fun acc entry =>
     acc.register entry.namespacePath entry.displayName entry.info
   ) Globals.empty
+  let g := sg.anonymousDefs.foldl (fun acc info =>
+    acc.registerAnonymous info
+  ) g
   let inductives := sg.inductives.foldl (fun acc entry => acc.insert entry.typeQN entry.info) {}
   let ctorToInductive := sg.ctorOwners.foldl (fun acc entry => acc.insert entry.ctorName entry.inductiveQN) {}
   let recordFields := sg.inductives.foldl (fun acc entry =>

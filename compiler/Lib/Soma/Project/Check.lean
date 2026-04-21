@@ -484,6 +484,8 @@ structure GlobalsAndInstancesResult where
   instanceMap : InstanceMap
   /-- TypedFunctions produced by instance method elaboration -/
   instanceTypedFunctions : Array Soma.Core.TypedFunction
+  /-- Simple instances whose body elaboration is pending until after function-signature resolution -/
+  pendingInstanceBodies : Array Soma.Dependent.TraitElaborate.PendingInstanceBodies
   /-- Final TC state -/
   finalState : TCState
   /-- Errors encountered -/
@@ -520,7 +522,7 @@ def buildGlobalsAndInstances
   let state := match loweringSupply with
     | some supply => { TCState.forModule moduleName with uniqueSupply := supply }
     | none => TCState.forModule moduleName
-  let mut allErrors : Array Soma.Dependent.TCError := #[]
+  let mut thrownErrors : Array Soma.Dependent.TCError := #[]
 
   -- Pre-register type names so abbreviations can reference same-module types
   let preRegResult := (Soma.Dependent.Driver.preRegisterTypes untypedModule).run
@@ -528,16 +530,20 @@ def buildGlobalsAndInstances
   let (preGlobals, preState) := match preRegResult with
     | .error _ => (seedGlobals, state)
     | .ok (globals, st) => (globals, st)
+  match preRegResult with
+  | .error e => thrownErrors := thrownErrors.push e
+  | .ok _ => pure ()
 
   -- Build abbreviation environment with pre-registered types visible
   let abbrevResult := (Soma.Dependent.Driver.buildAbbrevEnv untypedModule).run
     { baseCtx with globals := preGlobals, abbrevEnv := seedAbbrevEnv } preState
 
-  let (moduleAbbrevEnv, state0, abbrevErrors) := match abbrevResult with
-    | .error e => (AbbrevEnv.empty, preState, #[e])
-    | .ok (abbrevEnv, st) => (abbrevEnv, st, st.errors)
-
-  allErrors := allErrors ++ abbrevErrors
+  let (moduleAbbrevEnv, state0) := match abbrevResult with
+    | .error _ => (AbbrevEnv.empty, preState)
+    | .ok (abbrevEnv, st) => (abbrevEnv, st)
+  match abbrevResult with
+  | .error e => thrownErrors := thrownErrors.push e
+  | .ok _ => pure ()
 
   -- Merge with seed abbreviations
   let fullAbbrevEnv := AbbrevEnv.merge seedAbbrevEnv moduleAbbrevEnv
@@ -562,11 +568,12 @@ def buildGlobalsAndInstances
       (Soma.Dependent.Driver.buildGlobals untypedModule).run
         { baseCtx with globals := seedWithAbbrevs, abbrevEnv := fullAbbrevEnv } state0
 
-  let (moduleGlobals, state', globalsErrors) := match globalsResult with
-    | .error e => (Globals.empty, state0, #[e])
-    | .ok (globals, st) => (globals, st, st.errors)
-
-  allErrors := allErrors ++ globalsErrors
+  let (moduleGlobals, state') := match globalsResult with
+    | .error _ => (Globals.empty, state0)
+    | .ok (globals, st) => (globals, st)
+  match globalsResult with
+  | .error e => thrownErrors := thrownErrors.push e
+  | .ok _ => pure ()
 
   -- Merge with seed globals, preserving the module-local imports
   let fullGlobals := { mergeGlobals seedWithAbbrevs moduleGlobals with imports := seedGlobals.imports }
@@ -579,11 +586,16 @@ def buildGlobalsAndInstances
     | _, _, _ =>
       (Soma.Dependent.Driver.buildInstanceEnv untypedModule moduleName).run ctx state'
 
-  let (moduleInstanceEnv, instanceMap, instanceTypedFns, state'', instanceErrors) := match instanceEnvResult with
-    | .error e => (InstanceEnv.empty, {}, #[], state', #[e])
-    | .ok ((instEnv, instMap, instFns), st) => (instEnv, instMap, instFns, st, st.errors)
+  let (moduleInstanceEnv, instanceMap, instanceTypedFns, pendingInstanceBodies, state'') :=
+    match instanceEnvResult with
+    | .error _ => (InstanceEnv.empty, {}, #[], #[], state')
+    | .ok ((instEnv, instMap, instFns, pending), st) =>
+      (instEnv, instMap, instFns, pending, st)
+  match instanceEnvResult with
+  | .error e => thrownErrors := thrownErrors.push e
+  | .ok _ => pure ()
 
-  allErrors := allErrors ++ instanceErrors
+  let allErrors := state''.errors ++ thrownErrors
 
   let fullInstanceEnv := mergeInstanceEnv seedInstanceEnv moduleInstanceEnv
 
@@ -605,6 +617,7 @@ def buildGlobalsAndInstances
     abbrevEnv := fullAbbrevEnv
     instanceMap := instanceMap
     instanceTypedFunctions := instanceTypedFns
+    pendingInstanceBodies := pendingInstanceBodies
     finalState := state''
     errors := allErrors
   }
@@ -659,8 +672,6 @@ def typeCheckModule
   let globalsResult := buildGlobalsAndInstances
     untypedModule moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevGlobals prevInstanceEnv prevInstanceMap dirtyNames loweringSupply
 
-  let mut allErrors := globalsResult.errors
-
   let mut seededGlobals := globalsResult.globals
   for instFn in globalsResult.instanceTypedFunctions do
     if let some info := seededGlobals.defs.get? instFn.name then
@@ -678,18 +689,49 @@ def typeCheckModule
     abbrevEnv := globalsResult.abbrevEnv }
 
   -- Drain any instance-resolution constraints that signature elaboration couldn't resolve
+  let preSigErrorCount := globalsResult.finalState.errors.size
   let sigResult := (Soma.Dependent.Driver.resolveAndZonkSignatures untypedModule).run ctx globalsResult.finalState
-  let (zonkedGlobals, state'', sigErrors) := match sigResult with
-    | .error e => (seededGlobals, globalsResult.finalState, #[e])
-    | .ok (globals, st) => (globals, st, st.errors)
-  allErrors := allErrors ++ sigErrors
+  let (zonkedGlobals, state'') := match sigResult with
+    | .error _ => (seededGlobals, globalsResult.finalState)
+    | .ok (globals, st) => (globals, st)
+  let sigDeltaErrors : Array Soma.Dependent.TCError :=
+    state''.errors.extract preSigErrorCount state''.errors.size
   let ctx := { ctx with globals := zonkedGlobals }
 
-  -- Check functions
-  let fnResult := checkFunctionsCore
-    untypedModule moduleName ctx state'' baseIncrState dirtyNames
+  -- Run method bodies for every pending instance
+  let preDefErrorCount := state''.errors.size
+  let bodiesResult := (Soma.Dependent.Driver.runPendingInstanceBodies
+                        globalsResult.pendingInstanceBodies).run ctx state''
+  let (pendingTypedFns, state''') := match bodiesResult with
+    | .error _ => (#[], state'')
+    | .ok (fns, st) => (fns, st)
+  let defDeltaErrors : Array Soma.Dependent.TCError :=
+    state'''.errors.extract preDefErrorCount state'''.errors.size
+  -- Register each method `TypedFunction` in globals with its value set
+  let globalsWithBodies := pendingTypedFns.foldl
+    (init := zonkedGlobals) fun g fn =>
+    let value := some (buildTypedFnValue fn g globalsResult.instanceEnv state'''.metas)
+    match g.getDef fn.name with
+    | some info =>
+      let info' := { info with type := fn.fnType, value := value }
+      { g with defs := g.defs.insert fn.name info' }
+    | none =>
+      g.registerAnonymous {
+        name := fn.name
+        type := fn.fnType
+        value := value
+        isConstructor := false
+        origin := Soma.Dependent.DeclarationOrigin.instanceMethod
+      }
+  let ctx := { ctx with globals := globalsWithBodies }
 
-  allErrors := allErrors ++ fnResult.errors
+  -- Check functions. `checkFunctionsCore` tracks its own error deltas in a local accumulator
+  let fnResult := checkFunctionsCore
+    untypedModule moduleName ctx state''' baseIncrState dirtyNames
+
+  -- Assemble the final error set by appending each phase's delta exactly once
+  let allErrors :=
+    globalsResult.errors ++ sigDeltaErrors ++ defDeltaErrors ++ fnResult.errors
 
   let usages : Std.HashMap Soma.Unique Nat :=
     fnResult.finalState.usages.fold (init := {}) fun acc bindingId count =>
@@ -705,10 +747,11 @@ def typeCheckModule
     cachedInstanceMap := globalsResult.instanceMap }
 
   -- Merge instance method TypedFunctions into the function-check results.
-  -- Instance methods are elaborated during instance resolution and produce
-  -- TypedFunctions with Core Expr bodies needed for Circuit IR lowering.
+  -- Two sources: constrained-instance eager elaboration (produced by `buildInstanceEnv`)
   let mut mergedTypedFns := fnResult.typedFunctions
   for instFn in globalsResult.instanceTypedFunctions do
+    mergedTypedFns := mergedTypedFns.insert instFn.name.id.mangle instFn
+  for instFn in pendingTypedFns do
     mergedTypedFns := mergedTypedFns.insert instFn.name.id.mangle instFn
 
   -- Dictionary specialization: replace class method calls with direct field access

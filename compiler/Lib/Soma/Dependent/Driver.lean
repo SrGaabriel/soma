@@ -848,7 +848,8 @@ def resolveAndZonkSignatures (module : Soma.Core.UntypedModule) : TCM Globals :=
 
 /-- Build the InstanceEnv from module type classes and instances -/
 def buildInstanceEnv (module : Soma.Core.UntypedModule) (_moduleName : String)
-    : TCM (InstanceEnv × TraitElaborate.InstanceMap × Array Soma.Core.TypedFunction) := do
+    : TCM (InstanceEnv × TraitElaborate.InstanceMap × Array Soma.Core.TypedFunction
+          × Array TraitElaborate.PendingInstanceBodies) := do
   TraitElaborate.buildInstanceEnvFromModule module
 
 /-- Build the InstanceEnv incrementally, reusing cached info for unchanged definitions -/
@@ -858,8 +859,15 @@ def buildInstanceEnvIncremental
     (prevEnv : InstanceEnv)
     (prevInstanceMap : TraitElaborate.InstanceMap)
     (dirtyNames : Std.HashSet String)
-    : TCM (InstanceEnv × TraitElaborate.InstanceMap × Array Soma.Core.TypedFunction) := do
+    : TCM (InstanceEnv × TraitElaborate.InstanceMap × Array Soma.Core.TypedFunction
+          × Array TraitElaborate.PendingInstanceBodies) := do
   TraitElaborate.buildInstanceEnvFromModuleIncremental module prevEnv prevInstanceMap dirtyNames
+
+/-- Run body elaboration for every pending instance from `buildInstanceEnv` -/
+def runPendingInstanceBodies
+    (pending : Array TraitElaborate.PendingInstanceBodies)
+    : TCM (Array Soma.Core.TypedFunction) := do
+  TraitElaborate.runAllPendingInstanceBodies pending
 
 /-- Elaborate a single type abbreviation into an AbbrevInfo.
 

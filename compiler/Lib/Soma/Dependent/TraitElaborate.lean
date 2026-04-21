@@ -494,36 +494,40 @@ structure InstanceElabResult where
   /-- Method names paired with their lambda-wrapped Exprs (for rebuilding) -/
   methodExprs : Array (String × Expr)
 
-/-- Elaborate an instance value -/
-partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
-    (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
+/-- A single method body elaboration job -/
+structure InstanceMethodJob where
+  method : Soma.Core.UntypedFunction
+  expectedType : Value
+
+/-- The indirect-form result of instance skeleton elaboration -/
+structure InstanceSkeleton where
+  /-- Instance value in indirect form -/
+  value : Value
+  /-- Work remaining -/
+  methodJobs : Array InstanceMethodJob
+  /-- Method self-references for recursive calls within instance bodies -/
+  selfRefs : Array (String × QualifiedName × Value)
+
+/-- Build an indirect-form instance value -/
+private def buildIndirectInstanceValue
+    (jobs : Array InstanceMethodJob) : Value :=
+  let fields := jobs.toList.map fun j =>
+    let ty := j.expectedType
+    (j.method.name.display, Value.vNeutral ty (.nConst j.method.name ty))
+  Value.vRecordVal fields
+
+/-- Shared body-elaboration core: given the already-matched jobs + selfRefs -/
+partial def elaborateInstanceBodiesCore
+    (jobs : Array InstanceMethodJob)
+    (selfRefs : Array (String × QualifiedName × Value))
     (constraintDicts : Array ConstraintDictEntry := #[])
     : TCM InstanceElabResult := do
-  let mut recordTy := classInfo.recordType
-  for arg in typeArgs do
-    match ← force recordTy with
-    | .vPi _ _ _ _ cod =>
-      recordTy ← applyClosure cod arg
-    | _ => pure ()
-
-  -- Extract method names and types from the concrete record type
-  let methodTypes ← extractRecordFields recordTy
-
-  let mut jobs : Array (Soma.Core.UntypedFunction × Value) := #[]
-  let mut selfRefs : Array (String × QualifiedName × Value) := #[]
-  for method in methods do
-    let methodName := method.name.display
-    match methodTypes.find? (fun (name, _) => name == methodName) with
-    | some (_, expectedType) =>
-      jobs := jobs.push (method, expectedType)
-      selfRefs := selfRefs.push (methodName, method.name, expectedType)
-    | none => pure ()
-
-  -- Elaborate each method implementation against its expected type
   let mut fields : List (String × Value) := []
   let mut typedFns : Array Soma.Core.TypedFunction := #[]
   let mut methodExprs : Array (String × Expr) := #[]
-  for (method, expectedType) in jobs do
+  for job in jobs do
+    let method := job.method
+    let expectedType := job.expectedType
     let methodName := method.name.display
     let pendingBefore := (← TCM.getPendingInstances).size
     let result ← TCM.withMethodSelfRefs selfRefs do
@@ -556,6 +560,45 @@ partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
     typedFns := typedFns
     methodExprs := methodExprs
   }
+
+/-- Collect `InstanceMethodJob`s from a concrete class record type and the user-written methods -/
+partial def collectInstanceMethodJobsFromClassInfo
+    (classInfo : ClassInfo) (typeArgs : Array Value)
+    (methods : Array Soma.Core.UntypedFunction)
+    : TCM (Array InstanceMethodJob × Array (String × QualifiedName × Value)) := do
+  let mut recordTy := classInfo.recordType
+  for arg in typeArgs do
+    match ← force recordTy with
+    | .vPi _ _ _ _ cod => recordTy ← applyClosure cod arg
+    | _ => pure ()
+  let methodTypes ← extractRecordFields recordTy
+  let mut jobs : Array InstanceMethodJob := #[]
+  let mut selfRefs : Array (String × QualifiedName × Value) := #[]
+  for method in methods do
+    let methodName := method.name.display
+    match methodTypes.find? (fun (name, _) => name == methodName) with
+    | some (_, expectedType) =>
+      jobs := jobs.push { method := method, expectedType := expectedType }
+      selfRefs := selfRefs.push (methodName, method.name, expectedType)
+    | none => pure ()
+  pure (jobs, selfRefs)
+
+/-- Build a stub instance value without elaborating method bodies -/
+partial def elaborateInstanceSkeletonFromClassInfo
+    (classInfo : ClassInfo) (typeArgs : Array Value)
+    (methods : Array Soma.Core.UntypedFunction)
+    : TCM InstanceSkeleton := do
+  let (jobs, selfRefs) ← collectInstanceMethodJobsFromClassInfo classInfo typeArgs methods
+  pure { value := buildIndirectInstanceValue jobs,
+         methodJobs := jobs, selfRefs := selfRefs }
+
+/-- Elaborate a full instance value (setup + body elab) -/
+partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
+    (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
+    (constraintDicts : Array ConstraintDictEntry := #[])
+    : TCM InstanceElabResult := do
+  let (jobs, selfRefs) ← collectInstanceMethodJobsFromClassInfo classInfo typeArgs methods
+  elaborateInstanceBodiesCore jobs selfRefs constraintDicts
 
 /-- Result of eager constraint resolution -/
 private inductive EagerResolutionResult where
@@ -779,69 +822,41 @@ partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
 
   return some (instanceInfo, typedFns)
 
-/-- Build the instance value (a record of method implementations).
+/-- Collect method elaboration jobs from method signatures + type args -/
+def collectInstanceMethodJobs
+    (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
+    (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
+    (params : Array TypeVarBinder)
+    : TCM (Array InstanceMethodJob × Array (String × QualifiedName × Value)) := do
+  let mut jobs : Array InstanceMethodJob := #[]
+  let mut selfRefs : Array (String × QualifiedName × Value) := #[]
+  for method in methods do
+    match methodSignatures.find? (fun (name, _) => name.display == method.name.display) with
+    | some (_, sigSyntax) =>
+      let expectedType ← substituteMethodType sigSyntax params typeArgs
+      jobs := jobs.push { method := method, expectedType := expectedType }
+      selfRefs := selfRefs.push (method.name.display, method.name, expectedType)
+    | none => pure ()
+  pure (jobs, selfRefs)
 
-For an instance like:
-  instance Display Int where
-    def display | x => intToString x
+/-- Skeleton variant of `elaborateInstanceValue` -/
+def elaborateInstanceSkeleton
+    (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
+    (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
+    (params : Array TypeVarBinder) : TCM InstanceSkeleton := do
+  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures params
+  pure { value := buildIndirectInstanceValue jobs,
+         methodJobs := jobs, selfRefs := selfRefs }
 
-We build:
-  { display = \x => intToString x }
--/
+/-- Build the instance value (a record of method implementations -/
 def elaborateInstanceValue (typeArgs : Array Value)
   (methods : Array Soma.Core.UntypedFunction)
     (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
     (params : Array TypeVarBinder)
     (constraintDicts : Array ConstraintDictEntry := #[])
     : TCM InstanceElabResult := do
-  let mut jobs : Array (Soma.Core.UntypedFunction × Value) := #[]
-  let mut selfRefs : Array (String × QualifiedName × Value) := #[]
-  for method in methods do
-    match methodSignatures.find? (fun (name, _) => name.display == method.name.display) with
-    | some (_, sigSyntax) =>
-      let expectedType ← substituteMethodType sigSyntax params typeArgs
-      jobs := jobs.push (method, expectedType)
-      selfRefs := selfRefs.push (method.name.display, method.name, expectedType)
-    | none => pure ()
-
-  let mut fields : List (String × Value) := []
-  let mut typedFns : Array Soma.Core.TypedFunction := #[]
-  let mut methodExprs : Array (String × Expr) := #[]
-
-  for (method, expectedType) in jobs do
-    let pendingBefore := (← TCM.getPendingInstances).size
-
-    let result ← TCM.withMethodSelfRefs selfRefs do
-      elaborateMethodImpl method expectedType
-
-    let (lambdaExpr, coreBody) ←
-      if constraintDicts.isEmpty then
-        pure (result.lambdaExpr, result.coreBody)
-      else
-        let subst ← buildConstraintDictSubst constraintDicts pendingBefore
-        if subst.isEmpty then
-          pure (result.lambdaExpr, result.coreBody)
-        else
-          let le := applyMvarSubst result.lambdaExpr subst
-          let cb := applyMvarSubst result.coreBody subst
-          pure (le, cb)
-
-    fields := (method.name.display, result.value) :: fields
-    methodExprs := methodExprs.push (method.name.display, lambdaExpr)
-    typedFns := typedFns.push {
-      name := method.name
-      params := result.params
-      body := coreBody
-      fnType := result.fnType
-      closureInfo := method.closureInfo
-      attrs := method.attrs
-    }
-
-  return {
-    value := Value.vRecordVal fields.reverse
-    typedFns := typedFns
-    methodExprs := methodExprs
-  }
+  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures params
+  elaborateInstanceBodiesCore jobs selfRefs constraintDicts
 
 /-- Elaborate a single instance declaration into an InstanceInfo.
     Processes explicit binders for type variables and dictionary parameters,
@@ -923,6 +938,60 @@ private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
     attrs := {}
   }
 
+/-- Deferred body-elaboration work for a simple (no-constraint) instance -/
+structure PendingInstanceBodies where
+  /-- Unique identifier for the already-registered instance -/
+  instanceId : Unique
+  /-- The class this instance implements -/
+  classId : Unique
+  /-- Method bodies to elaborate -/
+  jobs : Array InstanceMethodJob
+  /-- Method self-references for mutual recursion within the instance -/
+  selfRefs : Array (String × QualifiedName × Value)
+  /-- Source span for error reporting -/
+  span : Span
+  /-- The instance env in scope at skeleton time -/
+  instanceEnvSnapshot : InstanceEnv
+  deriving Inhabited
+
+/-- Skeleton path for an instance with no explicit constraints -/
+partial def elaborateSimpleInstanceSkeleton
+    (inst : Soma.Core.InstanceDecl) (classId instUnique : Unique)
+    (typeArgs : Array Value)
+    (methods : Array Soma.Core.UntypedFunction)
+    (classInfo? : Option ClassInfo)
+    (typeClass? : Option Soma.Core.TypeClassMeta)
+    : TCM (InstanceInfo × PendingInstanceBodies) := do
+  let (jobs, selfRefs) ← do
+    match classInfo?, typeClass? with
+    | some classInfo, _ =>
+      collectInstanceMethodJobsFromClassInfo classInfo typeArgs methods
+    | none, some typeClass =>
+      collectInstanceMethodJobs typeArgs methods
+        typeClass.methodSignatures typeClass.params
+    | none, none =>
+      pure (#[], #[])
+  let indirectValue := buildIndirectInstanceValue jobs
+  let instanceInfo := mkInstanceInfo instUnique classId typeArgs #[] indirectValue inst.span
+  let envSnapshot ← TCM.getInstanceEnv
+  let pending : PendingInstanceBodies := {
+    instanceId := instUnique,
+    classId := classId,
+    jobs := jobs,
+    selfRefs := selfRefs,
+    span := inst.span,
+    instanceEnvSnapshot := envSnapshot
+  }
+  return (instanceInfo, pending)
+
+/-- Run body elaboration for a previously-registered simple instance -/
+partial def runInstanceBodies
+    (pending : PendingInstanceBodies)
+    : TCM (Array Soma.Core.TypedFunction) := do
+  TCM.withInstanceEnv pending.instanceEnvSnapshot do
+    let result ← elaborateInstanceBodiesCore pending.jobs pending.selfRefs #[]
+    return result.typedFns
+
 /-- Merge a module-local instance env with a seed env (from dependencies).
     Classes and instances from both are combined, deduplicating by instance ID. -/
 private def mergeInstanceEnvs (local_ seed : InstanceEnv) : InstanceEnv := {
@@ -937,13 +1006,25 @@ private def mergeInstanceEnvs (local_ seed : InstanceEnv) : InstanceEnv := {
   moduleName := local_.moduleName
 }
 
-/-- Build a complete InstanceEnv from a module's type classes and instances.
+/-- Try the skeleton path for an instance -/
+private def trySimpleInstanceSkeleton
+    (inst : Soma.Core.InstanceDecl) (classId : Unique)
+    (registry : ClassRegistry)
+    (classInfo? : Option ClassInfo)
+    (typeClass? : Option Soma.Core.TypeClassMeta)
+    : TCM (Option (InstanceInfo × PendingInstanceBodies)) := do
+  let (elabEnv, constraints) ← processInstanceBinders inst.binders registry
+  if !constraints.isEmpty then
+    return none
+  let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
+  let instUnique ← TCM.freshUnique s!"$inst_{inst.className}_{typeArgs.size}"
+  let (info, deferred) ← elaborateSimpleInstanceSkeleton
+    inst classId instUnique typeArgs inst.methods classInfo? typeClass?
+  return some (info, deferred)
 
-This is the main entry point for trait/instance elaboration.
-It processes all type classes first (to build the registry),
-then processes all instances using that registry. -/
 def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
-    : TCM (InstanceEnv × InstanceMap × Array Soma.Core.TypedFunction) := do
+    : TCM (InstanceEnv × InstanceMap × Array Soma.Core.TypedFunction
+          × Array PendingInstanceBodies) := do
   let mut env := defaultInstanceEnv
   env := { env with moduleName := module.name }
   let mut instanceMap : InstanceMap := {}
@@ -965,9 +1046,7 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
     env := env.addClass classInfo
     registry := registry'
 
-  -- Second pass: elaborate all instances.
-  -- We elaborate within a progressively enriched instance env so that
-  -- later instances can eagerly resolve constraints satisfied by earlier ones.
+  let mut pending : Array PendingInstanceBodies := #[]
   for inst in module.instances do
     let typeClass? := module.typeClasses.find? fun tc =>
       tc.name.display == inst.className
@@ -976,14 +1055,25 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
 
     match typeClass? with
     | some typeClass =>
-      match ← TCM.withInstanceEnv currentEnv do
-        elaborateInstance inst registry typeClass
-      with
-      | some (instInfo, methodFns) =>
-        env := env.addInstanceWithId instInfo
-        instanceMap := instanceMap.insert inst.span instInfo
-        allTypedFns := allTypedFns ++ methodFns
+      match registry.lookup inst.className with
       | none => pure ()
+      | some classId =>
+        match ← TCM.withInstanceEnv currentEnv do
+            trySimpleInstanceSkeleton inst classId registry none (some typeClass)
+        with
+        | some (instInfo, p) =>
+          env := env.addInstanceWithId instInfo
+          instanceMap := instanceMap.insert inst.span instInfo
+          pending := pending.push p
+        | none =>
+          match ← TCM.withInstanceEnv currentEnv do
+              elaborateInstance inst registry typeClass
+          with
+          | some (instInfo, methodFns) =>
+            env := env.addInstanceWithId instInfo
+            instanceMap := instanceMap.insert inst.span instInfo
+            allTypedFns := allTypedFns ++ methodFns
+          | none => pure ()
     | none =>
       match registry.lookup inst.className with
       | some classId =>
@@ -992,13 +1082,21 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
         match classInfo? with
         | some classInfo =>
           match ← TCM.withInstanceEnv currentEnv do
-            elaborateInstanceFromClassInfo inst classInfo registry
+              trySimpleInstanceSkeleton inst classId registry (some classInfo) none
           with
-          | some (instInfo, methodFns) =>
+          | some (instInfo, p) =>
             env := env.addInstanceWithId instInfo
             instanceMap := instanceMap.insert inst.span instInfo
-            allTypedFns := allTypedFns ++ methodFns
-          | none => pure ()
+            pending := pending.push p
+          | none =>
+            match ← TCM.withInstanceEnv currentEnv do
+                elaborateInstanceFromClassInfo inst classInfo registry
+            with
+            | some (instInfo, methodFns) =>
+              env := env.addInstanceWithId instInfo
+              instanceMap := instanceMap.insert inst.span instInfo
+              allTypedFns := allTypedFns ++ methodFns
+            | none => pure ()
         | none => pure ()
       | none => pure ()
 
@@ -1012,7 +1110,17 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
       | none => pure ()
       idx := idx + 1
 
-  return (env, instanceMap, allTypedFns)
+  return (env, instanceMap, allTypedFns, pending)
+
+/-- Run body elaboration for every pending instance from `buildInstanceEnvFromModule` -/
+def runAllPendingInstanceBodies
+    (pending : Array PendingInstanceBodies)
+    : TCM (Array Soma.Core.TypedFunction) := do
+  let mut allFns : Array Soma.Core.TypedFunction := #[]
+  for p in pending do
+    let fns ← runInstanceBodies p
+    allFns := allFns ++ fns
+  return allFns
 
 /-- Build an InstanceEnv incrementally, reusing cached class/instance info for unchanged definitions -/
 def buildInstanceEnvFromModuleIncremental
@@ -1020,7 +1128,8 @@ def buildInstanceEnvFromModuleIncremental
     (prevEnv : InstanceEnv)
     (prevInstanceMap : InstanceMap)
     (dirtyNames : Std.HashSet String)
-    : TCM (InstanceEnv × InstanceMap × Array Soma.Core.TypedFunction) := do
+    : TCM (InstanceEnv × InstanceMap × Array Soma.Core.TypedFunction
+          × Array PendingInstanceBodies) := do
   -- Start with the default built-in instances
   let mut env := defaultInstanceEnv
   env := { env with moduleName := module.name }
@@ -1142,6 +1251,6 @@ def buildInstanceEnvFromModuleIncremental
       | none => pure ()
       idx := idx + 1
 
-  return (env, instanceMap, allTypedFns)
+  return (env, instanceMap, allTypedFns, #[])
 
 end Soma.Dependent.TraitElaborate
