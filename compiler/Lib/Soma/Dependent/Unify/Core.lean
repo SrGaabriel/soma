@@ -12,24 +12,28 @@ namespace Soma.Dependent
 
 open Soma.Core
 
-/-- A spine is the sequence of eliminations applied to a head -/
+/-- A spine is the sequence of argument eliminators applied to a head -/
 structure Spine where
   args : List Value
   deriving Inhabited
 
-/-- Extract the spine from a neutral value (if it's just applications) -/
-def getSpine : Neutral → Option Spine
-  | .nVar _ => some ⟨[]⟩
-  | .nMeta _ => some ⟨[]⟩
-  | .nApp fn arg =>
-    match getSpine fn with
-    | some spine => some ⟨spine.args ++ [arg]⟩
-    | none => none
-  | _ => none -- Projections, field access, case not part of pattern spine
+/-- Extract a pattern spine (list of argument values) from a neutral -/
+def getSpine (neu : Neutral) : Option Spine := Id.run do
+  let mut args : List Value := []
+  for e in neu.spine do
+    match e with
+    | .eApp arg => args := args ++ [arg]
+    | _ => return none
+  return some ⟨args⟩
 
-/-- Check if a value is a bound variable at a specific level -/
+/-- Check if a value is a bound variable at a specific level (no spine) -/
 def asBoundVar : Value → Option DeBruijnLvl
-  | .vNeutral _ (.nVar v) => some v.level
+  | .vNeutral _ neu =>
+    if neu.isBareHead then
+      match neu.head with
+      | .hVar v => some v.level
+      | _ => none
+    else none
   | _ => none
 
 /-- Check if all values in the spine are distinct bound variables -/
@@ -83,17 +87,20 @@ partial def collectMetas (v : Value) : Array MetaId :=
     collectMetas rhs ++ collectMetas eq ++ collectMetas body
 
 partial def collectMetasNeutral (n : Neutral) : Array MetaId :=
-  match n with
-  | .nVar _ => #[]
-  | .nConst _ _ => #[]
-  | .nMeta id => #[id]
-  | .nApp fn arg => collectMetasNeutral fn ++ collectMetas arg
-  | .nFst pair => collectMetasNeutral pair
-  | .nSnd pair => collectMetasNeutral pair
-  | .nFieldAccess rec _ => collectMetasNeutral rec
-  | .nCase scrutinees arms _ =>
+  collectMetasHead n.head ++
+    n.spine.foldl (fun acc e => acc ++ collectMetasElim e) #[]
+
+partial def collectMetasHead : Head → Array MetaId
+  | .hVar _ => #[]
+  | .hConst _ _ => #[]
+  | .hMeta id => #[id]
+  | .hCase scrutinees arms _ =>
     scrutinees.foldl (fun acc s => acc ++ collectMetas s) #[] ++
     arms.foldl (fun acc arm => acc ++ collectMetasClosure arm.closure) #[]
+
+partial def collectMetasElim : Elim → Array MetaId
+  | .eApp arg => collectMetas arg
+  | .eFst | .eSnd | .eField _ => #[]
 
 partial def collectMetasClosure (clos : Closure) : Array MetaId :=
   match clos with
@@ -166,17 +173,19 @@ partial def occursIn (m : MetaId) (v : Value) : Bool :=
     occursIn m rhs || occursIn m eq || occursIn m body
 
 partial def occursInNeutral (m : MetaId) (n : Neutral) : Bool :=
-  match n with
-  | .nVar _ => false
-  | .nConst _ _ => false
-  | .nMeta id => id == m
-  | .nApp fn arg => occursInNeutral m fn || occursIn m arg
-  | .nFst pair => occursInNeutral m pair
-  | .nSnd pair => occursInNeutral m pair
-  | .nFieldAccess rec _ => occursInNeutral m rec
-  | .nCase scrutinees arms _ =>
+  occursInHead m n.head || n.spine.any (occursInElim m)
+
+partial def occursInHead (m : MetaId) : Head → Bool
+  | .hVar _ => false
+  | .hConst _ _ => false
+  | .hMeta id => id == m
+  | .hCase scrutinees arms _ =>
     scrutinees.any (occursIn m) ||
     arms.any (fun arm => occursInClosure m arm.closure)
+
+partial def occursInElim (m : MetaId) : Elim → Bool
+  | .eApp arg => occursIn m arg
+  | .eFst | .eSnd | .eField _ => false
 
 partial def occursInClosure (m : MetaId) (clos : Closure) : Bool :=
   match clos with
@@ -265,16 +274,17 @@ partial def inScope (allowedLevels : List DeBruijnLvl) (v : Value) : Bool :=
     inScope allowedLevels eq && inScope allowedLevels body
 
 partial def inScopeNeutral (allowedLevels : List DeBruijnLvl) (n : Neutral) : Bool :=
-  match n with
-  | .nVar v => allowedLevels.contains v.level
-  | .nConst _ _ => true -- Constants are always in scope (global)
-  | .nMeta _ => true  -- Metas are always in scope
-  | .nApp fn arg => inScopeNeutral allowedLevels fn && inScope allowedLevels arg
-  | .nFst pair => inScopeNeutral allowedLevels pair
-  | .nSnd pair => inScopeNeutral allowedLevels pair
-  | .nFieldAccess rec _ => inScopeNeutral allowedLevels rec
-  | .nCase scrutinees _ _ =>
-    scrutinees.all (inScope allowedLevels)
+  inScopeHead allowedLevels n.head && n.spine.all (inScopeElim allowedLevels)
+
+partial def inScopeHead (allowedLevels : List DeBruijnLvl) : Head → Bool
+  | .hVar v => allowedLevels.contains v.level
+  | .hConst _ _ => true
+  | .hMeta _ => true
+  | .hCase scrutinees _ _ => scrutinees.all (inScope allowedLevels)
+
+partial def inScopeElim (allowedLevels : List DeBruijnLvl) : Elim → Bool
+  | .eApp arg => inScope allowedLevels arg
+  | .eFst | .eSnd | .eField _ => true
 
 partial def inScopeClosure (allowedLevels : List DeBruijnLvl) (clos : Closure) : Bool :=
   match clos with
@@ -323,17 +333,20 @@ partial def collectFreeVars (v : Value) : Array DeBruijnLvl :=
     collectFreeVars rhs ++ collectFreeVars eq ++ collectFreeVars body
 
 partial def collectFreeVarsNeutral (n : Neutral) : Array DeBruijnLvl :=
-  match n with
-  | .nVar v => #[v.level]
-  | .nConst _ _ => #[] -- Constants are global, no free vars
-  | .nMeta _ => #[] -- Metas don't contribute free vars for pruning
-  | .nApp fn arg => collectFreeVarsNeutral fn ++ collectFreeVars arg
-  | .nFst pair => collectFreeVarsNeutral pair
-  | .nSnd pair => collectFreeVarsNeutral pair
-  | .nFieldAccess rec _ => collectFreeVarsNeutral rec
-  | .nCase scrutinees arms _ =>
+  collectFreeVarsHead n.head ++
+    n.spine.foldl (fun acc e => acc ++ collectFreeVarsElim e) #[]
+
+partial def collectFreeVarsHead : Head → Array DeBruijnLvl
+  | .hVar v => #[v.level]
+  | .hConst _ _ => #[]
+  | .hMeta _ => #[]
+  | .hCase scrutinees arms _ =>
     scrutinees.foldl (fun acc s => acc ++ collectFreeVars s) #[] ++
     arms.foldl (fun acc arm => acc ++ collectFreeVarsClosure arm.closure) #[]
+
+partial def collectFreeVarsElim : Elim → Array DeBruijnLvl
+  | .eApp arg => collectFreeVars arg
+  | .eFst | .eSnd | .eField _ => #[]
 
 partial def collectFreeVarsClosure (clos : Closure) : Array DeBruijnLvl :=
   match clos with
@@ -343,25 +356,27 @@ partial def collectFreeVarsClosure (clos : Closure) : Array DeBruijnLvl :=
 
 end
 
-/-- Extract metavariable and spine from a neutral -/
-def getMetaWithSpine (neu : Neutral) : Option (MetaId × List Value) :=
-  match neu with
-  | .nMeta m => some (m, [])
-  | .nApp fn arg =>
-    match getMetaWithSpine fn with
-    | some (m, spine) => some (m, spine ++ [arg])
-    | none => none
-  | _ => none
+/-- Extract metavariable and pattern spine (application args only) from a neutral -/
+def getMetaWithSpine (neu : Neutral) : Option (MetaId × List Value) := Id.run do
+  match neu.head with
+  | .hMeta m =>
+    let mut args : List Value := []
+    for e in neu.spine do
+      match e with
+      | .eApp arg => args := args ++ [arg]
+      | _ => return none
+    return some (m, args)
+  | _ => return none
 
-/-- Build a neutral from a metavariable and a spine (inverse of getMetaWithSpine) -/
+/-- Build a neutral from a metavariable head and a spine of argument values -/
 def buildMetaSpine (m : MetaId) (spine : List Value) : Neutral :=
-  spine.foldl (fun neu arg => .nApp neu arg) (.nMeta m)
+  Neutral.mk (.hMeta m) (spine.foldl (fun acc arg => acc.push (.eApp arg)) #[])
 
 /-- Convert a Value to a Neutral (for eta expansion) -/
 def valueToNeutral (v : Value) : Neutral :=
   match v with
   | .vNeutral _ neu => neu
-  | _ => .nVar ⟨"_eta", ⟨0⟩⟩  -- Placeholder
+  | _ => .nVar ⟨"_eta", ⟨0⟩⟩
 
 /-- Eta-expand a value to a pair -/
 def etaExpandPairValue (v : Value) : Value × Value :=
@@ -414,15 +429,18 @@ def getValueKind : Value → String
   | .vRefl _ _ => "vRefl"
   | .vTransport _ _ _ _ _ _ _ => "vTransport"
 where
-  getNeutralKind : Neutral → String
-    | .nVar v => s!"nVar({v.name})"
-    | .nConst qn _ => s!"nConst({qn})"
-    | .nMeta m => s!"nMeta({m.id})"
-    | .nApp _ _ => "nApp"
-    | .nFst _ => "nFst"
-    | .nSnd _ => "nSnd"
-    | .nFieldAccess _ f => s!"nFieldAccess({f})"
-    | .nCase _ _ _ => "nCase"
+  getNeutralKind (n : Neutral) : String :=
+    let headKind : String := match n.head with
+      | .hVar v => s!"nVar({v.name})"
+      | .hConst qn _ => s!"nConst({qn})"
+      | .hMeta m => s!"nMeta({m.id})"
+      | .hCase _ _ _ => "nCase"
+    let elimsStr := String.intercalate "," (n.spine.toList.map fun
+      | .eApp _ => "app"
+      | .eFst => "fst"
+      | .eSnd => "snd"
+      | .eField f => s!"field({f})")
+    if elimsStr.isEmpty then headKind else s!"{headKind}[{elimsStr}]"
 
 def throwUnifyError (v1 v2 : Value) (_msg : String := "") : TCM Unit := do
   let span ← TCM.getSpan

@@ -231,30 +231,33 @@ private partial def refreshStaleMetas (v : Value) (mapping : Std.HashMap Nat Met
 where
   refreshStaleMetasNeutral (n : Neutral) (mapping : Std.HashMap Nat MetaId)
       : TCM (Neutral × Std.HashMap Nat MetaId) := do
-    match n with
-    | .nMeta m =>
+    let (head', mapping') ← refreshStaleMetasHead n.head mapping
+    let mut currentMapping := mapping'
+    let mut refreshedSpine : Array Elim := #[]
+    for e in n.spine do
+      let (e', m'') ← refreshStaleMetasElim e currentMapping
+      currentMapping := m''
+      refreshedSpine := refreshedSpine.push e'
+    return (.mk head' refreshedSpine, currentMapping)
+
+  refreshStaleMetasHead (h : Head) (mapping : Std.HashMap Nat MetaId)
+      : TCM (Head × Std.HashMap Nat MetaId) := do
+    match h with
+    | .hMeta m =>
       match mapping.get? m.id with
-      | some freshId => return (.nMeta freshId, mapping)
+      | some freshId => return (.hMeta freshId, mapping)
       | none =>
         let freshMeta ← TCM.freshMetaVal (.vType .zero)
         let freshId ← match freshMeta with
-          | .vNeutral _ (.nMeta fid) => pure fid
+          | .vNeutral _ neu =>
+            match neu.head with
+            | .hMeta fid => pure fid
+            | _ => pure m
           | _ => pure m
-        return (.nMeta freshId, mapping.insert m.id freshId)
-    | .nApp fn arg =>
-      let (fn', mapping') ← refreshStaleMetasNeutral fn mapping
-      let (arg', mapping'') ← refreshStaleMetas arg mapping'
-      return (.nApp fn' arg', mapping'')
-    | .nFst pair =>
-      let (pair', mapping') ← refreshStaleMetasNeutral pair mapping
-      return (.nFst pair', mapping')
-    | .nSnd pair =>
-      let (pair', mapping') ← refreshStaleMetasNeutral pair mapping
-      return (.nSnd pair', mapping')
-    | .nFieldAccess record field =>
-      let (record', mapping') ← refreshStaleMetasNeutral record mapping
-      return (.nFieldAccess record' field, mapping')
-    | .nCase scrutinees _arms resultTy =>
+        return (.hMeta freshId, mapping.insert m.id freshId)
+    | .hVar _ => return (h, mapping)
+    | .hConst _ _ => return (h, mapping)
+    | .hCase scrutinees arms resultTy =>
       let mut currentMapping := mapping
       let mut refreshed : Array Value := #[]
       for s in scrutinees do
@@ -262,9 +265,17 @@ where
         currentMapping := m'
         refreshed := refreshed.push s'
       let (resultTy', finalMapping) ← refreshStaleMetas resultTy currentMapping
-      return (.nCase refreshed _arms resultTy', finalMapping)
-    | .nVar _ => return (n, mapping)
-    | .nConst _ _ => return (n, mapping)
+      return (.hCase refreshed arms resultTy', finalMapping)
+
+  refreshStaleMetasElim (e : Elim) (mapping : Std.HashMap Nat MetaId)
+      : TCM (Elim × Std.HashMap Nat MetaId) := do
+    match e with
+    | .eApp arg =>
+      let (arg', mapping') ← refreshStaleMetas arg mapping
+      return (.eApp arg', mapping')
+    | .eFst => return (e, mapping)
+    | .eSnd => return (e, mapping)
+    | .eField _ => return (e, mapping)
 
 /-- Try to match instance arguments against goal arguments using unification.
     Creates fresh metavariables for polymorphic type parameters in the instance.

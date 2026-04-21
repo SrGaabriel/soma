@@ -590,16 +590,18 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
   | Value.vVariant row => .tagged (.prim .u32) (extractRowVariantsWithMapping row ctx)
   | Value.vType _ => .rawPtr
   | Value.vNeutral _ neu =>
-    match neu with
-    | .nVar v =>
-      match ctx.tyVars.get? v.level.lvl with
-      | some idx => .var idx
-      | none => .rawPtr
-    | .nMeta m =>
-      match ctx.tyVars.get? m.id with
-      | some idx => .var idx
-      | none => .rawPtr
-    | _ => .rawPtr
+    if neu.isBareHead then
+      match neu.head with
+      | .hVar v =>
+        match ctx.tyVars.get? v.level.lvl with
+        | some idx => .var idx
+        | none => .rawPtr
+      | .hMeta m =>
+        match ctx.tyVars.get? m.id with
+        | some idx => .var idx
+        | none => .rawPtr
+      | _ => .rawPtr
+    else .rawPtr
   | Value.vLabelLit _ => .rawPtr
   | Value.vRowSort => .rawPtr
   | Value.vLabelSort => .rawPtr
@@ -617,18 +619,28 @@ end
 
 mutual
 
-/-- Collect all de Bruijn levels from a Neutral term -/
-partial def collectTyVarLevelsNeutral (neu : Soma.Core.Neutral) (acc : Std.HashSet Nat) : Std.HashSet Nat :=
-  match neu with
-  | .nVar v => acc.insert v.level.lvl
-  | .nMeta m => acc.insert m.id
-  | .nApp fn arg => collectTyVarLevels arg (collectTyVarLevelsNeutral fn acc)
-  | .nFst pair => collectTyVarLevelsNeutral pair acc
-  | .nSnd pair => collectTyVarLevelsNeutral pair acc
-  | .nFieldAccess record _ => collectTyVarLevelsNeutral record acc
-  | .nConst _ _ => acc
-  | .nCase scrutinees _ _ =>
+/-- Collect all de Bruijn levels from a neutral head -/
+partial def collectTyVarLevelsHead (h : Soma.Core.Head) (acc : Std.HashSet Nat)
+    : Std.HashSet Nat :=
+  match h with
+  | .hVar v => acc.insert v.level.lvl
+  | .hMeta m => acc.insert m.id
+  | .hConst _ _ => acc
+  | .hCase scrutinees _ _ =>
     scrutinees.foldl (fun a s => collectTyVarLevels s a) acc
+
+/-- Collect all de Bruijn levels from a spine eliminator -/
+partial def collectTyVarLevelsElim (e : Soma.Core.Elim) (acc : Std.HashSet Nat)
+    : Std.HashSet Nat :=
+  match e with
+  | .eApp arg => collectTyVarLevels arg acc
+  | .eFst | .eSnd | .eField _ => acc
+
+/-- Collect all de Bruijn levels from a Neutral term -/
+partial def collectTyVarLevelsNeutral (neu : Soma.Core.Neutral) (acc : Std.HashSet Nat)
+    : Std.HashSet Nat :=
+  neu.spine.foldl (fun a e => collectTyVarLevelsElim e a)
+    (collectTyVarLevelsHead neu.head acc)
 
 /-- Collect all de Bruijn levels of type variables appearing in a Value -/
 partial def collectTyVarLevels (val : Value) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=
@@ -702,11 +714,16 @@ mutual
 partial def matchTypeStructural (poly concrete : Value)
     (levels : Std.HashSet Nat) (bindings : Std.HashMap Nat Value) : Std.HashMap Nat Value :=
   match poly with
-  | Value.vNeutral _ (.nVar v) =>
-    if levels.contains v.level.lvl then bindings.insert v.level.lvl concrete
-    else bindings
-  | Value.vNeutral _ (.nMeta m) =>
-    if levels.contains m.id then bindings.insert m.id concrete
+  | Value.vNeutral _ neu =>
+    if neu.isBareHead then
+      match neu.head with
+      | .hVar v =>
+        if levels.contains v.level.lvl then bindings.insert v.level.lvl concrete
+        else bindings
+      | .hMeta m =>
+        if levels.contains m.id then bindings.insert m.id concrete
+        else bindings
+      | _ => bindings
     else bindings
   | Value.vPi _ _ _ dom1 cod1 =>
     match concrete with

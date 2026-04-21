@@ -83,10 +83,14 @@ mutual
 partial def substituteParams (v : Value) (params : Array Value)
     (parentUnique : Unique) : Value :=
   match v with
-  | .vNeutral _ (.nVar bv) =>
-    -- Variable at level i → params[i] if in range
-    let idx := bv.level.lvl
-    params[idx]?.getD v
+  | .vNeutral _ neu =>
+    if neu.isBareHead then
+      match neu.head with
+      | .hVar bv =>
+        let idx := bv.level.lvl
+        params[idx]?.getD v
+      | _ => v
+    else v
 
   | .vDataType unique innerParams =>
     -- Recursively substitute in data type parameters

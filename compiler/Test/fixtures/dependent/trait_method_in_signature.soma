@@ -1,0 +1,20 @@
+// expect: success
+
+inductive Truth where
+    | Trivial
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+class Gt (a : Type) where
+    gt : a -> a -> Type
+
+instance : Gt Nat where
+    def gt : Nat -> Nat -> Type
+        | Nat::Zero, Nat::Zero => Truth
+        | Nat::Zero, Nat::Succ _ => Truth
+        | Nat::Succ _, Nat::Zero => Truth
+        | Nat::Succ n, Nat::Succ m => gt n m
+
+def succ_greater_than_zero : gt (Nat::Succ Nat::Zero) Nat::Zero := Truth::Trivial

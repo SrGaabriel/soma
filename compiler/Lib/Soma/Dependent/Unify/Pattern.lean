@@ -151,30 +151,16 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
     let bodyE ← rename ren body
     .ok (.transport tyLevel tyE motiveE lhsE rhsE eqE bodyE)
 
-partial def renameNeutral (ren : PartialRenaming) (n : Neutral) : RenameResult :=
-  match n with
-  | .nVar v =>
+partial def renameHead (ren : PartialRenaming) : Head → RenameResult
+  | .hVar v =>
     match ren.lookupIdx v.level.lvl with
     | some idx => .ok (.bvar idx)
     | none => .error .escapeCheck
-  | .nMeta id =>
+  | .hMeta id =>
     if id == ren.targetMeta then .error .occursCheck
     else .ok (.mvar id)
-  | .nApp fn arg => do
-    let fnE ← renameNeutral ren fn
-    let argE ← rename ren arg
-    .ok (.app fnE argE)
-  | .nFst pair => do
-    let pairE ← renameNeutral ren pair
-    .ok (.projFst pairE)
-  | .nSnd pair => do
-    let pairE ← renameNeutral ren pair
-    .ok (.projSnd pairE)
-  | .nFieldAccess rec field => do
-    let recE ← renameNeutral ren rec
-    .ok (.fieldAccess recE field 0)
-  | .nConst name constTy => .ok (.const name (quoteExpr0 constTy))
-  | .nCase scrutinees arms rty => do
+  | .hConst name constTy => .ok (.const name (quoteExpr0 constTy))
+  | .hCase scrutinees arms rty => do
     let scrutExprs ← scrutinees.mapM (rename ren)
     let armExprs ← arms.mapM fun arm => do
       let argVal := Value.vNeutral .type0 (.nVar ⟨arm.pattern, ⟨ren.dom⟩⟩)
@@ -183,6 +169,20 @@ partial def renameNeutral (ren : PartialRenaming) (n : Neutral) : RenameResult :
       pure (Soma.Core.Arm.mk #[Soma.Core.Pattern.wildcard] bodyE)
     let rtyE ← rename ren rty
     .ok (.«case» scrutExprs armExprs.toArray rtyE)
+
+partial def renameElim (ren : PartialRenaming) (acc : Soma.Core.Expr) : Elim → RenameResult
+  | .eApp arg => do
+    let argE ← rename ren arg
+    .ok (.app acc argE)
+  | .eFst => .ok (.projFst acc)
+  | .eSnd => .ok (.projSnd acc)
+  | .eField name => .ok (.fieldAccess acc name 0)
+
+partial def renameNeutral (ren : PartialRenaming) (n : Neutral) : RenameResult := do
+  let mut acc ← renameHead ren n.head
+  for e in n.spine do
+    acc ← renameElim ren acc e
+  .ok acc
 
 end
 

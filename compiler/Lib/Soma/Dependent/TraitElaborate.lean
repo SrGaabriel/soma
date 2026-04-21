@@ -37,34 +37,6 @@ def lookup (r : ClassRegistry) (name : String) : Option Unique :=
 
 end ClassRegistry
 
-/-- Recursively substitute type arguments in a Value.
-
-When we see a neutral variable that matches a type parameter name,
-we replace it with the corresponding type argument.
--/
-private partial def applyTypeValue (fnVal argVal : Value) : TCM Value := do
-  match fnVal with
-  | .vDataType id params =>
-    return .vDataType id (params ++ [argVal])
-  | .vPi _ _ _ _ cod =>
-    applyClosure cod argVal
-  | .vLam _ body =>
-    applyClosure body argVal
-  | .vNeutral ty neu =>
-    let resultTy ← match ty with
-      | .vPi _ _ _ _ cod => applyClosure cod argVal
-      | _ => pure ty
-    return .vNeutral resultTy (.nApp neu argVal)
-  | _ =>
-    return fnVal
-
-private partial def neutralHeadAndArgs (neu : Neutral) : Neutral × List Value :=
-  match neu with
-  | .nApp fn arg =>
-    let (head, args) := neutralHeadAndArgs fn
-    (head, args ++ [arg])
-  | _ => (neu, [])
-
 /-- Build an evaluation Env of the given size with neutral variables at each level -/
 private def buildSubstEnv (depth : Nat) : Env :=
   if depth == 0 then Env.mk [] 0
@@ -74,53 +46,37 @@ private def buildSubstEnv (depth : Nat) : Env :=
       (name, Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨lvl⟩⟩))
     Env.mk bindings depth
 
+mutual
+
+/-- Substitute type parameters by name in a value -/
 partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
     (typeArgs : Array Value) (depth : Nat) : TCM Value := do
   let v' ← force v
   match v' with
-  | .vNeutral _ (.nVar var) =>
-    -- Check if this variable is a type parameter
-    match paramNames.findIdx? (· == var.name) with
-    | some idx =>
-      if h : idx < typeArgs.size then
-        return typeArgs[idx]
-      else
-        return v'
-    | none => return v'
-
   | .vNeutral ty neu =>
     let ty' ← substituteTypeArgsInValue ty paramNames typeArgs depth
-    let (head, args) := neutralHeadAndArgs neu
-    let args' ← args.mapM (fun a => substituteTypeArgsInValue a paramNames typeArgs depth)
-    match head with
-    | .nVar var =>
+    let spine' ← neu.spine.mapM (substituteElim · paramNames typeArgs depth)
+    match neu.head with
+    | .hVar var =>
       match paramNames.findIdx? (· == var.name) with
       | some idx =>
         if h : idx < typeArgs.size then
-          let base := typeArgs[idx]
-          args'.foldlM (init := base) (fun acc arg => applyTypeValue acc arg)
+          applySpine typeArgs[idx] spine'
         else
-          let rebuilt := args'.foldl (fun acc arg => .nApp acc arg) head
-          return .vNeutral ty' rebuilt
+          return .vNeutral ty' (.mk neu.head spine')
       | none =>
-        let rebuilt := args'.foldl (fun acc arg => .nApp acc arg) head
-        return .vNeutral ty' rebuilt
+        return .vNeutral ty' (.mk neu.head spine')
     | _ =>
-      let rebuilt := args'.foldl (fun acc arg => .nApp acc arg) head
-      return .vNeutral ty' rebuilt
-
+      let head' ← substituteHead neu.head paramNames typeArgs depth
+      return .vNeutral ty' (.mk head' spine')
   | .vPi qty binder name dom cod =>
     let dom' ← substituteTypeArgsInValue dom paramNames typeArgs depth
-    -- For the codomain, we need to apply the closure to a fresh variable,
-    -- substitute in the body, then rebuild the closure
     let dummyArg := Value.vNeutral dom' (.nVar ⟨name, ⟨depth⟩⟩)
     let codVal ← applyClosure cod dummyArg
     let codVal' ← substituteTypeArgsInValue codVal paramNames typeArgs (depth + 1)
     let closureEnv := buildSubstEnv depth
     let bodyExpr := Soma.Core.quoteExpr ⟨depth + 1⟩ codVal'
-    let codClosure := Closure.term name closureEnv bodyExpr
-    return .vPi qty binder name dom' codClosure
-
+    return .vPi qty binder name dom' (Closure.term name closureEnv bodyExpr)
   | .vSigma qty name fst snd =>
     let fst' ← substituteTypeArgsInValue fst paramNames typeArgs depth
     let dummyArg := Value.vNeutral fst' (.nVar ⟨name, ⟨depth⟩⟩)
@@ -128,23 +84,43 @@ partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
     let sndVal' ← substituteTypeArgsInValue sndVal paramNames typeArgs (depth + 1)
     let closureEnv := buildSubstEnv depth
     let bodyExpr := Soma.Core.quoteExpr ⟨depth + 1⟩ sndVal'
-    let sndClosure := Closure.term name closureEnv bodyExpr
-    return .vSigma qty name fst' sndClosure
-
+    return .vSigma qty name fst' (Closure.term name closureEnv bodyExpr)
   | .vRecord row =>
     let row' ← substituteTypeArgsInValue row paramNames typeArgs depth
     return .vRecord row'
-
   | .vRowExtend label ty tail =>
     let ty' ← substituteTypeArgsInValue ty paramNames typeArgs depth
     let tail' ← substituteTypeArgsInValue tail paramNames typeArgs depth
     return .vRowExtend label ty' tail'
-
   | .vDataType id params =>
     let params' ← params.mapM (substituteTypeArgsInValue · paramNames typeArgs depth)
     return .vDataType id params'
-
   | _ => return v'
+
+partial def substituteHead (h : Head) (paramNames : Array String)
+    (typeArgs : Array Value) (depth : Nat) : TCM Head := do
+  match h with
+  | .hVar _ => return h
+  | .hMeta _ => return h
+  | .hConst name ty =>
+    let ty' ← substituteTypeArgsInValue ty paramNames typeArgs depth
+    return .hConst name ty'
+  | .hCase scrutinees arms rty =>
+    let scrutinees' ← scrutinees.mapM (substituteTypeArgsInValue · paramNames typeArgs depth)
+    let rty' ← substituteTypeArgsInValue rty paramNames typeArgs depth
+    return .hCase scrutinees' arms rty'
+
+partial def substituteElim (e : Elim) (paramNames : Array String)
+    (typeArgs : Array Value) (depth : Nat) : TCM Elim := do
+  match e with
+  | .eApp arg =>
+    let arg' ← substituteTypeArgsInValue arg paramNames typeArgs depth
+    return .eApp arg'
+  | .eFst => return .eFst
+  | .eSnd => return .eSnd
+  | .eField n => return .eField n
+
+end
 
 
 /-! ## Trait Elaboration
@@ -435,7 +411,6 @@ where
 
 /-- Recursively check whether a Value contains an unsolved metavariable -/
 private partial def valueContainsMeta : Value → Bool
-  | .vNeutral _ (.nMeta _) => true
   | .vNeutral ty neu => valueContainsMeta ty || neutralContainsMeta neu
   | .vDataType _ params => params.any valueContainsMeta
   | .vPi _ _ _ dom cod => valueContainsMeta dom || match cod with
@@ -452,15 +427,17 @@ private partial def valueContainsMeta : Value → Bool
   | .vEq _ ty l r => valueContainsMeta ty || valueContainsMeta l || valueContainsMeta r
   | _ => false
 where
-  neutralContainsMeta : Neutral → Bool
-    | .nMeta _ => true
-    | .nApp fn arg => neutralContainsMeta fn || valueContainsMeta arg
-    | .nFst n | .nSnd n => neutralContainsMeta n
-    | .nFieldAccess n _ => neutralContainsMeta n
-    | .nCase scrutinees _ rty =>
+  neutralContainsMeta (n : Neutral) : Bool :=
+    headContainsMeta n.head || n.spine.any elimContainsMeta
+  headContainsMeta : Head → Bool
+    | .hMeta _ => true
+    | .hVar _ => false
+    | .hConst _ ty => valueContainsMeta ty
+    | .hCase scrutinees _ rty =>
       scrutinees.any valueContainsMeta || valueContainsMeta rty
-    | .nConst _ ty => valueContainsMeta ty
-    | .nVar _ => false
+  elimContainsMeta : Elim → Bool
+    | .eApp arg => valueContainsMeta arg
+    | .eFst | .eSnd | .eField _ => false
 
 /-- Build the record type for a constraint dict (class record type applied to args) -/
 private partial def buildConstraintDictType (constraintClassId : Unique)

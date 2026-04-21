@@ -115,15 +115,92 @@ def runFromFixtures (debug : Bool := true) : IO TestRunner := do
 
   return runner
 
+/-- Walk a Value and return true if any neutral head is/contains an unsolved meta -/
+partial def valueContainsMetaHead (v : Soma.Core.Value) : Bool :=
+  match v with
+  | .vNeutral ty neu =>
+    let headIsMeta := match neu.head with
+      | .hMeta _ => true
+      | .hCase scruts _ rty =>
+        scruts.any valueContainsMetaHead || valueContainsMetaHead rty
+      | _ => false
+    headIsMeta
+      || valueContainsMetaHead ty
+      || neu.spine.any fun
+        | .eApp arg => valueContainsMetaHead arg
+        | .eFst | .eSnd | .eField _ => false
+  | .vPi _ _ _ dom cod =>
+    valueContainsMetaHead dom || match cod with
+      | .const _ v => valueContainsMetaHead v
+      | .term _ _ _ => false
+  | .vSigma _ _ fst snd =>
+    valueContainsMetaHead fst || match snd with
+      | .const _ v => valueContainsMetaHead v
+      | .term _ _ _ => false
+  | .vLam _ body => match body with
+    | .const _ v => valueContainsMetaHead v
+    | .term _ _ _ => false
+  | .vPair a b => valueContainsMetaHead a || valueContainsMetaHead b
+  | .vRowExtend l ft t =>
+    valueContainsMetaHead l || valueContainsMetaHead ft || valueContainsMetaHead t
+  | .vRecord row => valueContainsMetaHead row
+  | .vVariant row => valueContainsMetaHead row
+  | .vRecordVal fields => fields.any (fun (_, v) => valueContainsMetaHead v)
+  | .vDataType _ params => params.any valueContainsMetaHead
+  | .vConstructor _ _ args rty =>
+    args.any valueContainsMetaHead || valueContainsMetaHead rty
+  | .vEq _ ty l r =>
+    valueContainsMetaHead ty || valueContainsMetaHead l || valueContainsMetaHead r
+  | .vRefl ty x => valueContainsMetaHead ty || valueContainsMetaHead x
+  | _ => false
+
+/-- Verify that the stored type of `defName` in `result` is concrete -/
+def checkStoredTypeConcrete (result : ProjectResult) (defName : String) : Option String := Id.run do
+  if !result.success then return some s!"project failed to check"
+  for m in result.checkedModules do
+    for (_qn, info) in m.globals.defs.toList do
+      if info.name.display == defName then
+        if valueContainsMetaHead info.type then
+          return some s!"stored type for `{defName}` still contains an unsolved meta: {info.type}"
+        else
+          return none
+  return some s!"symbol `{defName}` not found in any checked module"
+
+def testTraitMethodSignatureConcrete : IO TestResult := do
+  let fixturePath : System.FilePath := "Test/fixtures/dependent/trait_method_in_signature.soma"
+  let source ← IO.FS.readFile fixturePath
+  let tempPath ← writeTempDependentFixture "trait_method_in_signature" source
+  let config : ProjectConfig := {
+    input := tempPath
+    name := some "trait_method_in_signature"
+    deps := #[]
+  }
+  try
+    let result ← checkSingleFile config noDepsLoader
+    match checkStoredTypeConcrete result "succ_greater_than_zero" with
+    | none => return .passed
+    | some msg => return .failed msg
+  finally
+    IO.FS.removeFile tempPath |>.catchExceptions fun _ => pure ()
+
+def runInvariantTests : IO TestRunner := do
+  IO.println "  === Stored-Type Invariants ==="
+  let mut runner := TestRunner.init
+  runner := runner.record "trait_method_signature_concrete"
+    (← testTraitMethodSignatureConcrete)
+  return runner
+
 /-! ## Main Entry Point -/
 
 def run : IO TestRunner := do
   -- Run with debug=true for verbose output during development
   let runner ← runFromFixtures (debug := true)
+  let invariants ← runInvariantTests
 
   IO.println ""
   runner.printSummary "Dependent Integration"
+  invariants.printSummary "Stored-Type Invariants"
   IO.println ""
-  return runner
+  return runner.merge invariants
 
 end Test.Dependent.Integration

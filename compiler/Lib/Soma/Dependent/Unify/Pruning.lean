@@ -390,23 +390,29 @@ partial def collectMetaOccurrences (m : MetaId) (v : Value) (depth : Nat)
 
 partial def collectMetaOccurrencesNeutral (m : MetaId) (n : Neutral) (depth : Nat)
     (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
-  match n with
-  | .nVar _ => #[]
-  | .nMeta id =>
+  collectMetaOccurrencesHead m n.head depth scope ++
+    n.spine.foldl (fun acc e =>
+      acc ++ collectMetaOccurrencesElim m e (depth + 1) scope) #[]
+
+partial def collectMetaOccurrencesHead (m : MetaId) (h : Head) (depth : Nat)
+    (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
+  match h with
+  | .hVar _ => #[]
+  | .hConst _ _ => #[]
+  | .hMeta id =>
     if id == m then #[{ depth := depth, scopeVars := scope }]
     else #[]
-  | .nApp fn arg =>
-    collectMetaOccurrencesNeutral m fn depth scope ++
-    collectMetaOccurrences m arg (depth + 1) scope
-  | .nFst pair => collectMetaOccurrencesNeutral m pair depth scope
-  | .nSnd pair => collectMetaOccurrencesNeutral m pair depth scope
-  | .nFieldAccess rec _ => collectMetaOccurrencesNeutral m rec depth scope
-  | .nCase scrutinees arms _ =>
+  | .hCase scrutinees arms _ =>
     scrutinees.foldl (fun acc s =>
       acc ++ collectMetaOccurrences m s depth scope) #[] ++
     arms.foldl (fun acc arm =>
       acc ++ collectMetaOccurrencesClosure m arm.closure (depth + 1) scope) #[]
-  | .nConst _ _ => #[]
+
+partial def collectMetaOccurrencesElim (m : MetaId) (e : Elim) (depth : Nat)
+    (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
+  match e with
+  | .eApp arg => collectMetaOccurrences m arg depth scope
+  | .eFst | .eSnd | .eField _ => #[]
 
 partial def collectMetaOccurrencesClosure (m : MetaId) (clos : Closure) (depth : Nat)
     (scope : Array DeBruijnLvl) : Array MetaOccurrence :=

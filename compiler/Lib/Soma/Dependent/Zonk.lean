@@ -37,7 +37,7 @@ partial def zonkValue (v : Value) : TCM Value := do
     let b' ← zonkValue b
     return .vPair a' b'
 
-  | .vNeutral ty neu =>
+  | .vNeutral _ _ =>
     let forced ← force v
     match forced with
     | .vNeutral ty' neu' =>
@@ -109,48 +109,37 @@ partial def zonkValue (v : Value) : TCM Value := do
     let body' ← zonkValue body
     return .vTransport tyLevel' ty' motive' lhs' rhs' eq' body'
 
-/-- Zonk a neutral term -/
-partial def zonkNeutral (n : Neutral) : TCM Neutral := do
-  match n with
-  | .nVar v => return .nVar v
-  | .nConst qn ty => return .nConst qn ty
-
-  | .nMeta m =>
-    -- Check if solved
-    match ← TCM.lookupMeta m with
-    | some info =>
-      match info.solution with
-      | some _sol =>
-        -- Solution found - but we need to return a Neutral
-        -- The caller should handle this case before calling zonkNeutral
-        return .nMeta m
-      | none => return .nMeta m
-    | none => return .nMeta m
-
-  | .nApp fn arg =>
-    let fn' ← zonkNeutral fn
-    let arg' ← zonkValue arg
-    return .nApp fn' arg'
-
-  | .nFst pair =>
-    let pair' ← zonkNeutral pair
-    return .nFst pair'
-
-  | .nSnd pair =>
-    let pair' ← zonkNeutral pair
-    return .nSnd pair'
-
-  | .nFieldAccess rec field =>
-    let rec' ← zonkNeutral rec
-    return .nFieldAccess rec' field
-
-  | .nCase scrutinees arms rty =>
+/-- Zonk a neutral head -/
+partial def zonkHead (h : Head) : TCM Head := do
+  match h with
+  | .hVar v => return .hVar v
+  | .hMeta m => return .hMeta m
+  | .hConst qn ty =>
+    let ty' ← zonkValue ty
+    return .hConst qn ty'
+  | .hCase scrutinees arms rty =>
     let scrutinees' ← scrutinees.mapM zonkValue
     let arms' ← arms.mapM fun arm => do
       let clos' ← zonkClosure arm.closure
       return ArmClosure.mk arm.pattern clos'
     let rty' ← zonkValue rty
-    return .nCase scrutinees' arms' rty'
+    return .hCase scrutinees' arms' rty'
+
+/-- Zonk a spine eliminator by walking its subvalues -/
+partial def zonkElim (e : Elim) : TCM Elim := do
+  match e with
+  | .eApp arg =>
+    let arg' ← zonkValue arg
+    return .eApp arg'
+  | .eFst => return .eFst
+  | .eSnd => return .eSnd
+  | .eField name => return .eField name
+
+/-- Zonk a neutral term -/
+partial def zonkNeutral (n : Neutral) : TCM Neutral := do
+  let head' ← zonkHead n.head
+  let spine' ← n.spine.mapM zonkElim
+  return .mk head' spine'
 
 /-- Zonk a closure -/
 partial def zonkClosure (clos : Closure) : TCM Closure := do
@@ -354,25 +343,31 @@ partial def hasUnsolvedMetas (v : Value) : TCM Bool := do
   | _ => return false
 
 partial def hasUnsolvedMetasNeutral (n : Neutral) : TCM Bool := do
-  match n with
-  | .nMeta m =>
+  if ← hasUnsolvedMetasHead n.head then return true
+  for e in n.spine do
+    if ← hasUnsolvedMetasElim e then return true
+  return false
+
+partial def hasUnsolvedMetasHead (h : Head) : TCM Bool := do
+  match h with
+  | .hMeta m =>
     match ← TCM.lookupMeta m with
     | some info => return info.solution.isNone
     | none => return true
-  | .nApp fn arg =>
-    if ← hasUnsolvedMetasNeutral fn then return true
-    hasUnsolvedMetas arg
-  | .nFst pair => hasUnsolvedMetasNeutral pair
-  | .nSnd pair => hasUnsolvedMetasNeutral pair
-  | .nFieldAccess rec _ => hasUnsolvedMetasNeutral rec
-  | .nCase scrutinees _ _ =>
-    let mut result := false
+  | .hVar _ => return false
+  | .hConst _ _ => return false
+  | .hCase scrutinees _ _ =>
     for s in scrutinees do
       if ← hasUnsolvedMetas s then
-        result := true
-        break
-    return result
-  | _ => return false
+        return true
+    return false
+
+partial def hasUnsolvedMetasElim (e : Elim) : TCM Bool := do
+  match e with
+  | .eApp arg => hasUnsolvedMetas arg
+  | .eFst => return false
+  | .eSnd => return false
+  | .eField _ => return false
 
 end
 
@@ -380,13 +375,6 @@ mutual
 
 partial def collectUnsolvedMetas (v : Value) (span : Span) : TCM Unit := do
   match v with
-  | .vNeutral ty (.nMeta m) =>
-    match ← TCM.lookupMeta m with
-    | some info =>
-      if info.solution.isNone && info.origin != .errorRecovery then
-        TCM.addError (.unsolvedMeta info.type span #[] none)
-    | none =>
-      TCM.addError (.unsolvedMeta ty span #[] none)
   | .vPi _ _ _ dom _ => collectUnsolvedMetas dom span
   | .vLam _ _ => pure ()
   | .vSigma _ _ fst _ => collectUnsolvedMetas fst span
@@ -428,23 +416,30 @@ partial def collectUnsolvedMetas (v : Value) (span : Span) : TCM Unit := do
   | _ => pure ()
 
 partial def collectUnsolvedMetasNeutral (n : Neutral) (span : Span) : TCM Unit := do
-  match n with
-  | .nMeta m =>
+  collectUnsolvedMetasHead n.head span
+  for e in n.spine do
+    collectUnsolvedMetasElim e span
+
+partial def collectUnsolvedMetasHead (h : Head) (span : Span) : TCM Unit := do
+  match h with
+  | .hMeta m =>
     match ← TCM.lookupMeta m with
     | some info =>
       if info.solution.isNone && info.origin != .errorRecovery then
         TCM.addError (.unsolvedMeta info.type span #[] none)
     | none => pure ()
-  | .nApp fn arg =>
-    collectUnsolvedMetasNeutral fn span
-    collectUnsolvedMetas arg span
-  | .nFst pair => collectUnsolvedMetasNeutral pair span
-  | .nSnd pair => collectUnsolvedMetasNeutral pair span
-  | .nFieldAccess rec _ => collectUnsolvedMetasNeutral rec span
-  | .nCase scrutinees _ _ =>
+  | .hVar _ => pure ()
+  | .hConst _ _ => pure ()
+  | .hCase scrutinees _ _ =>
     for s in scrutinees do
       collectUnsolvedMetas s span
-  | _ => pure ()
+
+partial def collectUnsolvedMetasElim (e : Elim) (span : Span) : TCM Unit := do
+  match e with
+  | .eApp arg => collectUnsolvedMetas arg span
+  | .eFst => pure ()
+  | .eSnd => pure ()
+  | .eField _ => pure ()
 
 end
 

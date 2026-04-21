@@ -206,51 +206,73 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
   | _, _ =>
     throwUnifyError v1' v2' "incompatible types"
 
-/-- Unify two neutral terms -/
-partial def unifyNeutral (n1 n2 : Neutral) : TCM Unit := do
-  match n1, n2 with
-  | .nVar v1, .nVar v2 =>
+/-- Unify two heads, throwing if the heads are incompatible -/
+partial def unifyHead (h1 h2 : Head) : TCM Unit := do
+  match h1, h2 with
+  | .hVar v1, .hVar v2 =>
     if v1.level != v2.level then
       let span ← TCM.getSpan
-      TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])
-
-  | .nMeta m1, .nMeta m2 =>
+      TCM.throw (.unificationFailed
+        (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+  | .hMeta m1, .hMeta m2 =>
     if m1 != m2 then
-      -- Two different metas: try to solve one with the other
       solveMeta m1 [] (.vNeutral .type0 (.nMeta m2))
-
-  -- Metavariable on left, rigid variable on right: solve meta with the variable
-  | .nMeta m, .nVar v =>
+  | .hMeta m, .hVar v =>
     solveMeta m [] (.vNeutral .type0 (.nVar v))
-
-  -- Rigid variable on left, metavariable on right: solve meta with the variable
-  | .nVar v, .nMeta m =>
+  | .hVar v, .hMeta m =>
     solveMeta m [] (.vNeutral .type0 (.nVar v))
-
-  | .nApp f1 a1, .nApp f2 a2 =>
-    unifyNeutral f1 f2
-    unify a1 a2
-
-  | .nFst p1, .nFst p2 =>
-    unifyNeutral p1 p2
-
-  | .nSnd p1, .nSnd p2 =>
-    unifyNeutral p1 p2
-
-  | .nFieldAccess r1 f1, .nFieldAccess r2 f2 =>
-    if f1 != f2 then
-      let span ← TCM.getSpan
-      TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])
-    unifyNeutral r1 r2
-
-  | .nConst c1 _, .nConst c2 _ =>
+  | .hConst c1 _, .hConst c2 _ =>
     if c1 != c2 then
       let span ← TCM.getSpan
-      TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])
-
+      TCM.throw (.unificationFailed
+        (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
   | _, _ =>
     let span ← TCM.getSpan
-    TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])
+    TCM.throw (.unificationFailed
+      (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+
+/-- Unify two eliminators -/
+partial def unifyElim (e1 e2 : Elim) : TCM Unit := do
+  match e1, e2 with
+  | .eApp a1, .eApp a2 => unify a1 a2
+  | .eFst, .eFst => return
+  | .eSnd, .eSnd => return
+  | .eField f1, .eField f2 =>
+    if f1 != f2 then
+      let span ← TCM.getSpan
+      TCM.throw (.unificationFailed
+        (.rigidMismatch (.nFieldAccess (.ofHead (.hVar ⟨"_", ⟨0⟩⟩)) f1)
+                        (.nFieldAccess (.ofHead (.hVar ⟨"_", ⟨0⟩⟩)) f2))
+        .general span #[] #[])
+  | _, _ =>
+    let span ← TCM.getSpan
+    TCM.throw (.unificationFailed
+      (.rigidMismatch (.ofHead (.hVar ⟨"_", ⟨0⟩⟩))
+                      (.ofHead (.hVar ⟨"_", ⟨0⟩⟩))) .general span #[] #[])
+
+/-- Unify two neutral terms -/
+partial def unifyNeutral (n1 n2 : Neutral) : TCM Unit := do
+  match n1.head, n2.head with
+  | .hMeta m1, _ =>
+    match getMetaWithSpine n1 with
+    | some (_, spineArgs) =>
+      solveMeta m1 spineArgs (.vNeutral .type0 n2)
+      return
+    | none => pure ()
+  | _, .hMeta m2 =>
+    match getMetaWithSpine n2 with
+    | some (_, spineArgs) =>
+      solveMeta m2 spineArgs (.vNeutral .type0 n1)
+      return
+    | none => pure ()
+  | _, _ => pure ()
+  unifyHead n1.head n2.head
+  if n1.spine.size != n2.spine.size then
+    let span ← TCM.getSpan
+    TCM.throw (.unificationFailed
+      (.spineLengthMismatch n1.spine.size n2.spine.size) .general span #[] #[])
+  for (e1, e2) in n1.spine.zip n2.spine do
+    unifyElim e1 e2
 
 /-- Unify row types with rewriting -/
 partial def unifyRows (l1 : Value) (t1 : Value) (r1 : Value)

@@ -99,24 +99,31 @@ inductive Closure where
 inductive Env where
   | mk (values : List (String × Value)) (size : Nat) : Env
 
-/-- Neutral terms: terms that are stuck on a variable or metavariable -/
-inductive Neutral where
+/-- The head of a neutral term: what the spine of eliminators is stuck on -/
+inductive Head where
   /-- Stuck on a bound variable -/
-  | nVar (v : BoundVar)
+  | hVar (v : BoundVar)
   /-- Stuck on a metavariable -/
-  | nMeta (id : MetaId)
-  /-- Application of a neutral term -/
-  | nApp (fn : Neutral) (arg : Value)
-  /-- First projection of a neutral pair -/
-  | nFst (pair : Neutral)
-  /-- Second projection of a neutral pair -/
-  | nSnd (pair : Neutral)
-  /-- Field access on a neutral record -/
-  | nFieldAccess (record : Neutral) (field : String)
-  /-- Case analysis blocked on one or more neutral scrutinees -/
-  | nCase (scrutinees : Array Value) (arms : List ArmClosure) (resultTy : Value)
-  /-- Stuck on an unresolved global constant (extern or opaque) -/
-  | nConst (name : Soma.Core.QualifiedName) (constTy : Value)
+  | hMeta (id : MetaId)
+  /-- Stuck on an unresolved global constant -/
+  | hConst (name : Soma.Core.QualifiedName) (constTy : Value)
+  /-- Case analysis blocked because one or more scrutinees are non-canonical -/
+  | hCase (scrutinees : Array Value) (arms : List ArmClosure) (resultTy : Value)
+
+/-- A single eliminator in a neutral spine -/
+inductive Elim where
+  /-- Function application: `neu arg` -/
+  | eApp (arg : Value)
+  /-- First projection of a neutral pair: `neu.fst` -/
+  | eFst
+  /-- Second projection of a neutral pair: `neu.snd` -/
+  | eSnd
+  /-- Field access on a neutral record: `neu.field` -/
+  | eField (name : String)
+
+/-- A stuck head with a spine of eliminators applied to it -/
+inductive Neutral where
+  | mk (head : Head) (spine : Array Elim) : Neutral
 
 /-- Case arm closure -/
 inductive ArmClosure where
@@ -128,6 +135,8 @@ end
 deriving instance Serialize, Deserialize for Value
 deriving instance Serialize, Deserialize for Closure
 deriving instance Serialize, Deserialize for Env
+deriving instance Serialize, Deserialize for Head
+deriving instance Serialize, Deserialize for Elim
 deriving instance Serialize, Deserialize for Neutral
 deriving instance Serialize, Deserialize for ArmClosure
 
@@ -184,7 +193,7 @@ mutual
   def Value.defaultValue : Value := Value.vType Level.zero
   def Closure.defaultValue : Closure := Closure.const "_" Value.defaultValue
   def Env.defaultValue : Env := Env.mk [] 0
-  def Neutral.defaultValue : Neutral := Neutral.nVar ⟨"_", ⟨0⟩⟩
+  def Neutral.defaultValue : Neutral := Neutral.mk (.hVar ⟨"_", ⟨0⟩⟩) #[]
   def ArmClosure.defaultValue : ArmClosure := ArmClosure.mk "_" Closure.defaultValue #[.wildcard]
 end
 
@@ -373,15 +382,64 @@ partial def Value.explicitArity (v : Value) : Nat :=
     if binder.isImplicit then rest else 1 + rest
   | _ => 0
 
-/-! ## Neutral Operations -/
+namespace Neutral
 
-/-- Create a variable neutral -/
-def Neutral.var (name : String) (lvl : DeBruijnLvl) : Neutral :=
-  Neutral.nVar ⟨name, lvl⟩
+/-- The stuck head of a neutral -/
+def head : Neutral → Head
+  | .mk h _ => h
 
-/-- Create a metavariable neutral -/
-def Neutral.mkMeta (id : Nat) : Neutral :=
-  Neutral.nMeta ⟨id⟩
+/-- The spine of eliminators applied to the head, in application order -/
+def spine : Neutral → Array Elim
+  | .mk _ s => s
+
+/-- Is the spine empty -/
+def isBareHead : Neutral → Bool
+  | .mk _ s => s.isEmpty
+
+/-- Extend a neutral's spine with an eliminator -/
+def pushElim (n : Neutral) (e : Elim) : Neutral :=
+  .mk n.head (n.spine.push e)
+
+/-- Build a neutral from a head with an empty spine -/
+def ofHead (h : Head) : Neutral :=
+  .mk h #[]
+
+/-- Stuck on a bound variable -/
+def nVar (v : BoundVar) : Neutral := ofHead (.hVar v)
+
+/-- Stuck on a metavariable -/
+def nMeta (id : MetaId) : Neutral := ofHead (.hMeta id)
+
+/-- Stuck on an unresolved global constant -/
+def nConst (name : Soma.Core.QualifiedName) (constTy : Value) : Neutral :=
+  ofHead (.hConst name constTy)
+
+/-- Case blocked on non-canonical scrutinees -/
+def nCase (scrutinees : Array Value) (arms : List ArmClosure) (resultTy : Value) : Neutral :=
+  ofHead (.hCase scrutinees arms resultTy)
+
+/-- Application `fn arg` where `fn` is already a neutral -/
+def nApp (fn : Neutral) (arg : Value) : Neutral := fn.pushElim (.eApp arg)
+
+/-- First projection of a neutral pair -/
+def nFst (pair : Neutral) : Neutral := pair.pushElim .eFst
+
+/-- Second projection of a neutral pair -/
+def nSnd (pair : Neutral) : Neutral := pair.pushElim .eSnd
+
+/-- Field access on a neutral record -/
+def nFieldAccess (record : Neutral) (field : String) : Neutral :=
+  record.pushElim (.eField field)
+
+/-- Convenience: create a variable neutral from a name + level -/
+def var (name : String) (lvl : DeBruijnLvl) : Neutral :=
+  nVar ⟨name, lvl⟩
+
+/-- Create a metavariable neutral from a raw nat id -/
+def mkMeta (id : Nat) : Neutral :=
+  nMeta ⟨id⟩
+
+end Neutral
 
 /-- Provenance of a metavariable -/
 inductive MetaOrigin where

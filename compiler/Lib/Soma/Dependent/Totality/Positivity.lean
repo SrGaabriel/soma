@@ -195,21 +195,24 @@ private partial def checkIndexValue (v : Value) (reg : TotalityRegistry) : List 
       checkIndexValue ty reg ++ checkIndexValue lhs reg ++ checkIndexValue rhs reg
   | _ => []
 where
-  checkNeutral (neu : Neutral) (reg : TotalityRegistry) : List String :=
-    match neu with
-    | .nVar v =>
+  checkHead (h : Head) (reg : TotalityRegistry) : List String :=
+    match h with
+    | .hVar v =>
       match reg.lookup v.name with
       | some .isPartial => [v.name]
       | some .isUnknown => [v.name]
       | _ => []
-    | .nConst _ _ => []
-    | .nMeta _ => []
-    | .nApp fn arg => checkNeutral fn reg ++ checkIndexValue arg reg
-    | .nFst pair => checkNeutral pair reg
-    | .nSnd pair => checkNeutral pair reg
-    | .nFieldAccess rec _ => checkNeutral rec reg
-    | .nCase scrutinees _ _ =>
+    | .hConst _ _ => []
+    | .hMeta _ => []
+    | .hCase scrutinees _ _ =>
       scrutinees.foldl (fun acc s => acc ++ checkIndexValue s reg) []
+  checkElim (e : Elim) (reg : TotalityRegistry) : List String :=
+    match e with
+    | .eApp arg => checkIndexValue arg reg
+    | .eFst | .eSnd | .eField _ => []
+  checkNeutral (neu : Neutral) (reg : TotalityRegistry) : List String :=
+    checkHead neu.head reg ++
+      neu.spine.foldl (fun acc e => acc ++ checkElim e reg) []
 
 /-- Check that a type index only uses total functions -/
 def checkTypeIndexTotality (idx : Value) (registry : TotalityRegistry) : List String :=

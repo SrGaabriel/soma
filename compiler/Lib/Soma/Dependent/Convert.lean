@@ -16,66 +16,65 @@ def convertLevel (l1 l2 : Level) : TCM Bool := do
   let l2' := l2.simplify
   return l1' == l2'
 
-/-- Extract meta id and collected arguments from a neutral application spine -/
-private def getMetaFromNeutral (neu : Neutral) : Option (MetaId × List Value) :=
-  go neu []
-where
-  go (neu : Neutral) (args : List Value) : Option (MetaId × List Value) :=
-    match neu with
-    | .nMeta id => some (id, args)
-    | .nApp fn arg => go fn (arg :: args)
-    | _ => none
-
 mutual
 
-/-- Force a value: if it's a solved metavariable, return the solution -/
+/-- Apply a single eliminator to a value, performing canonical reduction -/
+partial def applyElim (v : Value) (e : Elim) : TCM Value := do
+  match v, e with
+  | .vLam _ body, .eApp arg => applyClosure body arg
+  | .vDataType id params, .eApp arg =>
+    return .vDataType id (params ++ [arg])
+  | .vPair a _, .eFst => pure a
+  | .vPair _ b, .eSnd => pure b
+  | .vRecordVal fields, .eField name =>
+    match fields.find? (·.1 == name) with
+    | some (_, v') => pure v'
+    | none => pure v
+  | .vNeutral ty neu, _ =>
+    return .vNeutral ty (neu.pushElim e)
+  | _, _ => pure v
+
+/-- Fold a spine of eliminators over a value in order -/
+partial def applySpine (v : Value) (spine : Array Elim) : TCM Value := do
+  let mut result := v
+  for e in spine do
+    result ← applyElim result e
+  return result
+
+/-- Force a value to weak head normal form -/
 partial def force (v : Value) : TCM Value := do
   match v with
-  | .vNeutral _ty (.nMeta id) =>
-    let info? ← TCM.lookupMeta id
-    match info? with
-    | some info =>
-      match info.solution with
-      | some sol =>
-        -- Recursively force the solution
-        let finalVal ← force sol
-        -- Path compression: if the final value is different from the immediate solution,
-        -- update this meta to point directly to the final value
-        match finalVal with
-        | .vNeutral _ (.nMeta finalId) =>
-          -- Final value is still a meta (unsolved or same) - don't compress
-          if finalId != id then
-            return finalVal
-          else
-            return v
-        | _ =>
-          -- Final value is not a meta, compress the path
-          match sol with
-          | .vNeutral _ (.nMeta _) =>
-            -- sol was a meta, so we followed a chain and can compress
-            TCM.updateMetaSolution id finalVal
-          | _ => pure ()
-          return finalVal
-      | none => return v
-    | none => return v
-  | .vNeutral _ty neu =>
-    -- Handle meta applications: ?m arg1 arg2 ... where ?m might be solved
-    match getMetaFromNeutral neu with
-    | some (metaId, args) =>
-      let info? ← TCM.lookupMeta metaId
+  | .vNeutral _ neu =>
+    match neu.head with
+    | .hMeta id =>
+      let info? ← TCM.lookupMeta id
       match info? with
       | some info =>
         match info.solution with
         | some sol =>
-          -- Meta is solved, apply solution to arguments
-          forceApplyToArgs sol args
+          let forced ← force sol
+          match sol, forced with
+          | .vNeutral _ solNeu, _ =>
+            if solNeu.isBareHead then
+              match solNeu.head, forced with
+              | .hMeta _, .vNeutral _ finNeu =>
+                if !finNeu.isBareHead then
+                  TCM.updateMetaSolution id forced
+                else
+                  match finNeu.head with
+                  | .hMeta _ => pure ()
+                  | _ => TCM.updateMetaSolution id forced
+              | .hMeta _, _ => TCM.updateMetaSolution id forced
+              | _, _ => pure ()
+            else
+              pure ()
+          | _, _ => pure ()
+          let result ← applySpine forced neu.spine
+          force result
         | none => return v
       | none => return v
-    | none =>
-      forceThroughNeutral neu v
+    | _ => return v
   | .vDataType dId params =>
-    -- Abbreviations are kept as vDataType during higher-kinded unification and
-    -- expanded here when structural comparison or Pi decomposition is needed
     let abbrev? ← TCM.lookupAbbrev ⟨dId⟩
     match abbrev? with
     | some abbrevInfo =>
@@ -91,61 +90,12 @@ partial def force (v : Value) : TCM Value := do
     | none => return v
   | _ => return v
 
-/-- Recursively resolve a neutral by pushing force through -/
-partial def forceThroughNeutral (neu : Neutral) (fallback : Value) : TCM Value := do
-  match neu with
-  | .nFieldAccess inner field =>
-    let innerV ← force (Value.vNeutral Value.type0 inner)
-    match innerV with
-    | .vRecordVal fields =>
-      match fields.find? (·.1 == field) with
-      | some (_, fv) => force fv
-      | none => return fallback
-    | _ => return fallback
-  | .nApp fn arg =>
-    let fnV ← force (Value.vNeutral Value.type0 fn)
-    match fnV with
-    | .vLam _ body =>
-      let result ← applyClosure body arg
-      force result
-    | _ => return fallback
-  | .nFst inner =>
-    let innerV ← force (Value.vNeutral Value.type0 inner)
-    match innerV with
-    | .vPair a _ => force a
-    | _ => return fallback
-  | .nSnd inner =>
-    let innerV ← force (Value.vNeutral Value.type0 inner)
-    match innerV with
-    | .vPair _ b => force b
-    | _ => return fallback
-  | _ => return fallback
-
-/-- Apply a value to a list of arguments, forcing as we go -/
-partial def forceApplyToArgs (v : Value) (args : List Value) : TCM Value := do
-  match args with
-  | [] => force v
-  | arg :: rest =>
-    let v' ← force v
-    let arg' ← force arg
-    match v' with
-    | .vLam _ body =>
-      let result ← applyClosure body arg'
-      forceApplyToArgs result rest
-    | .vDataType id params =>
-      let applied := Value.vDataType id (params ++ [arg'])
-      forceApplyToArgs applied rest
-    | _ =>
-      -- Can't apply further, return as-is
-      return v
-
 /-- Apply a closure to an argument -/
 partial def applyClosure (clos : Closure) (arg : Value) : TCM Value := do
   match clos with
   | .const _name value =>
     return value
   | .term name env body =>
-    -- Term-based closure: evaluate body under extended environment
     let env' := env.extend name arg
     let state ← TCM.getState
     let ctx ← TCM.getCtx
@@ -154,8 +104,7 @@ partial def applyClosure (clos : Closure) (arg : Value) : TCM Value := do
       globals := ctx.globals.toGlobalEnvWithClasses ctx.instanceEnv
       metas := state.metas
     }
-    let result := Soma.Core.evalCoreExpr evalCtx body
-    return result
+    return Soma.Core.evalCoreExpr evalCtx body
 
 end
 
@@ -393,41 +342,20 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
   -- Different constructors
   | _, _ => return false
 
-/-- Check if two neutral terms are convertible -/
-partial def convertNeutral (n1 n2 : Neutral) : TCM Bool := do
-  match n1, n2 with
-  | .nVar v1, .nVar v2 =>
-    return v1.level == v2.level
-
-  | .nMeta m1, .nMeta m2 =>
-    return m1 == m2
-
-  | .nApp f1 a1, .nApp f2 a2 =>
-    let fnEq ← convertNeutral f1 f2
-    if !fnEq then return false
-    convert a1 a2
-
-  | .nFst p1, .nFst p2 =>
-    convertNeutral p1 p2
-
-  | .nSnd p1, .nSnd p2 =>
-    convertNeutral p1 p2
-
-  | .nFieldAccess r1 f1, .nFieldAccess r2 f2 =>
-    if f1 != f2 then return false
-    convertNeutral r1 r2
-
-  | .nCase ss1 as1 _, .nCase ss2 as2 _ =>
+/-- Check if two neutral heads are convertible -/
+partial def convertHead (h1 h2 : Head) : TCM Bool := do
+  match h1, h2 with
+  | .hVar v1, .hVar v2 => return v1.level == v2.level
+  | .hMeta m1, .hMeta m2 => return m1 == m2
+  | .hConst c1 _, .hConst c2 _ => return c1 == c2
+  | .hCase ss1 as1 _, .hCase ss2 as2 _ =>
     if ss1.size != ss2.size then return false
     for (s1, s2) in ss1.zip ss2 do
       let eq ← convert s1 s2
       if !eq then return false
     if as1.length != as2.length then return false
-    -- Compare arm closures by applying them to fresh variables and checking bodies
     for (arm1, arm2) in as1.zip as2 do
-      -- Check patterns match
       if arm1.pattern != arm2.pattern then return false
-      -- Apply closures to a fresh variable to compare bodies
       let lvl ← TCM.currentLevel
       let freshArg := Value.vNeutral .type0 (.nVar ⟨"_case_arg", lvl⟩)
       let body1 ← applyClosure arm1.closure freshArg
@@ -435,10 +363,26 @@ partial def convertNeutral (n1 n2 : Neutral) : TCM Bool := do
       let bodiesEq ← convert body1 body2
       if !bodiesEq then return false
     return true
-
-  | .nConst n1 _, .nConst n2 _ => return n1 == n2
-
   | _, _ => return false
+
+/-- Check if two eliminators are convertible -/
+partial def convertElim (e1 e2 : Elim) : TCM Bool := do
+  match e1, e2 with
+  | .eApp a1, .eApp a2 => convert a1 a2
+  | .eFst, .eFst => return true
+  | .eSnd, .eSnd => return true
+  | .eField f1, .eField f2 => return f1 == f2
+  | _, _ => return false
+
+/-- Check if two neutral terms are convertible: same head, same spine -/
+partial def convertNeutral (n1 n2 : Neutral) : TCM Bool := do
+  let headEq ← convertHead n1.head n2.head
+  if !headEq then return false
+  if n1.spine.size != n2.spine.size then return false
+  for (e1, e2) in n1.spine.zip n2.spine do
+    let eq ← convertElim e1 e2
+    if !eq then return false
+  return true
 
 /-- Convert rows with rewriting (find label in one row, match with other) -/
 partial def convertRowsWithRewriting (r1 r2 : Value) : TCM Bool := do

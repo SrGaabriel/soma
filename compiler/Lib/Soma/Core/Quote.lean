@@ -8,19 +8,25 @@ namespace Soma.Core
 
 mutual
 
-/-- Convert neutral to string -/
-partial def neutralToString (neu : Neutral) : String :=
-  match neu with
-  | .nVar v => v.name
-  | .nMeta _ => "{unknown}"
-  | .nApp fn arg => s!"{neutralToString fn} {valueToString arg}"
-  | .nFst pair => s!"{neutralToString pair}.1"
-  | .nSnd pair => s!"{neutralToString pair}.2"
-  | .nFieldAccess record field => s!"{neutralToString record}.{field}"
-  | .nCase scrutinees _ _ =>
+/-- Format a neutral head -/
+partial def headToString : Head → String
+  | .hVar v => v.name
+  | .hMeta _ => "{unknown}"
+  | .hConst name _ => name.display
+  | .hCase scrutinees _ _ =>
     let scrutsStr := scrutinees.toList.map valueToString |> String.intercalate ", "
     s!"case {scrutsStr} of ..."
-  | .nConst name _ => name.display
+
+/-- Format an eliminator applied on top of an already-rendered prefix -/
+partial def elimToString (acc : String) : Elim → String
+  | .eApp arg => s!"{acc} {valueToString arg}"
+  | .eFst => s!"{acc}.1"
+  | .eSnd => s!"{acc}.2"
+  | .eField name => s!"{acc}.{name}"
+
+/-- Convert a neutral to a string by folding its spine over its head -/
+partial def neutralToString (neu : Neutral) : String :=
+  neu.spine.foldl elimToString (headToString neu.head)
 
 /-- Quote a value to a string (for error messages) -/
 partial def valueToString (v : Value) : String :=
@@ -144,17 +150,29 @@ partial def valueEq (v1 v2 : Value) : Bool :=
     valueEq rhs1 rhs2 && valueEq eq1 eq2 && valueEq b1 b2
   | _, _ => false
 
-/-- Check if two neutral terms are equal -/
-partial def neutralEq (n1 n2 : Neutral) : Bool :=
-  match n1, n2 with
-  | .nVar v1, .nVar v2 => v1.level == v2.level
-  | .nMeta m1, .nMeta m2 => m1 == m2
-  | .nApp f1 a1, .nApp f2 a2 => neutralEq f1 f2 && valueEq a1 a2
-  | .nFst p1, .nFst p2 => neutralEq p1 p2
-  | .nSnd p1, .nSnd p2 => neutralEq p1 p2
-  | .nFieldAccess r1 f1, .nFieldAccess r2 f2 => neutralEq r1 r2 && f1 == f2
-  | .nConst n1 _, .nConst n2 _ => n1 == n2
+/-- Check if two heads are equal -/
+partial def headEq (h1 h2 : Head) : Bool :=
+  match h1, h2 with
+  | .hVar v1, .hVar v2 => v1.level == v2.level
+  | .hMeta m1, .hMeta m2 => m1 == m2
+  | .hConst n1 _, .hConst n2 _ => n1 == n2
+  | .hCase _ _ _, .hCase _ _ _ => false
   | _, _ => false
+
+/-- Check if two eliminators are equal -/
+partial def elimEq (e1 e2 : Elim) : Bool :=
+  match e1, e2 with
+  | .eApp a1, .eApp a2 => valueEq a1 a2
+  | .eFst, .eFst => true
+  | .eSnd, .eSnd => true
+  | .eField f1, .eField f2 => f1 == f2
+  | _, _ => false
+
+/-- Check if two neutral terms are equal: same head, same spine -/
+partial def neutralEq (n1 n2 : Neutral) : Bool :=
+  headEq n1.head n2.head &&
+    n1.spine.size == n2.spine.size &&
+    (n1.spine.zip n2.spine).all (fun (e1, e2) => elimEq e1 e2)
 
 end
 
@@ -453,20 +471,16 @@ partial def quoteExpr (depth : DeBruijnLvl) (v : Value) : Expr :=
                (quoteExpr depth lhs) (quoteExpr depth rhs)
                (quoteExpr depth eq) (quoteExpr depth body)
 
-/-- Quote a neutral term to an Expr -/
-partial def quoteNeutralExpr (depth : DeBruijnLvl) (neu : Neutral) : Expr :=
-  match neu with
-  | .nVar v =>
+/-- Quote a neutral head to an Expr at a given depth -/
+partial def quoteHeadExpr (depth : DeBruijnLvl) : Head → Expr
+  | .hVar v =>
     if v.level.lvl < depth.lvl then
       .bvar (depth.lvl - v.level.lvl - 1)
     else
       .fvar ⟨v.level.lvl, "__tyvar", v.name⟩ (.sort .zero)
-  | .nMeta id => .mvar id
-  | .nApp fn arg => .app (quoteNeutralExpr depth fn) (quoteExpr depth arg)
-  | .nFst n => .projFst (quoteNeutralExpr depth n)
-  | .nSnd n => .projSnd (quoteNeutralExpr depth n)
-  | .nFieldAccess n field => .fieldAccess (quoteNeutralExpr depth n) field 0
-  | .nCase scrutinees arms resultTy =>
+  | .hMeta id => .mvar id
+  | .hConst name constTy => .const name (quoteExpr depth constTy)
+  | .hCase scrutinees arms resultTy =>
     .«case» (scrutinees.map (quoteExpr depth))
       (arms.map (fun ac =>
         let binds := ac.patterns.foldl (fun a p => a + p.bindingCount) 0
@@ -488,7 +502,17 @@ partial def quoteNeutralExpr (depth : DeBruijnLvl) (neu : Neutral) : Expr :=
           Arm.mk ac.patterns (quoteExpr bodyDepth bodyVal)
       ) |>.toArray)
       (quoteExpr depth resultTy)
-  | .nConst name constTy => .const name (quoteExpr depth constTy)
+
+/-- Apply an eliminator on top of an already-quoted expression -/
+partial def quoteElimExpr (depth : DeBruijnLvl) (acc : Expr) : Elim → Expr
+  | .eApp arg => .app acc (quoteExpr depth arg)
+  | .eFst => .projFst acc
+  | .eSnd => .projSnd acc
+  | .eField name => .fieldAccess acc name 0
+
+/-- Quote a neutral term to an Expr by folding the spine over the head -/
+partial def quoteNeutralExpr (depth : DeBruijnLvl) (neu : Neutral) : Expr :=
+  neu.spine.foldl (quoteElimExpr depth) (quoteHeadExpr depth neu.head)
 
 end
 

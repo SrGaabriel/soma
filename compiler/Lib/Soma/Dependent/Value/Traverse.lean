@@ -136,31 +136,32 @@ partial def traverseValue (action : TraversalAction α) (v : Value) : α :=
       let r3 := inst.combine (traverseValue action eq) (traverseValue action body)
       inst.combine (inst.combine r1 r2) r3
 
+/-- Traverse a neutral head -/
+partial def traverseHead (action : TraversalAction α) (h : Head) : α :=
+  match h with
+  | .hVar v => action.onVar v
+  | .hMeta m => action.onMeta m
+  | .hConst _ _ => inst.empty
+  | .hCase scrutinees arms rty =>
+    let scrutsResult := scrutinees.foldl (fun acc s =>
+      inst.combine acc (traverseValue action s)) inst.empty
+    let armsResult := arms.foldl (fun acc arm =>
+      inst.combine acc (traverseClosure action arm.closure)) scrutsResult
+    inst.combine armsResult (traverseValue action rty)
+
+/-- Traverse an eliminator -/
+partial def traverseElim (action : TraversalAction α) (e : Elim) : α :=
+  match e with
+  | .eApp arg => traverseValue action arg
+  | .eFst | .eSnd | .eField _ => inst.empty
+
 /-- Traverse a Neutral term -/
 partial def traverseNeutral (action : TraversalAction α) (n : Neutral) : α :=
-  -- Check if action wants to short-circuit
   match action.onNeutral n with
   | some result => result
   | none =>
-    match n with
-    | .nVar v => action.onVar v
-    | .nMeta m => action.onMeta m
-
-    | .nApp fn arg =>
-      inst.combine (traverseNeutral action fn) (traverseValue action arg)
-
-    | .nFst pair => traverseNeutral action pair
-    | .nSnd pair => traverseNeutral action pair
-    | .nFieldAccess rec _ => traverseNeutral action rec
-
-    | .nCase scrutinees arms rty =>
-      let scrutsResult := scrutinees.foldl (fun acc s =>
-        inst.combine acc (traverseValue action s)) inst.empty
-      let armsResult := arms.foldl (fun acc arm =>
-        inst.combine acc (traverseClosure action arm.closure)) scrutsResult
-      inst.combine armsResult (traverseValue action rty)
-
-    | .nConst _ _ => inst.empty
+    n.spine.foldl (fun acc e => inst.combine acc (traverseElim action e))
+      (traverseHead action n.head)
 
 /-- Traverse a Closure -/
 partial def traverseClosure (action : TraversalAction α) (clos : Closure) : α :=
@@ -328,37 +329,42 @@ partial def traverseValueM
       let c3 := inst.combine r5 r6
       return inst.combine (inst.combine c1 c2) c3
 
-/-- Monadic traversal of a Neutral -/
+/-- Monadic traversal of a neutral head -/
+partial def traverseHeadM
+    (action : MTraversalAction M α) (h : Head) : M α := do
+  match h with
+  | .hVar v => action.onVar v
+  | .hMeta m => action.onMeta m
+  | .hConst _ _ => return inst.empty
+  | .hCase scrutinees arms rty =>
+    let mut result := inst.empty
+    for s in scrutinees do
+      let r ← traverseValueM action s
+      result := inst.combine result r
+    for arm in arms do
+      let r ← traverseClosureM action arm.closure
+      result := inst.combine result r
+    let rtyResult ← traverseValueM action rty
+    return inst.combine result rtyResult
+
+/-- Monadic traversal of an eliminator -/
+partial def traverseElimM
+    (action : MTraversalAction M α) (e : Elim) : M α := do
+  match e with
+  | .eApp arg => traverseValueM action arg
+  | .eFst | .eSnd | .eField _ => return inst.empty
+
+/-- Monadic traversal of a Neutral: head + each eliminator -/
 partial def traverseNeutralM
     (action : MTraversalAction M α) (n : Neutral) : M α := do
   match ← action.onNeutral n with
   | some result => return result
   | none =>
-    match n with
-    | .nVar v => action.onVar v
-    | .nMeta m => action.onMeta m
-
-    | .nApp fn arg =>
-      let r1 ← traverseNeutralM action fn
-      let r2 ← traverseValueM action arg
-      return inst.combine r1 r2
-
-    | .nFst pair => traverseNeutralM action pair
-    | .nSnd pair => traverseNeutralM action pair
-    | .nFieldAccess rec _ => traverseNeutralM action rec
-
-    | .nCase scrutinees arms rty =>
-      let mut result := inst.empty
-      for s in scrutinees do
-        let r ← traverseValueM action s
-        result := inst.combine result r
-      for arm in arms do
-        let r ← traverseClosureM action arm.closure
-        result := inst.combine result r
-      let rtyResult ← traverseValueM action rty
-      return inst.combine result rtyResult
-
-    | .nConst _ _ => return inst.empty
+    let mut result ← traverseHeadM action n.head
+    for e in n.spine do
+      let r ← traverseElimM action e
+      result := inst.combine result r
+    return result
 
 /-- Monadic traversal of a Closure -/
 partial def traverseClosureM
@@ -478,41 +484,38 @@ partial def transformValueM (t : ValueTransformer M) (v : Value) : M Value := do
       let body' ← transformValueM t body
       return .vTransport tyLevel ty' motive' lhs' rhs' eq' body'
 
+/-- Transform a head using a ValueTransformer -/
+partial def transformHeadM (t : ValueTransformer M) (h : Head) : M Head := do
+  match h with
+  | .hVar v => return .hVar v
+  | .hMeta m => return .hMeta m
+  | .hConst name ty => return .hConst name ty
+  | .hCase scrutinees arms rty =>
+    let scrutinees' ← scrutinees.mapM (transformValueM t)
+    let arms' ← arms.mapM fun arm => do
+      let clos' ← transformClosureM t arm.closure
+      return ArmClosure.mk arm.pattern clos'
+    let rty' ← transformValueM t rty
+    return .hCase scrutinees' arms' rty'
+
+/-- Transform an eliminator using a ValueTransformer -/
+partial def transformElimM (t : ValueTransformer M) (e : Elim) : M Elim := do
+  match e with
+  | .eApp arg =>
+    let arg' ← transformValueM t arg
+    return .eApp arg'
+  | .eFst => return .eFst
+  | .eSnd => return .eSnd
+  | .eField name => return .eField name
+
 /-- Transform a Neutral using a ValueTransformer -/
 partial def transformNeutralM (t : ValueTransformer M) (n : Neutral) : M Neutral := do
   match ← t.transformNeutral n with
   | some result => return result
   | none =>
-    match n with
-    | .nVar v => return .nVar v
-    | .nMeta m => return .nMeta m
-
-    | .nApp fn arg =>
-      let fn' ← transformNeutralM t fn
-      let arg' ← transformValueM t arg
-      return .nApp fn' arg'
-
-    | .nFst pair =>
-      let pair' ← transformNeutralM t pair
-      return .nFst pair'
-
-    | .nSnd pair =>
-      let pair' ← transformNeutralM t pair
-      return .nSnd pair'
-
-    | .nFieldAccess rec field =>
-      let rec' ← transformNeutralM t rec
-      return .nFieldAccess rec' field
-
-    | .nCase scrutinees arms rty =>
-      let scrutinees' ← scrutinees.mapM (transformValueM t)
-      let arms' ← arms.mapM fun arm => do
-        let clos' ← transformClosureM t arm.closure
-        return ArmClosure.mk arm.pattern clos'
-      let rty' ← transformValueM t rty
-      return .nCase scrutinees' arms' rty'
-
-    | .nConst name ty => return .nConst name ty
+    let head' ← transformHeadM t n.head
+    let spine' ← n.spine.mapM (transformElimM t)
+    return .mk head' spine'
 
 /-- Transform a Closure using a ValueTransformer -/
 partial def transformClosureM (t : ValueTransformer M) (clos : Closure) : M Closure := do

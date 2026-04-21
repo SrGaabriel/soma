@@ -216,16 +216,21 @@ private partial def applyArgs (v : Value) : List Value → Option Value
     | .vPi _ _ _ _ cod => applyArgs (cod.applyPure arg) rest
     | _ => none
 
-/-- Resolve solved metavariables in a Value, replacing nMeta with their solutions -/
+/-- Resolve solved metavariables in a Value, substituting solutions at the head -/
 partial def resolveMetas (v : Value) (metas : Soma.Core.MetaState) : Value :=
   match v with
-  | .vNeutral ty (.nMeta m) =>
-    match metas.lookup m with
-    | some info =>
-      match info.solution with
-      | some sol => resolveMetas sol metas
-      | none => v
-    | none => v
+  | .vNeutral _ neu =>
+    if neu.isBareHead then
+      match neu.head with
+      | .hMeta m =>
+        match metas.lookup m with
+        | some info =>
+          match info.solution with
+          | some sol => resolveMetas sol metas
+          | none => v
+        | none => v
+      | _ => v
+    else v
   | .vPi qty binder name dom cod =>
     .vPi qty binder name (resolveMetas dom metas) cod
   | .vSigma qty name fst sndClos =>
