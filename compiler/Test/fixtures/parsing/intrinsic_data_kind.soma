@@ -1,2 +1,2 @@
 @[intrinsic]
-inductive IO : Type -> Type where
+inductive IO : Type -> Type

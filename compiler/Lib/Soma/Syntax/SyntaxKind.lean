@@ -65,7 +65,6 @@ inductive SyntaxKind where
   | typeTuple         -- Tuple type
   | typeList          -- List type
   | typeForall        -- Universal type
-  | typeConstrained   -- Constrained type
   | typeParens        -- Parenthesized type
   | typeKinded        -- Kind annotation
   | typeRecord        -- Record type { x :: Int, y :: Bool }
@@ -168,7 +167,6 @@ def SyntaxKind.describe : SyntaxKind → String
   | .typeTuple => "tuple type"
   | .typeList => "list type"
   | .typeForall => "universal type"
-  | .typeConstrained => "constrained type"
   | .typeParens => "parenthesized type"
   | .typeKinded => "kinded type"
   | .typeRecord => "record type"
@@ -231,7 +229,7 @@ def SyntaxKind.isPattern : SyntaxKind → Bool
 /-- Check if a syntax kind represents a type -/
 def SyntaxKind.isType : SyntaxKind → Bool
   | .typeVar | .typeCon | .typeApp | .typeArrow | .typeTuple
-  | .typeList | .typeForall | .typeConstrained | .typeParens | .typeKinded
+  | .typeList | .typeForall | .typeParens | .typeKinded
   | .typeRecord | .typeRecordField | .typeVariant | .typeVariantCase
   | .typePi | .typeSigma | .typeImplicit | .typePiBinder | .typeQuantity => true
   | _ => false

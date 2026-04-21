@@ -1104,9 +1104,10 @@ def lookupGlobalByQN (ctx : TCContext) (qn : Soma.Core.QualifiedName) : Option G
 def lookupAbbrev (ctx : TCContext) (qn : Soma.Core.QualifiedName) : Option AbbrevInfo :=
   ctx.abbrevEnv.get? qn
 
-/-- Extend context with a new binding -/
-def extend (ctx : TCContext) (name : String) (bindingId : Unique)
-    (ty : Value) (qty : Quantity) (binder : BinderInfo) (span : Span) : TCContext :=
+/-- Extend context with a new binding, using a caller-supplied NbE value -/
+def extendWith (ctx : TCContext) (name : String) (bindingId : Unique)
+    (ty : Value) (qty : Quantity) (binder : BinderInfo) (span : Span)
+    (nbeValue : Value) : TCContext :=
   let lvl := ctx.level
   let entry : CtxEntry := {
     name := name
@@ -1118,13 +1119,17 @@ def extend (ctx : TCContext) (name : String) (bindingId : Unique)
     binder := binder
     span := span
   }
-  -- Create a neutral variable for NbE
-  let varVal := Value.vNeutral ty (Neutral.nVar ⟨name, lvl⟩)
   { ctx with
     locals := entry :: ctx.locals
     localsByName := ctx.localsByName.insert name entry
-    env := ctx.env.extend name varVal
+    env := ctx.env.extend name nbeValue
   }
+
+/-- Extend context with a new binding whose NbE value is a fresh neutral -/
+def extend (ctx : TCContext) (name : String) (bindingId : Unique)
+    (ty : Value) (qty : Quantity) (binder : BinderInfo) (span : Span) : TCContext :=
+  let varVal := Value.vNeutral ty (Neutral.nVar ⟨name, ctx.level⟩)
+  ctx.extendWith name bindingId ty qty binder span varVal
 
 /-- Update the current span -/
 def withSpan (ctx : TCContext) (span : Span) : TCContext :=
@@ -1169,6 +1174,12 @@ def withSpan (span : Span) (m : TCM α) : TCM α :=
 def withBinding (name : String) (bindingId : Unique) (ty : Value)
     (qty : Quantity) (binder : BinderInfo) (span : Span) (m : TCM α) : TCM α :=
   withReader (·.extend name bindingId ty qty binder span) m
+
+/-- Run with an extended context that binds `name` to a caller-supplied NbE value -/
+def withBindingValue (name : String) (bindingId : Unique) (ty : Value)
+    (qty : Quantity) (binder : BinderInfo) (span : Span)
+    (nbeValue : Value) (m : TCM α) : TCM α :=
+  withReader (·.extendWith name bindingId ty qty binder span nbeValue) m
 
 /-- Record the elaborated type of a local binding, keyed by the start byte offset of the binding's name span -/
 def recordLocalBindingType (nameSpan : Span) (ty : Value) : TCM Unit := do
@@ -1758,19 +1769,6 @@ def freshInstanceMeta (classId : Unique) (args : Array Value) (span : Span) : TC
   addPendingInstance classId args metaId span
   return .vNeutral instTy (.nMeta metaId)
 
-/-- Create a constant closure (for non-dependent types) -/
-def mkConstClosure (name : String) (result : Value) : TCM Closure := do
-  return Closure.const name result
-
-/-- Create an empty/placeholder closure from the current environment -/
-def mkEmptyClosure (name : String) : TCM Closure := do
-  let ctx ← getCtx
-  return Closure.mkEmpty name ctx.env
-
-/-- Create a closure with a specific Expr body -/
-def mkClosureWithExpr (name : String) (body : Soma.Core.Expr) : TCM Closure := do
-  let ctx ← getCtx
-  return Closure.mkWithBody name ctx.env body
 
 /-- Run an action, rolling back state if it throws an error -/
 def withRollbackOnFailure (action : TCM α) : TCM α := do

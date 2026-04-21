@@ -1,5 +1,5 @@
-use base::prim::{IO, World, Pair}
-use base::core::{Functor, Applicative, Monad, >>=}
+use base::prim::{IO, Pair}
+use base::core::{Functor, Applicative, Monad}
 
 @[wired_in "io.pure"]
 @[irreducible]

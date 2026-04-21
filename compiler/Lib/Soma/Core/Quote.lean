@@ -17,7 +17,9 @@ partial def neutralToString (neu : Neutral) : String :=
   | .nFst pair => s!"{neutralToString pair}.1"
   | .nSnd pair => s!"{neutralToString pair}.2"
   | .nFieldAccess record field => s!"{neutralToString record}.{field}"
-  | .nCase scrutinee _ _ => s!"case {neutralToString scrutinee} of ..."
+  | .nCase scrutinees _ _ =>
+    let scrutsStr := scrutinees.toList.map valueToString |> String.intercalate ", "
+    s!"case {scrutsStr} of ..."
   | .nConst name _ => name.display
 
 /-- Quote a value to a string (for error messages) -/
@@ -156,12 +158,89 @@ partial def neutralEq (n1 n2 : Neutral) : Bool :=
 
 end
 
-private partial def matchArmTagPure (arm : Arm) (tag : Nat) : Bool :=
-  match arm.patterns[0]? with
-  | some (Pattern.ctor _ t _) => t == tag
-  | some Pattern.wildcard => true
-  | some (Pattern.var _) => true
-  | _ => false
+mutual
+
+/-- Pure counterpart of `Eval.matchPattern` -/
+partial def matchPatternPure (pat : Pattern) (val : Value) : PatMatchResult :=
+  match pat with
+  | .wildcard => .matched #[]
+  | .var none => .matched #[]
+  | .var (some _) => .matched #[val]
+  | .ctor _ tag fields =>
+    match val with
+    | .vConstructor _ vTag vArgs _ =>
+      if tag != vTag then .mismatch
+      else
+        let vArgsArr := vArgs.toArray
+        if fields.size != vArgsArr.size then .mismatch
+        else matchPatternArraysPure fields vArgsArr
+    | .vNeutral _ _ => .stuck
+    | _ => .mismatch
+  | .lit l =>
+    match val with
+    | .vIntLit n =>
+      match l with
+      | .int m => if n == m then .matched #[] else .mismatch
+      | _ => .mismatch
+    | .vStringLit s =>
+      match l with
+      | .string t => if s == t then .matched #[] else .mismatch
+      | _ => .mismatch
+    | .vFloatLit f =>
+      match l with
+      | .float g => if f == g then .matched #[] else .mismatch
+      | _ => .mismatch
+    | .vConstructor _ tag _ _ =>
+      match l with
+      | .bool true => if tag == 0 then .matched #[] else .mismatch
+      | .bool false => if tag == 1 then .matched #[] else .mismatch
+      | _ => .mismatch
+    | .vNeutral _ _ => .stuck
+    | _ => .mismatch
+  | .inject label argPat =>
+    match val with
+    | .vConstructor name _ vArgs _ =>
+      if name.display != label then .mismatch
+      else match argPat with
+        | none => if vArgs.isEmpty then .matched #[] else .mismatch
+        | some inner =>
+          match vArgs with
+          | arg :: _ => matchPatternPure inner arg
+          | [] => .mismatch
+    | .vNeutral _ _ => .stuck
+    | _ => .mismatch
+
+partial def matchPatternArraysPure (pats : Array Pattern) (vals : Array Value)
+    : PatMatchResult :=
+  if pats.size != vals.size then .mismatch
+  else matchPatternArraysPureGo pats vals 0 #[] false
+
+partial def matchPatternArraysPureGo
+    (pats : Array Pattern) (vals : Array Value)
+    (i : Nat) (acc : Array Value) (stuck : Bool) : PatMatchResult :=
+  if i >= pats.size then
+    if stuck then .stuck else .matched acc
+  else
+    let pat := pats[i]!
+    let val := vals[i]!
+    match matchPatternPure pat val with
+    | .matched bs => matchPatternArraysPureGo pats vals (i + 1) (acc ++ bs) stuck
+    | .mismatch => .mismatch
+    | .stuck => matchPatternArraysPureGo pats vals (i + 1) acc true
+
+end
+
+partial def selectArmPure (scrutVals : Array Value) (arms : Array Arm)
+    : Option (Array Value × Expr) :=
+  let rec go (i : Nat) : Option (Array Value × Expr) :=
+    if i >= arms.size then none
+    else
+      let arm := arms[i]!
+      match matchPatternArraysPure arm.patterns scrutVals with
+      | .matched bs => some (bs, arm.body)
+      | .mismatch => go (i + 1)
+      | .stuck => none
+  go 0
 
 mutual
 
@@ -262,18 +341,19 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
   | .construct name tag args rty =>
     .vConstructor name tag (args.toList.map (evalExprPure env)) (evalExprPure env rty)
   | .«case» scruts arms resultTyExpr =>
-    match scruts[0]? with
-    | some scrut =>
-      let scrutVal := evalExprPure env scrut
-      match scrutVal with
-      | .vConstructor _ tag ctorArgs _ =>
-        match arms.toList.find? (fun arm => matchArmTagPure arm tag) with
-        | some arm =>
-          let env' := ctorArgs.foldl (fun e arg => e.extend "_" arg) env
-          evalExprPure env' arm.body
-        | none => .vNeutral .type0 (.nVar ⟨"case-no-arm", ⟨env.size⟩⟩)
-      | .vNeutral ty neu =>
-        let resultTy := evalExprPure env resultTyExpr
+    let scrutVals := scruts.map (evalExprPure env)
+    match selectArmPure scrutVals arms with
+    | some (bindings, body) =>
+      let env' := bindings.foldl (fun e v => e.extend "_" v) env
+      evalExprPure env' body
+    | none =>
+      let resultTy := evalExprPure env resultTyExpr
+      let hasNeutral := scrutVals.any fun
+        | .vNeutral _ _ => true
+        | _ => false
+      if !hasNeutral then
+        .vNeutral .type0 (.nVar ⟨"case-no-arm", ⟨env.size⟩⟩)
+      else
         let armClosures := arms.toList.map fun arm =>
           let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
           let patName := match arm.patterns[0]? with
@@ -284,9 +364,7 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
             ArmClosure.mk patName (.const patName (evalExprPure env arm.body)) arm.patterns
           else
             ArmClosure.mk patName (Closure.mkWithBody patName env arm.body) arm.patterns
-        .vNeutral ty (.nCase neu armClosures resultTy)
-      | _ => .vNeutral .type0 (.nVar ⟨"case-stuck", ⟨env.size⟩⟩)
-    | none => .vNeutral .type0 (.nVar ⟨"case-empty", ⟨env.size⟩⟩)
+        .vNeutral resultTy (.nCase scrutVals armClosures resultTy)
   | .inject _label _args _ =>
     .vNeutral .type0 (.nVar ⟨s!"inject:{_label}", ⟨env.size⟩⟩)
   | .dataTy id params => .vDataType id (params.toList.map (evalExprPure env))
@@ -388,8 +466,8 @@ partial def quoteNeutralExpr (depth : DeBruijnLvl) (neu : Neutral) : Expr :=
   | .nFst n => .projFst (quoteNeutralExpr depth n)
   | .nSnd n => .projSnd (quoteNeutralExpr depth n)
   | .nFieldAccess n field => .fieldAccess (quoteNeutralExpr depth n) field 0
-  | .nCase scrut arms resultTy =>
-    .«case» #[quoteNeutralExpr depth scrut]
+  | .nCase scrutinees arms resultTy =>
+    .«case» (scrutinees.map (quoteExpr depth))
       (arms.map (fun ac =>
         let binds := ac.patterns.foldl (fun a p => a + p.bindingCount) 0
         let bodyDepth : DeBruijnLvl := ⟨depth.lvl + binds⟩

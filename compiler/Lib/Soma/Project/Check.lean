@@ -340,7 +340,36 @@ structure FunctionCheckResult where
   errors : Array Soma.Dependent.TCError
   /-- All globals referenced across all functions -/
   allUsedGlobals : Std.HashSet Soma.Core.QualifiedName := {}
+  /-- Globals updated with each checked function's value -/
+  updatedGlobals : Globals := Globals.empty
   deriving Inhabited
+
+/-- Build the unfoldable `Value` for a typed function -/
+def buildTypedFnValue (fn : Soma.Core.TypedFunction) (globals : Globals)
+    (instanceEnv : InstanceEnv) (metas : Soma.Core.MetaState) : Soma.Core.Value := Id.run do
+  let mut lambdaExpr := fn.body
+  for i in [:fn.params.size] do
+    let idx := fn.params.size - 1 - i
+    let (paramId, paramName) := fn.params[idx]!
+    lambdaExpr := lambdaExpr.abstractFVar paramId
+    lambdaExpr := Soma.Core.Expr.lam .explicit paramName (.sort .zero) lambdaExpr
+  let evalCtx : Soma.Core.EvalCtx := {
+    env := .empty
+    globals := globals.toGlobalEnvWithClasses instanceEnv
+    metas := metas
+  }
+  pure (Soma.Core.evalCoreExpr evalCtx lambdaExpr)
+
+/-- Record `fn`'s unfoldable value on its global entry -/
+def registerTypedFnValue (globals : Globals) (fn : Soma.Core.TypedFunction)
+    (instanceEnv : InstanceEnv) (metas : Soma.Core.MetaState) : Globals :=
+  if fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome then globals
+  else
+    match globals.defs.get? fn.name with
+    | none => globals
+    | some info =>
+      let v := buildTypedFnValue fn globals instanceEnv metas
+      { globals with defs := globals.defs.insert fn.name { info with value := some v } }
 
 /-- Check all functions in a module, tracking dependencies and caching results.
     This is the core function-checking loop shared by both CLI and LSP.
@@ -365,6 +394,7 @@ def checkFunctionsCore
   let mut incrState := prevIncrState
   let mut typedFns : Std.HashMap String Soma.Core.TypedFunction := {}
   let mut allUsedGlobals : Std.HashSet Soma.Core.QualifiedName := {}
+  let mut currentGlobals := ctx.globals
 
   for fn in untypedModule.functions do
     let fnName := fn.name.display
@@ -379,7 +409,8 @@ def checkFunctionsCore
       -- Clear dependency tracking before checking this function
       let stateWithClearedDeps := { currentState with globalDeps := {}, errors := #[] }
 
-      let checkResult := (Soma.Dependent.Driver.checkFunction fn).run ctx stateWithClearedDeps
+      let iterCtx := { ctx with globals := currentGlobals }
+      let checkResult := (Soma.Dependent.Driver.checkFunction fn).run iterCtx stateWithClearedDeps
       match checkResult with
       | .error e =>
         -- Record error but continue with next function
@@ -402,6 +433,10 @@ def checkFunctionsCore
           attrs := fn.attrs
         }
         typedFns := typedFns.insert fnName typedFn
+
+        -- Publish this function's unfoldable value for subsequent iterations
+        currentGlobals := registerTypedFnValue currentGlobals typedFn
+          ctx.instanceEnv newState.metas
 
         -- Clear old dependencies and record new ones
         incrState := incrState.clearDeps defId
@@ -434,7 +469,7 @@ def checkFunctionsCore
         currentState := newState
     -- else: not dirty, keep cached result (already in incrState)
 
-  return { finalState := currentState, incrementalState := incrState, typedFunctions := typedFns, errors := errors, allUsedGlobals := allUsedGlobals }
+  return { finalState := currentState, incrementalState := incrState, typedFunctions := typedFns, errors := errors, allUsedGlobals := allUsedGlobals, updatedGlobals := currentGlobals }
 
 /-- Result of building globals and instance environment -/
 structure GlobalsAndInstancesResult where
@@ -507,10 +542,11 @@ def buildGlobalsAndInstances
   let fullAbbrevEnv := AbbrevEnv.merge seedAbbrevEnv moduleAbbrevEnv
 
   -- Register abbreviations as globals so they're resolvable and survive serialization
+  -- The stored type is the type constructor's kind not its expansion since the expansion lives in `value` and is unfolded lazily
   let seedWithAbbrevs := moduleAbbrevEnv.fold (init := seedGlobals) fun g qn info =>
     g.register moduleNs qn.id.original {
       name := qn
-      type := info.expansion
+      type := Value.typeConstructorKind info.arity
       value := some info.expansion
       isConstructor := false
       origin := .typeDecl
@@ -624,11 +660,18 @@ def typeCheckModule
 
   let mut allErrors := globalsResult.errors
 
+  let mut seededGlobals := globalsResult.globals
+  for instFn in globalsResult.instanceTypedFunctions do
+    if let some info := seededGlobals.defs.get? instFn.name then
+      if info.origin == .traitMethod then
+        seededGlobals := registerTypedFnValue seededGlobals instFn
+          globalsResult.instanceEnv globalsResult.finalState.metas
+
   -- Prepare context for function checking
   let moduleNs := (ModuleName.fromString moduleName).toNamespace
   let baseCtx := TCContext.withDefaultInstances
   let ctx := { baseCtx with
-    globals := globalsResult.globals
+    globals := seededGlobals
     currentNamespace := moduleNs
     instanceEnv := globalsResult.instanceEnv
     abbrevEnv := globalsResult.abbrevEnv }
@@ -645,9 +688,10 @@ def typeCheckModule
         { id := bindingId.id, module := bindingId.module, original := bindingId.original }
         count
 
+  let finalGlobals := fnResult.updatedGlobals
   -- Update incremental state with final globals and instance map
   let finalIncrState := { fnResult.incrementalState with
-    cachedGlobals := globalsResult.globals
+    cachedGlobals := finalGlobals
     cachedInstanceEnv := globalsResult.instanceEnv
     cachedInstanceMap := globalsResult.instanceMap }
 
@@ -661,7 +705,7 @@ def typeCheckModule
   -- Dictionary specialization: replace class method calls with direct field access
   -- or inline the implementation when the dictionary is a known record literal.
   let methodRegistry := Soma.Dependent.Specialize.buildClassMethodRegistry
-    globalsResult.globals globalsResult.instanceEnv
+    finalGlobals globalsResult.instanceEnv
   if !methodRegistry.isEmpty then
     let mut specializedFns : Std.HashMap String Soma.Core.TypedFunction := {}
     for (name, fn) in mergedTypedFns.toList do
@@ -669,10 +713,10 @@ def typeCheckModule
         (Soma.Dependent.Specialize.specializeFunction methodRegistry fn)
     mergedTypedFns := specializedFns
 
-  mergedTypedFns := Soma.Dependent.Fusion.fuseAll mergedTypedFns globalsResult.globals
+  mergedTypedFns := Soma.Dependent.Fusion.fuseAll mergedTypedFns finalGlobals
 
   return {
-    globals := globalsResult.globals
+    globals := finalGlobals
     instanceEnv := globalsResult.instanceEnv
     abbrevEnv := globalsResult.abbrevEnv
     instanceMap := globalsResult.instanceMap
@@ -734,7 +778,7 @@ def extractPublicSymbols
   -- Extract type definitions and constructors
   for typeDef in untypedModule.types do
     match typeDef with
-    | .algebraic _ typeName typeVarNames constructors typeSpan =>
+    | .algebraic _ typeName _binders constructors typeSpan =>
       let typeNameStr := typeName.display
       if shouldExport typeNameStr then
         let typeSym : Symbol := {
@@ -745,7 +789,10 @@ def extractPublicSymbols
           package := packageName
           span := typeSpan
         }
-        acc := acc.insert typeSym (Value.typeConstructorKind typeVarNames.size)
+        let headKind := match globals.getDef typeName with
+          | some info => info.type
+          | none => Value.vType Level.zero
+        acc := acc.insert typeSym headKind
         addedNames := addedNames.insert typeNameStr
 
       -- Register constructors
@@ -766,7 +813,7 @@ def extractPublicSymbols
             addedNames := addedNames.insert ctorSimpleName
           | none => pure ()
 
-    | .record _ recordName typeVarNames ctorName fields typeSpan =>
+    | .record _ recordName _binders ctorName fields typeSpan =>
       let recordNameStr := recordName.display
       if shouldExport recordNameStr then
         let recordSym : Symbol := {
@@ -777,7 +824,10 @@ def extractPublicSymbols
           package := packageName
           span := typeSpan
         }
-        acc := acc.insert recordSym (Value.typeConstructorKind typeVarNames.size)
+        let headKind := match globals.getDef recordName with
+          | some info => info.type
+          | none => Value.vType Level.zero
+        acc := acc.insert recordSym headKind
         addedNames := addedNames.insert recordNameStr
 
       -- Register record constructor

@@ -574,7 +574,10 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
             .tagged (.prim .u32) variants
         | none =>
           match Somac.Circuit.Lower.unfoldValue val ctx.abbrevEnv with
-          | .vDataType _ _ => .tagged (.prim .u32) #[]
+          | .vDataType dId' _ =>
+            if dId' == dId then .tagged (.prim .u32) #[]
+            else convertValueTypeWithMapping
+              (Somac.Circuit.Lower.unfoldValue val ctx.abbrevEnv) ctx
           | unfolded => convertValueTypeWithMapping unfolded ctx
   | Value.vConstructor _ _ _ _ => .rawPtr
   | Value.vRecord row =>
@@ -624,7 +627,8 @@ partial def collectTyVarLevelsNeutral (neu : Soma.Core.Neutral) (acc : Std.HashS
   | .nSnd pair => collectTyVarLevelsNeutral pair acc
   | .nFieldAccess record _ => collectTyVarLevelsNeutral record acc
   | .nConst _ _ => acc
-  | .nCase scrutinee _ _ => collectTyVarLevelsNeutral scrutinee acc
+  | .nCase scrutinees _ _ =>
+    scrutinees.foldl (fun a s => collectTyVarLevels s a) acc
 
 /-- Collect all de Bruijn levels of type variables appearing in a Value -/
 partial def collectTyVarLevels (val : Value) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=
@@ -908,7 +912,16 @@ partial def extractCallTypeArgsFromArgs (defTy : Value) (argTypes : Array Value)
 partial def extractParamsUsingMapping (ty : Value) (ctx : TypeConvCtx n)
     (typeAcc : Array String := #[]) (valAcc : Array (String × Ty n) := #[])
     : Array String × Array (String × Ty n) :=
-  match ty with
+  let unfolded := match ty with
+    | Value.vDataType dId _ =>
+      if ctx.primTypes.contains dId then ty
+      else match ctx.inductives.get? ⟨dId⟩ with
+        | some _ => ty
+        | none => match Somac.Circuit.Lower.unfoldValue ty ctx.abbrevEnv with
+          | .vDataType _ _ => ty
+          | u => u
+    | _ => ty
+  match unfolded with
   | Value.vPi _ binder name dom cod =>
     let isTypeParam := binder.isImplicit && dom.isType
     match cod with

@@ -256,6 +256,8 @@ def linkExecutable
 
   match abi with
   | .gnu => args := args.push "-lgcc"
+  | .msvc =>
+    args := args.push "-Wl,/subsystem:console"
   | _ => pure ()
 
   let result ← runCommand tools.clang args

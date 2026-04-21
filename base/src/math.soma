@@ -1,4 +1,5 @@
-use base::op::{Add, add}
+use base::op::{Add, add, Gt, gt}
+use base::prop::{Truth, Never}
 
 inductive Nat where
     | Zero
@@ -9,3 +10,11 @@ instance Add Nat where
         | Nat::Zero, m => m
         | Nat::Succ n, m => Nat::Succ (add n m)
 
+instance Gt Nat where
+    def gt : Nat -> Nat -> Type
+        | Nat::Zero, Nat::Zero => Truth
+        | Nat::Zero, Nat::Succ _ => Never
+        | Nat::Succ _, Nat::Zero => Truth
+        | Nat::Succ n, Nat::Succ m => gt n m
+
+def succ_greater_than_zero : gt (Nat::Succ Nat::Zero) Nat::Zero := Truth::Trivial

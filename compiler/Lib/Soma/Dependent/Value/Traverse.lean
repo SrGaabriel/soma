@@ -153,10 +153,11 @@ partial def traverseNeutral (action : TraversalAction α) (n : Neutral) : α :=
     | .nSnd pair => traverseNeutral action pair
     | .nFieldAccess rec _ => traverseNeutral action rec
 
-    | .nCase scrut arms rty =>
-      let scrutResult := traverseNeutral action scrut
+    | .nCase scrutinees arms rty =>
+      let scrutsResult := scrutinees.foldl (fun acc s =>
+        inst.combine acc (traverseValue action s)) inst.empty
       let armsResult := arms.foldl (fun acc arm =>
-        inst.combine acc (traverseClosure action arm.closure)) scrutResult
+        inst.combine acc (traverseClosure action arm.closure)) scrutsResult
       inst.combine armsResult (traverseValue action rty)
 
     | .nConst _ _ => inst.empty
@@ -346,8 +347,11 @@ partial def traverseNeutralM
     | .nSnd pair => traverseNeutralM action pair
     | .nFieldAccess rec _ => traverseNeutralM action rec
 
-    | .nCase scrut arms rty =>
-      let mut result ← traverseNeutralM action scrut
+    | .nCase scrutinees arms rty =>
+      let mut result := inst.empty
+      for s in scrutinees do
+        let r ← traverseValueM action s
+        result := inst.combine result r
       for arm in arms do
         let r ← traverseClosureM action arm.closure
         result := inst.combine result r
@@ -500,13 +504,13 @@ partial def transformNeutralM (t : ValueTransformer M) (n : Neutral) : M Neutral
       let rec' ← transformNeutralM t rec
       return .nFieldAccess rec' field
 
-    | .nCase scrut arms rty =>
-      let scrut' ← transformNeutralM t scrut
+    | .nCase scrutinees arms rty =>
+      let scrutinees' ← scrutinees.mapM (transformValueM t)
       let arms' ← arms.mapM fun arm => do
         let clos' ← transformClosureM t arm.closure
         return ArmClosure.mk arm.pattern clos'
       let rty' ← transformValueM t rty
-      return .nCase scrut' arms' rty'
+      return .nCase scrutinees' arms' rty'
 
     | .nConst name ty => return .nConst name ty
 

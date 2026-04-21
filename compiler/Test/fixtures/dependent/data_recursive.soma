@@ -10,7 +10,7 @@ inductive ScottNat where
     | Succ (n : ScottNat)
     
 inductive IndexedVec (a : Type) : ScottNat -> Type where
-    | Empty : IndexedVec (ScottNat::Zero)
+    | Empty : IndexedVec a ScottNat::Zero
     | Next {head : ScottNat} : a -> IndexedVec a n -> IndexedVec a (ScottNat::Succ n)
 
 def head (a : Type) : a -> List a -> a

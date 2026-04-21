@@ -254,10 +254,15 @@ where
     | .nFieldAccess record field =>
       let (record', mapping') ← refreshStaleMetasNeutral record mapping
       return (.nFieldAccess record' field, mapping')
-    | .nCase scrutinee _arms resultTy =>
-      let (scrutinee', mapping') ← refreshStaleMetasNeutral scrutinee mapping
-      let (resultTy', mapping'') ← refreshStaleMetas resultTy mapping'
-      return (.nCase scrutinee' _arms resultTy', mapping'')
+    | .nCase scrutinees _arms resultTy =>
+      let mut currentMapping := mapping
+      let mut refreshed : Array Value := #[]
+      for s in scrutinees do
+        let (s', m') ← refreshStaleMetas s currentMapping
+        currentMapping := m'
+        refreshed := refreshed.push s'
+      let (resultTy', finalMapping) ← refreshStaleMetas resultTy currentMapping
+      return (.nCase refreshed _arms resultTy', finalMapping)
     | .nVar _ => return (n, mapping)
     | .nConst _ _ => return (n, mapping)
 

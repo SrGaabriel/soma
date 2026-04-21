@@ -7,9 +7,9 @@ namespace Soma.Core
 structure Constructor where
   name : QualifiedName
   tag : Nat
-  fieldTypeSyntax : Array Syntax.TypeExpr
-  /-- Full type signature for indexed data types. -/
-  sigSyntax : Option Syntax.TypeExpr := none
+  fieldTypeSyntax : Array Syntax.Expr
+  /-- Full type signature for indexed data types -/
+  sigSyntax : Option Syntax.Expr := none
   /-- Attributes from the source declaration -/
   attrs : Array Syntax.Attribute := #[]
 
@@ -23,10 +23,11 @@ end Constructor
 /-- A type definition -/
 inductive TypeDef where
   | algebraic (attrs : Array Syntax.Attribute) (name : QualifiedName)
-      (typeVarNames : Array String) (ctors : Array Constructor) (span : Soma.Syntax.Span)
+      (typeVarBinders : Array Syntax.TypeVarBinder) (ctors : Array Constructor)
+      (span : Soma.Syntax.Span)
   | record (attrs : Array Syntax.Attribute) (name : QualifiedName)
-      (typeVarNames : Array String) (ctorName : QualifiedName)
-      (fields : Array (Option String × Syntax.TypeExpr)) (span : Soma.Syntax.Span)
+      (typeVarBinders : Array Syntax.TypeVarBinder) (ctorName : QualifiedName)
+      (fields : Array (Option String × Syntax.Expr)) (span : Soma.Syntax.Span)
 
 namespace TypeDef
 
@@ -37,9 +38,12 @@ def name : TypeDef → QualifiedName
 def qualifiedName (td : TypeDef) : QualifiedName :=
   td.name
 
-def typeVarNames : TypeDef → Array String
+def typeVarBinders : TypeDef → Array Syntax.TypeVarBinder
   | .algebraic _ _ vs _ _ => vs
   | .record _ _ vs _ _ _ => vs
+
+def typeVarNames (td : TypeDef) : Array String :=
+  td.typeVarBinders.map (·.name.name)
 
 def typeVarCount : TypeDef → Nat
   | .algebraic _ _ vs _ _ => vs.size
@@ -62,7 +66,7 @@ end TypeDef
 /-- An instance declaration (before type checking) -/
 structure InstanceDecl where
   className : String
-  typeArgsSyntax : Array Syntax.TypeExpr
+  typeArgsSyntax : Array Syntax.Expr
   binders : Array Syntax.InstanceBinder
   methods : Array UntypedFunction
   span : Syntax.Span
@@ -72,14 +76,14 @@ structure TypeClassMeta where
   name : QualifiedName
   params : Array Syntax.TypeVarBinder
   superclasses : Array Syntax.Constraint
-  methodSignatures : Array (QualifiedName × Syntax.TypeExpr)
+  methodSignatures : Array (QualifiedName × Syntax.Expr)
   span : Syntax.Span
 
 /-- A type abbreviation (before type checking) -/
 structure TypeAbbrev where
   name : String
   params : Array String
-  expansion : Syntax.TypeExpr
+  expansion : Syntax.Expr
   span : Syntax.Span
 
 /-- A module produced by syntax lowering -/

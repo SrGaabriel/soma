@@ -452,23 +452,18 @@ def parseInductiveDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) :=
             | none => recordError "expected type after ':'"; pure none
           else pure none
 
-          -- Lean-style inductives require 'where' before constructors
+
           let whereTok ← tryConsume .kw_where
-          if whereTok.isNone then
-            recordError "expected 'where' in inductive declaration"
+          let constructors ← match whereTok with
+            | some _ => layoutSepBy parseDataConstructor
+            | none => pure #[]
+
+          if whereTok.isSome && constructors.isEmpty then
+            recordError "expected constructor clauses after 'where'"
             let children := attrs ++ #[inductiveTok, nameTok] ++
               (match paramList with | some p => #[p] | none => #[]) ++
-              (match kindAnnot with | some k => #[k] | none => #[])
-            return some (GreenNode.mkError "missing 'where'" children)
-
-          let constructors ← layoutSepBy parseDataConstructor
-
-          -- Bodiless inductive: only allowed with @[intrinsic]
-          if constructors.isEmpty && !hasBodyProvidingAttr attrs then
-            recordError "bodiless inductive requires @[intrinsic] attribute"
-            let children := attrs ++ #[inductiveTok, nameTok] ++
-              (match paramList with | some p => #[p] | none => #[]) ++
-              (match kindAnnot with | some k => #[k] | none => #[])
+              (match kindAnnot with | some k => #[k] | none => #[]) ++
+              #[whereTok.get!]
             return some (GreenNode.mkError "missing constructors" children)
 
           let children := attrs ++ #[inductiveTok, nameTok] ++

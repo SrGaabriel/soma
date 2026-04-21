@@ -4,8 +4,6 @@ import Soma.Core.Expr
 
 namespace Soma.Core
 
-open Soma.Syntax (TypeExpr)
-
 /-- Function attributes -/
 structure FunctionAttrs where
   inline : Bool := false
@@ -40,7 +38,7 @@ structure Function where
   params : Array String
   body : Soma.Syntax.Expr
   span : Soma.Syntax.Span
-  declaredTypeSyntax : Option TypeExpr
+  declaredTypeSyntax : Option Soma.Syntax.Expr
   closureInfo : Option ClosureInfo
   attrs : FunctionAttrs
 

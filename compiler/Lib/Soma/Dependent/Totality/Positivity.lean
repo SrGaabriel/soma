@@ -208,7 +208,8 @@ where
     | .nFst pair => checkNeutral pair reg
     | .nSnd pair => checkNeutral pair reg
     | .nFieldAccess rec _ => checkNeutral rec reg
-    | .nCase scrut _ _ => checkNeutral scrut reg
+    | .nCase scrutinees _ _ =>
+      scrutinees.foldl (fun acc s => acc ++ checkIndexValue s reg) []
 
 /-- Check that a type index only uses total functions -/
 def checkTypeIndexTotality (idx : Value) (registry : TotalityRegistry) : List String :=

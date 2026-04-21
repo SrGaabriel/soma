@@ -12,7 +12,6 @@ import Soma.Dependent.Coverage
 import Soma.Dependent.Unify
 import Soma.Dependent.Error
 import Soma.Dependent.Usage
-import Soma.Dependent.Elaborate
 import Soma.Syntax.Ast
 
 namespace Soma.Dependent
@@ -285,29 +284,6 @@ partial def quoteValueToExpr (v : Value) : TCM Soma.Core.Expr := do
   let depth ← TCM.currentLevel
   return Soma.Core.quoteExpr depth v
 
-/-- Elaborate an explicit type application argument (`@T` or `@label`). -/
-partial def elaborateTypeArg (typeArg : Soma.Syntax.TypeAppArg) : TCM Value := do
-  match typeArg with
-  | .label labelName =>
-    match ← TCM.lookupLocal labelName.name with
-    | some entry =>
-      pure (Value.vNeutral entry.type (Neutral.nVar ⟨labelName.name, entry.level⟩))
-    | none =>
-      pure (Value.vLabelLit labelName.name)
-  | .type tyExpr =>
-    Elaborate.elaborateType Elaborate.ElabEnv.empty tyExpr
-
-/-- Infer explicit type application to an implicit parameter (`f @T`). -/
-partial def inferExplicitTypeApp
-    (fnExpr : Soma.Core.Expr) (cod : Closure)
-    (typeArg : Soma.Syntax.TypeAppArg) (_argSpan : Span) (_callSpan : Span)
-    : TCM (Value × Soma.Core.Expr) := do
-  let argVal ← elaborateTypeArg typeArg
-  let resultTy ← applyClosure cod argVal
-  let argExpr ← quoteValueToExpr argVal
-  let appExpr := Soma.Core.Expr.app fnExpr argExpr
-  return (resultTy, appExpr)
-
 /-- Instantiate all leading implicit binders in a type with fresh metas. -/
 partial def instantiateImplicits (ty : Value) (_span : Span) : TCM Value := do
   let ty' ← force ty
@@ -553,6 +529,14 @@ def syntaxExprKind : Soma.Syntax.Expr → String
   | .typeApp _ _ => "typeApp"
   | .composeBlock stmts _ _ => s!"composeBlock({stmts.size} stmts)"
   | .variant label _ _ => s!"variant(.{label.name})"
+  | .con name => s!"con({name.name})"
+  | .arrow _ _ _ => "arrow"
+  | .pi _ _ _ _ _ _ => "pi"
+  | .sigma _ _ _ _ _ => "sigma"
+  | .forall_ vars _ _ => s!"forall({vars.size})"
+  | .recordTy _ _ _ => "recordTy"
+  | .variantTy _ _ _ => "variantTy"
+  | .listTy _ _ => "listTy"
 
 private def requireUniqueWiredRole (role : WiredRole) (span : Span) : TCM GlobalInfo := do
   let infos ← TCM.lookupWiredInAll role
@@ -796,6 +780,15 @@ where
             let instantiatedTy ← instantiateImplicits info.type name.span
             let tyExpr ← quoteValueToExpr instantiatedTy
             return (instantiatedTy, .const qn tyExpr)
+          else if info.origin == .typeDecl then
+            match ← TCM.lookupWiredPrimitiveOfGlobal qn with
+            | some primTy =>
+              if primTy.isNullary then
+                return (info.type, .primTy primTy)
+              else
+                return (info.type, .dataTy qn.id #[])
+            | none =>
+              return (info.type, .dataTy qn.id #[])
           else
             let tyExpr ← quoteValueToExpr info.type
             return (info.type, .const qn tyExpr)
@@ -947,11 +940,9 @@ where
     -- Parenthesized: recurse
     | .parens inner _ => inferSyntax inner
 
-    -- Type annotation: elaborate type, check expr against it
     | .typeAnnot expr ty _ => do
-      let tyVal ← TCM.inErasedContext do
-        Elaborate.elaborateType Elaborate.ElabEnv.empty ty
-      let tyExpr ← quoteValueToExpr tyVal
+      let tyExpr ← TCM.inErasedContext do inferTypeExpr ty
+      let tyVal ← TCM.evalExpr tyExpr
       let checkedExpr ← checkSyntax expr tyVal
       return (tyVal, .ann checkedExpr tyExpr)
 
@@ -978,6 +969,151 @@ where
       let variantTy := Value.vVariant row
       let variantTyExpr ← quoteValueToExpr variantTy
       return (variantTy, .inject label.name argsExpr variantTyExpr)
+
+    -- Upper-case type-constructor identifier
+    | .con name => do
+      inferSyntaxCore (.var name)
+
+    -- Non-dependent function type `A -> B`
+    | .arrow from_ to _ => do
+      let fromExpr ← inferTypeExpr from_
+      let toExpr ← inferTypeExpr to
+      return (.vType Level.zero,
+        .pi .omega .explicit "_" fromExpr toExpr)
+
+    -- Dependent function type `(x : A) -> B`, `{x : A} -> B`, `{{x : A}} -> B`
+    | .pi qty binder name domain codomain _ => do
+      let domExpr ← inferTypeExpr domain
+      let domVal ← TCM.evalExpr domExpr
+      let bindingId ← TCM.freshLocalId name.name
+      TCM.recordLocalBindingType name.span domVal
+      let codExpr ← TCM.withBinding name.name bindingId domVal qty binder name.span do
+        inferTypeExpr codomain
+      return (.vType Level.zero,
+        .pi qty binder name.name domExpr codExpr)
+
+    -- Dependent pair type `(x : A) × B`
+    | .sigma qty name fst snd _ => do
+      let fstExpr ← inferTypeExpr fst
+      let fstVal ← TCM.evalExpr fstExpr
+      let bindingId ← TCM.freshLocalId name.name
+      TCM.recordLocalBindingType name.span fstVal
+      let sndExpr ← TCM.withBinding name.name bindingId fstVal qty .explicit name.span do
+        inferTypeExpr snd
+      return (.vType Level.zero,
+        .sigma qty .explicit name.name fstExpr sndExpr)
+
+    -- Universal quantification `forall a b. T`
+    | .forall_ vars body _ => do
+      inferForallChain vars.toList body
+
+    | .recordTy fields tail _ => do
+      let rowExpr ← buildRowExpr fields tail
+      return (.vType Level.zero, .recordTy rowExpr)
+
+    | .variantTy cases tail _ => do
+      let rowExpr ← buildRowExpr cases tail
+      return (.vType Level.zero, .variantTy rowExpr)
+
+    -- List type `[A]`
+    | .listTy elem span => do
+      let elemExpr ← inferTypeExpr elem
+      let listInfo ← requireUniqueWiredRole .typeList span
+      return (.vType Level.zero, .dataTy listInfo.name.id #[elemExpr])
+
+/-- Elaborate `forall v1 v2 .. vN. body` into a nested implicit-Pi Core.Expr -/
+partial def inferForallChain
+    (vars : List Soma.Syntax.TypeVarBinder) (body : Soma.Syntax.Expr)
+    : TCM (Value × Soma.Core.Expr) := do
+  match vars with
+  | [] =>
+    let bodyExpr ← inferTypeExpr body
+    return (.vType Level.zero, bodyExpr)
+  | v :: rest => do
+    let kindExpr ← match v.kind with
+      | some k => inferTypeExpr k
+      | none => pure (.sort Level.zero)
+    let kindVal ← TCM.evalExpr kindExpr
+    let bindingId ← TCM.freshLocalId v.name.name
+    TCM.recordLocalBindingType v.name.span kindVal
+    let (_, restExpr) ← TCM.withBinding v.name.name bindingId kindVal
+        .omega .implicit v.name.span do
+      inferForallChain rest body
+    return (.vType Level.zero,
+      .pi .omega .implicit v.name.name kindExpr restExpr)
+
+/-- Elaborate a sub-expression appearing in type position -/
+partial def inferTypeExpr (e : Soma.Syntax.Expr) : TCM Soma.Core.Expr := do
+  match e with
+  | .tuple _ _ =>
+    checkSyntax e (.vType Level.zero)
+  | .parens inner _ => inferTypeExpr inner
+  | _ =>
+    let (_, expr) ← inferSyntax e
+    pure expr
+
+/-- Elaborate an explicit type application argument -/
+partial def elaborateTypeArg (typeArg : Soma.Syntax.TypeAppArg) : TCM Value := do
+  match typeArg with
+  | .label labelName =>
+    match ← TCM.lookupLocal labelName.name with
+    | some entry =>
+      pure (Value.vNeutral entry.type (Neutral.nVar ⟨labelName.name, entry.level⟩))
+    | none =>
+      pure (Value.vLabelLit labelName.name)
+  | .type tyExpr =>
+    let expr ← inferTypeExpr tyExpr
+    TCM.evalExpr expr
+
+/-- Elaborate a tuple expression in type position as a nested Sigma chain -/
+partial def inferTupleAsSigma (elems : List Soma.Syntax.Expr)
+    : TCM Soma.Core.Expr := do
+  match elems with
+  | [] =>
+    pure (.primTy .unit)
+  | [e] =>
+    elabTypePosition e
+  | e :: rest => do
+    let fstExpr ← elabTypePosition e
+    let sndExpr ← inferTupleAsSigma rest
+    return .sigma .omega .explicit "_" fstExpr sndExpr.shiftUp
+where
+  /-- Elaborate a single tuple element in type position -/
+  elabTypePosition (e : Soma.Syntax.Expr) : TCM Soma.Core.Expr := do
+    match e with
+    | .tuple inner _ => inferTupleAsSigma inner.toList
+    | .parens inner _ => elabTypePosition inner
+    | _ => checkSyntax e (.vType Level.zero)
+
+/-- Build a Core.Expr row value from a field list and optional tail -/
+partial def buildRowExpr
+    (fields : Array (Soma.Syntax.QualName × Soma.Syntax.Expr))
+    (tail : Option Soma.Syntax.QualName)
+    : TCM Soma.Core.Expr := do
+  let mut rowExpr : Soma.Core.Expr := ← do
+    match tail with
+    | some tailName =>
+      match ← TCM.lookupLocal tailName.name with
+      | some entry =>
+        let tyExpr ← quoteValueToExpr entry.type
+        pure (.fvar entry.fvarId tyExpr)
+      | none =>
+        let tailMeta ← TCM.freshMetaVal .vRowSort
+        quoteValueToExpr tailMeta
+    | none => pure .rowEmpty
+  for (labelName, fieldTy) in fields.toList.reverse do
+    let labelExpr : Soma.Core.Expr ← do
+      match ← TCM.lookupLocal labelName.name with
+      | some entry =>
+        match entry.type with
+        | .vLabelSort =>
+          let tyExpr ← quoteValueToExpr entry.type
+          pure (.fvar entry.fvarId tyExpr)
+        | _ => pure (.labelLit labelName.name)
+      | none => pure (.labelLit labelName.name)
+    let tyExpr ← inferTypeExpr fieldTy
+    rowExpr := .rowExtend labelExpr tyExpr rowExpr
+  return rowExpr
 
 /-- Elaborate a compose block by desugaring to >>= and elaborating the result -/
 partial def inferComposeBlock (stmts : Array Soma.Syntax.ComposeStmt)
@@ -1053,7 +1189,7 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
 
 /-- Infer lambda body from Syntax params, building nested Core.Expr lambdas -/
 partial def inferSyntaxLamBody
-    (params : List (Soma.Syntax.QualName × Option Soma.Syntax.TypeExpr))
+    (params : List (Soma.Syntax.QualName × Option Soma.Syntax.Expr))
     (body : Soma.Syntax.Expr) (span : Span)
     (acc : List (Unique × String × Soma.Core.Expr))
     : TCM (Value × Soma.Core.Expr) := do
@@ -1082,7 +1218,7 @@ partial def inferSyntaxLamBody
 
 /-- Check lambda body against expected Pi type from Syntax params -/
 partial def checkSyntaxLamBody
-    (params : List (Soma.Syntax.QualName × Option Soma.Syntax.TypeExpr))
+    (params : List (Soma.Syntax.QualName × Option Soma.Syntax.Expr))
     (body : Soma.Syntax.Expr) (expectedTy : Value) (span : Span)
     (acc : List (Unique × String × Soma.Core.Expr))
     : TCM Soma.Core.Expr := do
@@ -1290,6 +1426,9 @@ where
     -- Tuple against Sigma: desugar to nested pair checks
     | .tuple elems _, .vSigma _ _ _ _ =>
       checkSyntaxTupleAgainstSigma elems.toList expected'
+
+    | .tuple elems _, .vType _ => do
+      inferTupleAsSigma elems.toList
 
     -- Application: use expected type to guide implicit solving
     | .app fn arg span, _ => do

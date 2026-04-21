@@ -253,9 +253,9 @@ def asLocalRef (ty : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
     else if ty.isInt then
       emit (.add false false ty val (.const (.int 0 (ty.intBits.getD 64))))
     else
-      -- Aggregate types: identity via alloca + store + load
+      -- Aggregate types: materialise via alloca → store → load
       emit (.alloca ty none none) >>= fun allocaRef =>
-      emit (.store ty val (.local allocaRef) none) *>
+      emitVoid (.store ty val (.local allocaRef) none) *>
       emit (.load ty (.local allocaRef) none)
 
 /-- Add two integers -/
@@ -459,7 +459,9 @@ def gepi64 (baseTy : LLVMType) (ptr : LLVMValue) (indices : Array Int)
 /-- Extract value from aggregate -/
 def extractvalue (aggTy : LLVMType) (agg : LLVMValue) (indices : Array Nat)
     : FuncBuilder LocalRef :=
-  emit (.extractvalue aggTy agg indices)
+  match aggTy with
+  | .struct _ _ | .array _ _ => emit (.extractvalue aggTy agg indices)
+  | _ => panic! s!"CODEGEN BUG: extractvalue on non-aggregate type, upstream pass must catch this before the builder"
 
 /-- Insert value into aggregate -/
 def insertvalue (aggTy : LLVMType) (agg val : LLVMValue) (indices : Array Nat)

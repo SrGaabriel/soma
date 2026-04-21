@@ -626,9 +626,9 @@ structure LLVMStmt where
 namespace LLVMStmt
 
 def toLLVM (s : LLVMStmt) : String :=
-  match s.result with
-  | some r => s!"{r} = {s.inst}"
-  | none => s!"{s.inst}"
+  match s.result, s.inst.instResultTy with
+  | some r, some _ => s!"{r} = {s.inst}"
+  | _, _ => s!"{s.inst}"
 
 /-- Check if this statement is a phi instruction -/
 def isPhi (s : LLVMStmt) : Bool :=

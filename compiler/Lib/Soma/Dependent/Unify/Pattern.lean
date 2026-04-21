@@ -174,15 +174,15 @@ partial def renameNeutral (ren : PartialRenaming) (n : Neutral) : RenameResult :
     let recE ← renameNeutral ren rec
     .ok (.fieldAccess recE field 0)
   | .nConst name constTy => .ok (.const name (quoteExpr0 constTy))
-  | .nCase scrut arms rty => do
-    let scrutE ← renameNeutral ren scrut
+  | .nCase scrutinees arms rty => do
+    let scrutExprs ← scrutinees.mapM (rename ren)
     let armExprs ← arms.mapM fun arm => do
       let argVal := Value.vNeutral .type0 (.nVar ⟨arm.pattern, ⟨ren.dom⟩⟩)
       let bodyVal := applyClosurePure arm.closure argVal
       let bodyE ← rename ren.lift bodyVal
       pure (Soma.Core.Arm.mk #[Soma.Core.Pattern.wildcard] bodyE)
     let rtyE ← rename ren rty
-    .ok (.«case» #[scrutE] armExprs.toArray rtyE)
+    .ok (.«case» scrutExprs armExprs.toArray rtyE)
 
 end
 

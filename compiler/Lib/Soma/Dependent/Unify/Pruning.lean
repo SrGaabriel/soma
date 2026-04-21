@@ -401,8 +401,9 @@ partial def collectMetaOccurrencesNeutral (m : MetaId) (n : Neutral) (depth : Na
   | .nFst pair => collectMetaOccurrencesNeutral m pair depth scope
   | .nSnd pair => collectMetaOccurrencesNeutral m pair depth scope
   | .nFieldAccess rec _ => collectMetaOccurrencesNeutral m rec depth scope
-  | .nCase scrut arms _ =>
-    collectMetaOccurrencesNeutral m scrut depth scope ++
+  | .nCase scrutinees arms _ =>
+    scrutinees.foldl (fun acc s =>
+      acc ++ collectMetaOccurrences m s depth scope) #[] ++
     arms.foldl (fun acc arm =>
       acc ++ collectMetaOccurrencesClosure m arm.closure (depth + 1) scope) #[]
   | .nConst _ _ => #[]

@@ -113,8 +113,8 @@ inductive Neutral where
   | nSnd (pair : Neutral)
   /-- Field access on a neutral record -/
   | nFieldAccess (record : Neutral) (field : String)
-  /-- Case analysis on a neutral scrutinee -/
-  | nCase (scrutinee : Neutral) (arms : List ArmClosure) (resultTy : Value)
+  /-- Case analysis blocked on one or more neutral scrutinees -/
+  | nCase (scrutinees : Array Value) (arms : List ArmClosure) (resultTy : Value)
   /-- Stuck on an unresolved global constant (extern or opaque) -/
   | nConst (name : Soma.Core.QualifiedName) (constTy : Value)
 
@@ -585,5 +585,15 @@ def MetaState.getDependencies (state : MetaState) (mid : MetaId) : Array MetaId 
   match state.metas.get? mid.id with
   | some info => info.dependsOn
   | none => #[]
+
+/-- Result of matching a Core `Pattern` against a `Value` during NbE -/
+inductive PatMatchResult where
+  /-- Pattern matched -/
+  | matched (bindings : Array Value) : PatMatchResult
+  /-- Pattern definitively does not match -/
+  | mismatch : PatMatchResult
+  /-- A scrutinee is stuck on a neutral that blocks deciding this pattern -/
+  | stuck : PatMatchResult
+  deriving Inhabited
 
 end Soma.Core

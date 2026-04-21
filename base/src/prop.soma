@@ -1,0 +1,4 @@
+inductive Truth where
+    | Trivial
+
+inductive Never

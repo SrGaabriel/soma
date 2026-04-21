@@ -102,14 +102,91 @@ def listEnumerate (xs : List α) : List (Nat × α) :=
     | x :: xs => (i, x) :: go (i + 1) xs
   go 0 xs
 
-/-- Check if an arm matches a given constructor tag -/
-private def matchArmTag (arm : Arm) (tag : Nat) : Bool :=
-  let pat : Option Pattern := arm.patterns[0]?
+mutual
+
+/-- Match a single Core `Pattern` against a `Value` -/
+partial def matchPattern (pat : Pattern) (val : Value) : PatMatchResult :=
   match pat with
-  | some (Pattern.ctor _ t _) => t == tag
-  | some Pattern.wildcard => true
-  | some (Pattern.var _) => true
-  | _ => false
+  | .wildcard => .matched #[]
+  | .var none => .matched #[]
+  | .var (some _) => .matched #[val]
+  | .ctor _ tag fields =>
+    match val with
+    | .vConstructor _ vTag vArgs _ =>
+      if tag != vTag then .mismatch
+      else
+        let vArgsArr := vArgs.toArray
+        if fields.size != vArgsArr.size then .mismatch
+        else matchPatternArrays fields vArgsArr
+    | .vNeutral _ _ => .stuck
+    | _ => .mismatch
+  | .lit l =>
+    match val with
+    | .vIntLit n =>
+      match l with
+      | .int m => if n == m then .matched #[] else .mismatch
+      | _ => .mismatch
+    | .vStringLit s =>
+      match l with
+      | .string t => if s == t then .matched #[] else .mismatch
+      | _ => .mismatch
+    | .vFloatLit f =>
+      match l with
+      | .float g => if f == g then .matched #[] else .mismatch
+      | _ => .mismatch
+    | .vConstructor _ tag _ _ =>
+      match l with
+      | .bool true => if tag == 0 then .matched #[] else .mismatch
+      | .bool false => if tag == 1 then .matched #[] else .mismatch
+      | _ => .mismatch
+    | .vNeutral _ _ => .stuck
+    | _ => .mismatch
+  | .inject label argPat =>
+    match val with
+    | .vConstructor name _ vArgs _ =>
+      if name.display != label then .mismatch
+      else match argPat with
+        | none => if vArgs.isEmpty then .matched #[] else .mismatch
+        | some inner =>
+          match vArgs with
+          | arg :: _ => matchPattern inner arg
+          | [] => .mismatch
+    | .vNeutral _ _ => .stuck
+    | _ => .mismatch
+
+/-- Match a row of patterns against a row of values -/
+partial def matchPatternArrays (pats : Array Pattern) (vals : Array Value)
+    : PatMatchResult :=
+  if pats.size != vals.size then .mismatch
+  else matchPatternArraysGo pats vals 0 #[] false
+
+partial def matchPatternArraysGo
+    (pats : Array Pattern) (vals : Array Value)
+    (i : Nat) (acc : Array Value) (stuck : Bool) : PatMatchResult :=
+  if i >= pats.size then
+    if stuck then .stuck else .matched acc
+  else
+    let pat := pats[i]!
+    let val := vals[i]!
+    match matchPattern pat val with
+    | .matched bs => matchPatternArraysGo pats vals (i + 1) (acc ++ bs) stuck
+    | .mismatch => .mismatch
+    | .stuck => matchPatternArraysGo pats vals (i + 1) acc true
+
+end
+
+/-- Find the reducing arm for a case -/
+partial def selectArm (scrutVals : Array Value) (arms : Array Arm)
+    : Option (Array Value × Expr) :=
+  let rec go (i : Nat) : Option (Array Value × Expr) :=
+    if i >= arms.size then none
+    else
+      let arm := arms[i]!
+      match matchPatternArrays arm.patterns scrutVals with
+      | .matched bs => some (bs, arm.body)
+      | .mismatch => go (i + 1)
+      | .stuck => none
+  go 0
 
 mutual
 
@@ -187,19 +264,19 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     .vConstructor name tag (args.toList.map (evalCoreExpr ctx)) (evalCoreExpr ctx rty)
 
   | .«case» scruts arms resultTyExpr =>
-    match scruts[0]? with
-    | some scrut =>
-      let scrutVal := evalCoreExpr ctx scrut
-      match scrutVal with
-      | .vConstructor _ tag ctorArgs _ =>
-        match arms.toList.find? (fun arm => matchArmTag arm tag) with
-        | some arm =>
-          let ctx' := ctorArgs.foldl (fun c arg => c.extendEnv "_" arg) ctx
-          evalCoreExpr ctx' arm.body
-        | none => .vNeutral .type0 (.nVar ⟨"case-no-arm", ctx.env.level⟩)
-      | .vNeutral ty neu =>
-        -- Preserve case structure as nCase neutral for proper quoting
-        let resultTy := evalCoreExpr ctx resultTyExpr
+    let scrutVals := scruts.map (evalCoreExpr ctx)
+    match selectArm scrutVals arms with
+    | some (bindings, body) =>
+      let ctx' := bindings.foldl (fun c v => c.extendEnv "_" v) ctx
+      evalCoreExpr ctx' body
+    | none =>
+      let resultTy := evalCoreExpr ctx resultTyExpr
+      let hasNeutral := scrutVals.any fun
+        | .vNeutral _ _ => true
+        | _ => false
+      if !hasNeutral then
+        .vNeutral .type0 (.nVar ⟨"case-no-arm", ctx.env.level⟩)
+      else
         let armClosures := arms.toList.map fun arm =>
           let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
           let patName := match arm.patterns[0]? with
@@ -207,14 +284,10 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
             | some (Pattern.var (some uid)) => uid.original
             | _ => s!"pat{binds}"
           if binds == 0 then
-            -- No bindings: pre-evaluate body, use const closure
             ArmClosure.mk patName (.const patName (evalCoreExpr ctx arm.body)) arm.patterns
           else
-            -- Has bindings: create term closure for proper substitution
             ArmClosure.mk patName (Closure.mkWithBody patName ctx.env arm.body) arm.patterns
-        .vNeutral ty (.nCase neu armClosures resultTy)
-      | _ => .vNeutral .type0 (.nVar ⟨"case-stuck", ctx.env.level⟩)
-    | none => .vNeutral .type0 (.nVar ⟨"case-empty", ctx.env.level⟩)
+        .vNeutral resultTy (.nCase scrutVals armClosures resultTy)
 
   | .record fields =>
     .vRecordVal (fields.toList.map fun (n, e) => (n, evalCoreExpr ctx e))

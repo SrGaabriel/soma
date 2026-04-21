@@ -150,13 +150,13 @@ partial def zonkNeutral (n : Neutral) : TCM Neutral := do
     let rec' ← zonkNeutral rec
     return .nFieldAccess rec' field
 
-  | .nCase scrut arms rty =>
-    let scrut' ← zonkNeutral scrut
+  | .nCase scrutinees arms rty =>
+    let scrutinees' ← scrutinees.mapM zonkValue
     let arms' ← arms.mapM fun arm => do
       let clos' ← zonkClosure arm.closure
       return ArmClosure.mk arm.pattern clos'
     let rty' ← zonkValue rty
-    return .nCase scrut' arms' rty'
+    return .nCase scrutinees' arms' rty'
 
 /-- Zonk a closure -/
 partial def zonkClosure (clos : Closure) : TCM Closure := do
@@ -371,7 +371,13 @@ partial def hasUnsolvedMetasNeutral (n : Neutral) : TCM Bool := do
   | .nFst pair => hasUnsolvedMetasNeutral pair
   | .nSnd pair => hasUnsolvedMetasNeutral pair
   | .nFieldAccess rec _ => hasUnsolvedMetasNeutral rec
-  | .nCase scrut _ _ => hasUnsolvedMetasNeutral scrut
+  | .nCase scrutinees _ _ =>
+    let mut result := false
+    for s in scrutinees do
+      if ← hasUnsolvedMetas s then
+        result := true
+        break
+    return result
   | _ => return false
 
 end
@@ -441,7 +447,9 @@ partial def collectUnsolvedMetasNeutral (n : Neutral) (span : Span) : TCM Unit :
   | .nFst pair => collectUnsolvedMetasNeutral pair span
   | .nSnd pair => collectUnsolvedMetasNeutral pair span
   | .nFieldAccess rec _ => collectUnsolvedMetasNeutral rec span
-  | .nCase scrut _ _ => collectUnsolvedMetasNeutral scrut span
+  | .nCase scrutinees _ _ =>
+    for s in scrutinees do
+      collectUnsolvedMetas s span
   | _ => pure ()
 
 end

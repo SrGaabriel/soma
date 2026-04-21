@@ -28,14 +28,16 @@ private def extractVarName : Syntax.Pattern → String
   | _ => "_"
 
 /-- Count the minimum explicit parameter arity visible in a type expression -/
-private partial def explicitArityOfType : Syntax.TypeExpr → Option Nat
+private partial def explicitArityOfType : Syntax.Expr → Option Nat
   | .arrow _ to _ => (explicitArityOfType to).map (· + 1)
-  | .pi _ _ _ cod _ => (explicitArityOfType cod).map (· + 1)
-  | .implicit _ _ cod _ => explicitArityOfType cod
+  | .pi _ binder _ _ cod _ =>
+      if binder == .explicit then
+        (explicitArityOfType cod).map (· + 1)
+      else
+        explicitArityOfType cod
   | .forall_ _ body _ => explicitArityOfType body
-  | .constrained _ body _ => explicitArityOfType body
   | .parens inner _ => explicitArityOfType inner
-  | .kinded ty _ _ => explicitArityOfType ty
+  | .typeAnnot ty _ _ => explicitArityOfType ty
   | .app _ _ _ => none
   | _ => some 0
 
@@ -238,13 +240,28 @@ private def lowerFunctionDecl
 /-- Maximum number of constructors per data type -/
 private def maxConstructors : Nat := 255
 
+/-- Walk a type-level head-kind annotation like `A -> B -> Type` and
+    project it into a telescope of anonymous binders `(_ : A) (_ : B)` -/
+private partial def unfoldKindTelescope (e : Syntax.Expr) (defaultSpan : Span)
+    : Array Syntax.TypeVarBinder :=
+  match e with
+  | .arrow from_ to _ =>
+    let head : Syntax.TypeVarBinder :=
+      ⟨⟨#[], "_", defaultSpan⟩, some from_⟩
+    #[head] ++ unfoldKindTelescope to defaultSpan
+  | .pi _qty _binder name dom cod _ =>
+    let head : Syntax.TypeVarBinder := ⟨name, some dom⟩
+    #[head] ++ unfoldKindTelescope cod defaultSpan
+  | .parens inner _ => unfoldKindTelescope inner defaultSpan
+  | _ => #[]
+
 private def lowerTypeDecl
     (decl : Syntax.Decl)
     (registry : GlobalNameRegistry)
     (supply : UniqueSupply)
   : Option Soma.Core.UntypedTypeDef × Diagnostics × UniqueSupply :=
   match decl with
-  | .inductive attrs name params constructors _ span =>
+  | .inductive attrs name params constructors kindAnnot span =>
     let diags : Diagnostics :=
       if constructors.size > maxConstructors then
         #[Diagnostic.error
@@ -252,7 +269,11 @@ private def lowerTypeDecl
           span]
       else #[]
     let typeName := registry.requireTopLevel name.name
-    let typeVarNames := params.map (·.name.name)
+    let extraBinders : Array Syntax.TypeVarBinder :=
+      match kindAnnot with
+      | none => #[]
+      | some k => unfoldKindTelescope k span
+    let fullParams := params ++ extraBinders
     let ctors := Id.run do
       let mut acc : Array Soma.Core.UntypedConstructor := #[]
       for i in [:constructors.size] do
@@ -266,33 +287,36 @@ private def lowerTypeDecl
               { name := ctorName, tag := i, fieldTypeSyntax := fieldTypes, sigSyntax := none, attrs := ctor.attrs }
           acc := acc.push lowered
       acc
-    (some (.algebraic attrs typeName typeVarNames ctors span), diags, supply)
+    (some (.algebraic attrs typeName fullParams ctors span), diags, supply)
   | .record attrs name params _ctorName fields span =>
     let typeName := registry.requireTopLevel name.name
-    let typeVarNames := params.map (·.name.name)
     let (ctorUnique, supply'') := supply.fresh "New"
     let ctorQName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
     let fieldsWithOptNames := fields.map fun field =>
       (field.name.map (·.name), field.type_)
-    (some (.record attrs typeName typeVarNames ctorQName fieldsWithOptNames span), #[], supply'')
+    (some (.record attrs typeName params ctorQName fieldsWithOptNames span), #[], supply'')
   | _ => (none, #[], supply)
 
-/-- Rewrite single-field record types in arrow domain position as implicit binders -/
-private partial def rewriteRecordArrowsAsImplicits : Syntax.TypeExpr → Syntax.TypeExpr
-  | .arrow (.record #[(name, ty)] none _) body span =>
-    .implicit (some name) (rewriteRecordArrowsAsImplicits ty) (rewriteRecordArrowsAsImplicits body) span
+/-- Rewrite single-field record types in arrow-domain position -/
+private partial def rewriteRecordArrowsAsImplicits : Syntax.Expr → Syntax.Expr
+  | .arrow (.recordTy #[(name, ty)] none _) body span =>
+    .pi .omega .instance_ name
+       (rewriteRecordArrowsAsImplicits ty)
+       (rewriteRecordArrowsAsImplicits body) span
   | .arrow from_ to span =>
     .arrow (rewriteRecordArrowsAsImplicits from_) (rewriteRecordArrowsAsImplicits to) span
   | .forall_ vars body span =>
     .forall_ vars (rewriteRecordArrowsAsImplicits body) span
-  | .constrained cs body span =>
-    .constrained cs (rewriteRecordArrowsAsImplicits body) span
   | .parens inner span =>
     .parens (rewriteRecordArrowsAsImplicits inner) span
-  | .pi qty name dom cod span =>
-    .pi qty name (rewriteRecordArrowsAsImplicits dom) (rewriteRecordArrowsAsImplicits cod) span
-  | .implicit name dom cod span =>
-    .implicit name (rewriteRecordArrowsAsImplicits dom) (rewriteRecordArrowsAsImplicits cod) span
+  | .pi qty binder name dom cod span =>
+    .pi qty binder name
+       (rewriteRecordArrowsAsImplicits dom)
+       (rewriteRecordArrowsAsImplicits cod) span
+  | .sigma qty name fst snd span =>
+    .sigma qty name
+       (rewriteRecordArrowsAsImplicits fst)
+       (rewriteRecordArrowsAsImplicits snd) span
   | .app fn arg span =>
     .app (rewriteRecordArrowsAsImplicits fn) (rewriteRecordArrowsAsImplicits arg) span
   | other => other

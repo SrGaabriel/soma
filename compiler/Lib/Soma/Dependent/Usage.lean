@@ -46,26 +46,7 @@ end UsageSnapshot
 def usageCompatible (declared actual : Quantity) : Bool :=
   actual.le declared
 
-/-- Check all variables in scope for correct usage.
-    This should be called at the end of checking a function body. -/
-def checkAllUsages : TCM Unit := do
-  let ctx ← TCM.getCtx
-  for entry in ctx.locals do
-    let count ← TCM.getUsage entry.bindingId
-    let actual := TCM.countToQuantity count
-    -- Check that actual usage is compatible with declared quantity
-    if !usageCompatible entry.qty actual then
-      -- Special case for linear variables
-      if entry.qty == .one then
-        if count == 0 then
-          TCM.addError (.linearNotUsed entry.name entry.span)
-        else
-          TCM.addError (.quantityMismatch entry.qty actual entry.name entry.span)
-      else
-        TCM.addError (.quantityMismatch entry.qty actual entry.name entry.span)
-
-/-- Check that a linear variable is used exactly once.
-    This is a stricter check than checkAllUsages for linear bindings. -/
+/-- Check that a linear variable is used exactly once -/
 def checkLinearBinding (bindingId : Unique) (declSpan : Span) : TCM Unit := do
   let count ← TCM.getUsage bindingId
   if count == 0 then
@@ -155,13 +136,6 @@ def withCheckedBinding (name : String) (bindingId : Unique) (ty : Value)
     All usages in this context don't count toward runtime usage. -/
 def inErasedScope (action : TCM α) : TCM α :=
   TCM.inErasedContext action
-
-/-- Record that pattern bindings are introduced (TODO: review) -/
-def introducePatternBindings (bindings : List (Unique × Quantity × Span)) : TCM Unit := do
-  -- Pattern bindings start with zero usage
-  for (_, _, _) in bindings do
-    -- Initialize usage to zero (already the default)
-    pure ()
 
 /-- Check pattern bindings were used correctly after checking a body -/
 def checkPatternBindings (bindings : List (Unique × Quantity × Span)) : TCM Unit := do

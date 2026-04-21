@@ -91,9 +91,9 @@ partial def collectMetasNeutral (n : Neutral) : Array MetaId :=
   | .nFst pair => collectMetasNeutral pair
   | .nSnd pair => collectMetasNeutral pair
   | .nFieldAccess rec _ => collectMetasNeutral rec
-  | .nCase scrut arms _ =>
-    collectMetasNeutral scrut ++ arms.foldl (fun acc arm =>
-      acc ++ collectMetasClosure arm.closure) #[]
+  | .nCase scrutinees arms _ =>
+    scrutinees.foldl (fun acc s => acc ++ collectMetas s) #[] ++
+    arms.foldl (fun acc arm => acc ++ collectMetasClosure arm.closure) #[]
 
 partial def collectMetasClosure (clos : Closure) : Array MetaId :=
   match clos with
@@ -174,8 +174,9 @@ partial def occursInNeutral (m : MetaId) (n : Neutral) : Bool :=
   | .nFst pair => occursInNeutral m pair
   | .nSnd pair => occursInNeutral m pair
   | .nFieldAccess rec _ => occursInNeutral m rec
-  | .nCase scrut arms _ =>
-    occursInNeutral m scrut || arms.any (fun arm => occursInClosure m arm.closure)
+  | .nCase scrutinees arms _ =>
+    scrutinees.any (occursIn m) ||
+    arms.any (fun arm => occursInClosure m arm.closure)
 
 partial def occursInClosure (m : MetaId) (clos : Closure) : Bool :=
   match clos with
@@ -272,7 +273,8 @@ partial def inScopeNeutral (allowedLevels : List DeBruijnLvl) (n : Neutral) : Bo
   | .nFst pair => inScopeNeutral allowedLevels pair
   | .nSnd pair => inScopeNeutral allowedLevels pair
   | .nFieldAccess rec _ => inScopeNeutral allowedLevels rec
-  | .nCase scrut _ _ => inScopeNeutral allowedLevels scrut
+  | .nCase scrutinees _ _ =>
+    scrutinees.all (inScope allowedLevels)
 
 partial def inScopeClosure (allowedLevels : List DeBruijnLvl) (clos : Closure) : Bool :=
   match clos with
@@ -329,9 +331,9 @@ partial def collectFreeVarsNeutral (n : Neutral) : Array DeBruijnLvl :=
   | .nFst pair => collectFreeVarsNeutral pair
   | .nSnd pair => collectFreeVarsNeutral pair
   | .nFieldAccess rec _ => collectFreeVarsNeutral rec
-  | .nCase scrut arms _ =>
-    collectFreeVarsNeutral scrut ++ arms.foldl (fun acc arm =>
-      acc ++ collectFreeVarsClosure arm.closure) #[]
+  | .nCase scrutinees arms _ =>
+    scrutinees.foldl (fun acc s => acc ++ collectFreeVars s) #[] ++
+    arms.foldl (fun acc arm => acc ++ collectFreeVarsClosure arm.closure) #[]
 
 partial def collectFreeVarsClosure (clos : Closure) : Array DeBruijnLvl :=
   match clos with

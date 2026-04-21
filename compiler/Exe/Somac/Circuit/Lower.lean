@@ -877,7 +877,10 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
     | some (_, tag, arity) =>
       let explicitArgs := allArgs.filter (!isCoreTypeLevelArg ctx ·)
       if explicitArgs.size == arity then
-        lowerCoreConstruct tag explicitArgs ty
+        -- A fully-applied constructor is a value of the data-type head
+        let fullApp := allArgs.foldl (init := baseFn) (fun acc a => .app acc a)
+        let ctorTy ← getExprType fullApp
+        lowerCoreConstruct tag explicitArgs ctorTy
       else
         lowerCoreAppDefault fn arg ty
     | none =>
@@ -1427,11 +1430,11 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
   let ctx0 ← LowerM.getCtx
   let paramList := fn.params.toList
   let mut lamNodes : Array NodeId := #[]
-  let mut currentTy := skipImplicitTypeParams ctx0 fn.fnType
+  let mut currentTy := fn.fnType
   let bodyUses := countUsesExpr fn.body
 
   for param in paramList do
-    currentTy := skipImplicitTypeParams ctx0 currentTy
+    currentTy := unfoldValue currentTy ctx0.abbrevEnv
     let (bindingId, name) := param
     let paramTy := match currentTy.piDomain? with
       | some d => d

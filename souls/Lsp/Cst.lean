@@ -94,7 +94,7 @@ where
             match kind with
             | .signature => .inTypeSignature
             | .typeArrow | .typeApp | .typeCon | .typeVar
-            | .typeTuple | .typeList | .typeForall | .typeConstrained
+            | .typeTuple | .typeList | .typeForall
             | .typeParens | .typeKinded => .inTypeExpr
             | .exprFieldAccess =>
                 -- Check if we're after the dot by comparing offsets

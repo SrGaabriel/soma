@@ -15,8 +15,8 @@ namespace Soma.Dependent.TraitElaborate
 
 open Soma (Unique)
 open Soma.Core
-open Soma.Syntax (TypeExpr Span TypeVarBinder)
-open Soma.Dependent.Elaborate (ElabEnv elaborateType mkConstClosure mkDependentClosure quoteValue)
+open Soma.Syntax (Span TypeVarBinder)
+open Soma.Dependent.Elaborate (ElabEnv elaborateType)
 
 /-- Maps source spans to their elaborated instance info -/
 abbrev InstanceMap := Std.HashMap Span InstanceInfo
@@ -117,7 +117,7 @@ partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
     let codVal ← applyClosure cod dummyArg
     let codVal' ← substituteTypeArgsInValue codVal paramNames typeArgs (depth + 1)
     let closureEnv := buildSubstEnv depth
-    let bodyExpr := quoteValue codVal' (depth + 1)
+    let bodyExpr := Soma.Core.quoteExpr ⟨depth + 1⟩ codVal'
     let codClosure := Closure.term name closureEnv bodyExpr
     return .vPi qty binder name dom' codClosure
 
@@ -127,7 +127,7 @@ partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
     let sndVal ← applyClosure snd dummyArg
     let sndVal' ← substituteTypeArgsInValue sndVal paramNames typeArgs (depth + 1)
     let closureEnv := buildSubstEnv depth
-    let bodyExpr := quoteValue sndVal' (depth + 1)
+    let bodyExpr := Soma.Core.quoteExpr ⟨depth + 1⟩ sndVal'
     let sndClosure := Closure.term name closureEnv bodyExpr
     return .vSigma qty name fst' sndClosure
 
@@ -169,48 +169,48 @@ We build this by:
 4. Wrapping in implicit foralls for type parameters
 -/
 def elaborateClassRecordType (params : Array TypeVarBinder)
-  (methods : Array (QualifiedName × TypeExpr)) : TCM Value := do
-  -- Elaborate kinds for each parameter
-  let mut paramKinds : Array (String × Value) := #[]
+  (methods : Array (QualifiedName × Soma.Syntax.Expr)) : TCM Value := do
+  let N := params.size
+
+  -- Resolve each type-param's kind once, outside the bindings
+  let mut paramKindExprs : Array Soma.Core.Expr := #[]
+  let mut paramKinds : Array Value := #[]
   for param in params do
-    let kind ← match param.kind with
-      | some k => Elaborate.elaborateType Elaborate.ElabEnv.empty k
-      | none => pure (Value.vType Level.zero)  -- default to Type
-    paramKinds := paramKinds.push (param.name.name, kind)
+    let kindExpr ← match param.kind with
+      | some k => Soma.Dependent.inferTypeExpr k
+      | none => pure (.sort Level.zero)
+    let kindVal ← TCM.evalExpr kindExpr
+    paramKindExprs := paramKindExprs.push kindExpr
+    paramKinds := paramKinds.push kindVal
 
-  -- Build elaboration environment with type parameters and their kinds
-  let mut elabEnv := ElabEnv.empty
-  for (paramName, kind) in paramKinds do
-    elabEnv := elabEnv.extend paramName kind
+  let mut bindings : Array (Soma.Unique × String) := #[]
+  for param in params do
+    let uid ← TCM.freshLocalId param.name.name
+    bindings := bindings.push (uid, param.name.name)
 
-  -- Elaborate each method signature
-  let mut fields : List (String × Value) := []
-  for (methodName, methodTypeSyntax) in methods do
-    let methodType ← elaborateType elabEnv methodTypeSyntax
-    fields := (methodName.display, methodType) :: fields
+  let buildInner : TCM Soma.Core.Expr := do
+    let mut fields : List (String × Value) := []
+    for (methodName, methodTypeSyntax) in methods do
+      let expr ← Soma.Dependent.inferTypeExpr methodTypeSyntax
+      let methodType ← TCM.evalExpr expr
+      fields := (methodName.display, methodType) :: fields
+    let mut row := Value.vRowEmpty
+    for (name, ty) in fields.reverse do
+      row := Value.vRowExtend (Value.vLabelLit name) ty row
+    pure (Soma.Core.quoteExpr ⟨N⟩ (Value.vRecord row))
 
-  -- Build the record row from fields (in reverse to preserve order)
-  let mut row := Value.vRowEmpty
-  for (name, ty) in fields.reverse do
-    row := Value.vRowExtend (Value.vLabelLit name) ty row
+  let wrapped ← bindings.zip paramKinds |>.foldrM (init := buildInner)
+    (fun ((uid, name), kindVal) acc =>
+      pure (TCM.withBinding name uid kindVal .omega .implicit Span.uninhabited acc))
+  let innerBody ← wrapped
 
-  -- The base record type
-  let recordTy := Value.vRecord row
-
-  -- Wrap in implicit foralls for each type parameter (right to left)
-  let mut result := recordTy
-  let mut outerEnv := elabEnv
-  for (paramName, paramKind) in paramKinds.reverse do
-    -- Pop the current variable from the environment
-    outerEnv := {
-      tyVars := outerEnv.tyVars.tail!
-      level := outerEnv.level - 1
-    }
-    -- Create dependent closure for the codomain
-    let codClosure ← mkDependentClosure paramName result outerEnv
-    result := Value.vPi .omega .implicit paramName paramKind codClosure
-
-  return result
+  let mut piExpr : Soma.Core.Expr := innerBody
+  for i in [:N] do
+    let idx := N - 1 - i
+    let name := params[idx]!.name.name
+    let kindExpr := paramKindExprs[idx]!
+    piExpr := .pi .omega .implicit name kindExpr piExpr
+  TCM.evalExprInEnv Soma.Core.Env.empty piExpr
 
 /-- Elaborate superclass constraints.
 
@@ -295,24 +295,30 @@ For `instance Display Int where def display | x => ...`:
 - The class method signature is `a -> String`
 - We substitute `a := Int` to get `Int -> String`
 -/
-def substituteMethodType (methodTypeSyntax : TypeExpr) (params : Array TypeVarBinder)
+def substituteMethodType (methodTypeSyntax : Soma.Syntax.Expr) (params : Array TypeVarBinder)
     (typeArgs : Array Value) : TCM Value := do
-  -- Build an environment with type parameters
-  let mut elabEnv := ElabEnv.empty
-  for param in params do
-    let kind ← match param.kind with
-      | some k => elaborateType elabEnv k
-      | none => pure (Value.vType Level.zero)
-    elabEnv := elabEnv.extend param.name.name kind
-
+  -- Elaborate the method type with type parameters bound as TCM implicits
   let paramNames := params.map (·.name.name)
+  let mut bindings : Array (Soma.Unique × String × Value) := #[]
+  for param in params do
+    let kindVal ← match param.kind with
+      | some k => do
+        let expr ← Soma.Dependent.inferTypeExpr k
+        TCM.evalExpr expr
+      | none => pure (Value.vType Level.zero)
+    let uid ← TCM.freshLocalId param.name.name
+    bindings := bindings.push (uid, param.name.name, kindVal)
 
-  -- Elaborate the method type in this environment
-  let methodType ← elaborateType elabEnv methodTypeSyntax
+  let go : TCM Value := do
+    let expr ← Soma.Dependent.inferTypeExpr methodTypeSyntax
+    TCM.evalExpr expr
 
-  -- Now substitute the actual type arguments for the type parameters
-  let substitutedType ← substituteTypeArgsInValue methodType paramNames typeArgs 0
-  return substitutedType
+  let methodType ← bindings.foldrM (init := go)
+    (fun (uid, name, kind) acc =>
+      pure (TCM.withBinding name uid kind .omega .implicit Span.uninhabited acc))
+  let resolved ← methodType
+
+  substituteTypeArgsInValue resolved paramNames typeArgs 0
 
 /-- Build a lambda value from parameter names and types wrapping a body value. -/
 partial def buildLambdaValue (paramNames : Array String) (paramTypes : Array Value)
@@ -323,9 +329,8 @@ partial def buildLambdaValue (paramNames : Array String) (paramTypes : Array Val
     let idx := paramNames.size - 1 - i
     if h₁ : idx < paramNames.size then
       let name := paramNames[idx]
-      let paramTy := if h₂ : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
-      let bodyClosure ← mkConstClosure name result
-      result := Value.vLam name bodyClosure
+      let _paramTy := if h₂ : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
+      result := Value.vLam name (Closure.const name result)
 
   return result
 
@@ -452,7 +457,8 @@ where
     | .nApp fn arg => neutralContainsMeta fn || valueContainsMeta arg
     | .nFst n | .nSnd n => neutralContainsMeta n
     | .nFieldAccess n _ => neutralContainsMeta n
-    | .nCase scrut _ rty => neutralContainsMeta scrut || valueContainsMeta rty
+    | .nCase scrutinees _ rty =>
+      scrutinees.any valueContainsMeta || valueContainsMeta rty
     | .nConst _ ty => valueContainsMeta ty
     | .nVar _ => false
 
@@ -805,7 +811,7 @@ We build:
 -/
 def elaborateInstanceValue (typeArgs : Array Value)
   (methods : Array Soma.Core.UntypedFunction)
-    (methodSignatures : Array (QualifiedName × TypeExpr))
+    (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
     (params : Array TypeVarBinder)
     (constraintDicts : Array ConstraintDictEntry := #[])
     : TCM InstanceElabResult := do
@@ -889,41 +895,51 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
 private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
     (fieldIdx : Nat) : TCM (Option TypedFunction) := do
   let mut wrapperParams : Array (Soma.Unique × String) := #[]
+  let mut paramTyExprs : Array Soma.Core.Expr := #[]
+  let mut paramIsExplicit : Array Bool := #[]
   let mut walkTy := info.type
-  let mut wrapperTy := info.type
   let mut dictUnique : Soma.Unique := ⟨0, "", "$dict"⟩
-  let mut dictDomTy : Value := .vType .zero
   let mut foundInstance := false
   let mut walking := true
   while walking do
     match walkTy with
     | .vPi _qty binder name dom cod =>
       let paramUnique ← TCM.freshUnique name
+      let domExpr := Soma.Core.quoteExpr0 dom
+      wrapperParams := wrapperParams.push (paramUnique, name)
+      paramTyExprs := paramTyExprs.push domExpr
       if binder == .instance_ then
-        wrapperParams := wrapperParams.push (paramUnique, name)
         dictUnique := paramUnique
-        dictDomTy := dom
         foundInstance := true
-        walking := false
+        paramIsExplicit := paramIsExplicit.push false
       else if binder.isImplicit then
-        let nextTy := cod.applyPure (.vType .zero)
-        walkTy := nextTy
-        wrapperTy := nextTy
+        paramIsExplicit := paramIsExplicit.push false
       else
-        wrapperParams := wrapperParams.push (paramUnique, name)
-        walkTy := cod.applyPure (.vType .zero)
+        paramIsExplicit := paramIsExplicit.push true
+      walkTy := cod.applyPure (.vNeutral dom (.nVar ⟨name, ⟨0⟩⟩))
     | _ => walking := false
   if !foundInstance then return none
-  let dictTyExpr := Soma.Core.quoteExpr0 dictDomTy
-  let body := Soma.Core.Expr.fieldAccess
-    (Soma.Core.Expr.fvar dictUnique dictTyExpr)
-    methodNameStr
-    fieldIdx
+
+  -- Index of the dict parameter (first instance binder)
+  let dictIdx := wrapperParams.findIdx? (fun (u, _) => u == dictUnique) |>.getD 0
+  let dictTyExpr := paramTyExprs[dictIdx]?.getD (Soma.Core.Expr.sort .zero)
+
+  let mut body : Soma.Core.Expr :=
+    Soma.Core.Expr.fieldAccess
+      (Soma.Core.Expr.fvar dictUnique dictTyExpr)
+      methodNameStr
+      fieldIdx
+  for i in [dictIdx + 1 : wrapperParams.size] do
+    if paramIsExplicit[i]? == some true then
+      let (u, _) := wrapperParams[i]!
+      let tyExpr := paramTyExprs[i]?.getD (Soma.Core.Expr.sort .zero)
+      body := Soma.Core.Expr.app body (Soma.Core.Expr.fvar u tyExpr)
+
   return some {
     name := info.name
     params := wrapperParams
     body := body
-    fnType := wrapperTy
+    fnType := info.type
     closureInfo := none
     attrs := {}
   }

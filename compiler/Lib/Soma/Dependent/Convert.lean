@@ -71,7 +71,8 @@ partial def force (v : Value) : TCM Value := do
           forceApplyToArgs sol args
         | none => return v
       | none => return v
-    | none => return v
+    | none =>
+      forceThroughNeutral neu v
   | .vDataType dId params =>
     -- Abbreviations are kept as vDataType during higher-kinded unification and
     -- expanded here when structural comparison or Pi decomposition is needed
@@ -89,6 +90,36 @@ partial def force (v : Value) : TCM Value := do
       else return v
     | none => return v
   | _ => return v
+
+/-- Recursively resolve a neutral by pushing force through -/
+partial def forceThroughNeutral (neu : Neutral) (fallback : Value) : TCM Value := do
+  match neu with
+  | .nFieldAccess inner field =>
+    let innerV ← force (Value.vNeutral Value.type0 inner)
+    match innerV with
+    | .vRecordVal fields =>
+      match fields.find? (·.1 == field) with
+      | some (_, fv) => force fv
+      | none => return fallback
+    | _ => return fallback
+  | .nApp fn arg =>
+    let fnV ← force (Value.vNeutral Value.type0 fn)
+    match fnV with
+    | .vLam _ body =>
+      let result ← applyClosure body arg
+      force result
+    | _ => return fallback
+  | .nFst inner =>
+    let innerV ← force (Value.vNeutral Value.type0 inner)
+    match innerV with
+    | .vPair a _ => force a
+    | _ => return fallback
+  | .nSnd inner =>
+    let innerV ← force (Value.vNeutral Value.type0 inner)
+    match innerV with
+    | .vPair _ b => force b
+    | _ => return fallback
+  | _ => return fallback
 
 /-- Apply a value to a list of arguments, forcing as we go -/
 partial def forceApplyToArgs (v : Value) (args : List Value) : TCM Value := do
@@ -386,9 +417,11 @@ partial def convertNeutral (n1 n2 : Neutral) : TCM Bool := do
     if f1 != f2 then return false
     convertNeutral r1 r2
 
-  | .nCase s1 as1 _, .nCase s2 as2 _ =>
-    let scrutEq ← convertNeutral s1 s2
-    if !scrutEq then return false
+  | .nCase ss1 as1 _, .nCase ss2 as2 _ =>
+    if ss1.size != ss2.size then return false
+    for (s1, s2) in ss1.zip ss2 do
+      let eq ← convert s1 s2
+      if !eq then return false
     if as1.length != as2.length then return false
     -- Compare arm closures by applying them to fresh variables and checking bodies
     for (arm1, arm2) in as1.zip as2 do

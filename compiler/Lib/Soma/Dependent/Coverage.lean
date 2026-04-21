@@ -185,6 +185,10 @@ partial def isExhaustive
     -- No columns left but no trivial row exists: the matrix does not match
     if matrix.isEmpty then return some #[] else return none
   | ty :: restTys =>
+    if !matrix.isEmpty && matrix.all rowStartsTrivial then
+      match ← isExhaustive (defaultMatrix matrix) restTys with
+      | none => return none
+      | some witness => return some (#["_"] ++ witness)
     let (isOpen, cands) ← liveCandidates ty
     if cands.isEmpty then
       if !isOpen then

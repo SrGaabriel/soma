@@ -338,8 +338,8 @@ partial def lowerTypeParams (plist : GreenNode) (plistOffset : Nat) : LowerM (Ar
     c.syntaxKind? == some .typeVar || c.syntaxKind? == some .tyParamKinded
   varNodes.mapM fun (v, vo) => lowerTypeVarBinder v vo
 
-/-- Lower a CST type to AST TypeExpr -/
-partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr := do
+/-- Lower a CST type to an AST `Expr` -/
+partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
   -- For triviaToken, recurse immediately with adjusted offset (don't compute span yet)
   if green.syntaxKind? == some .triviaToken then
     let unwrapped := unwrapTrivia green
@@ -408,7 +408,7 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
             pure (.var ⟨#[], "_error", span⟩)
           else
             let elem ← lowerTypeExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
-            pure (.list elem span)
+            pure (.listTy elem span)
 
       | .typeForall =>
           let allKids := childrenWithOffsets green offset
@@ -431,22 +431,6 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
           else
             let body ← lowerTypeExpr bodyNodes[0]!.1 bodyNodes[0]!.2
             pure (.forall_ vars body span)
-
-      | .typeConstrained =>
-          let allKids := childrenWithOffsets green offset
-          let bodyNodes := allKids.filter fun (c, _) =>
-            c.syntaxKind? != some .constraintList && c.syntaxKind? != some .constraint && isSemanticNode c
-          let constraintNodes := allKids.filter fun (c, _) =>
-            c.syntaxKind? == some .constraintList || c.syntaxKind? == some .constraint
-          let constraints ← constraintNodes.mapM fun (cn, co) => do
-            let c ← lowerConstraint cn co
-            pure (c.className, c.args, c.span)
-          if bodyNodes.isEmpty then
-            lowerError "constrained type requires body" span
-            pure (.var ⟨#[], "_error", span⟩)
-          else
-            let body ← lowerTypeExpr bodyNodes[0]!.1 bodyNodes[0]!.2
-            pure (.constrained constraints body span)
 
       | .typeParens =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
@@ -471,7 +455,7 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
           let fieldNodes := kidsWithOffsets.filter fun (c, _) => c.syntaxKind? == some .typeRecordField
           let tailNodes := kidsWithOffsets.filter fun (c, _) => c.syntaxKind? == some .typeVar
           -- Lower fields
-          let mut fields : Array (QualName × TypeExpr) := #[]
+          let mut fields : Array (QualName × Expr) := #[]
           for (fieldNode, fieldOffset) in fieldNodes do
             let fieldKids := childrenWithOffsets fieldNode fieldOffset |>.filter fun (c, _) => isSemanticNode c
             if fieldKids.size >= 2 then
@@ -486,12 +470,12 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
             if tailKids.isEmpty then
               let tailText ← getGreenTokenText tailNode tailOffset
               let tailSpan ← spanFor tailNode tailOffset
-              pure (some ⟨#[], tailText, tailSpan⟩)
+              pure (some (⟨#[], tailText, tailSpan⟩ : QualName))
             else
               let tailText ← getGreenTokenText tailKids[0]!.1 tailKids[0]!.2
               let tailSpan ← spanFor tailKids[0]!.1 tailKids[0]!.2
-              pure (some ⟨#[], tailText, tailSpan⟩)
-          pure (.record fields tail span)
+              pure (some (⟨#[], tailText, tailSpan⟩ : QualName))
+          pure (.recordTy fields tail span)
 
       | .typeVariant =>
           -- Parse variant type: < Ok :: Int | Err :: String > or < Ok :: Int | r >
@@ -500,7 +484,7 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
           let caseNodes := kidsWithOffsets.filter fun (c, _) => c.syntaxKind? == some .typeVariantCase
           let tailNodes := kidsWithOffsets.filter fun (c, _) => c.syntaxKind? == some .typeVar
           -- Lower cases
-          let mut cases : Array (QualName × TypeExpr) := #[]
+          let mut cases : Array (QualName × Expr) := #[]
           for (caseNode, caseOffset) in caseNodes do
             let caseKids := childrenWithOffsets caseNode caseOffset |>.filter fun (c, _) => isSemanticNode c
             if caseKids.size >= 2 then
@@ -515,12 +499,12 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
             if tailKids.isEmpty then
               let tailText ← getGreenTokenText tailNode tailOffset
               let tailSpan ← spanFor tailNode tailOffset
-              pure (some ⟨#[], tailText, tailSpan⟩)
+              pure (some (⟨#[], tailText, tailSpan⟩ : QualName))
             else
               let tailText ← getGreenTokenText tailKids[0]!.1 tailKids[0]!.2
               let tailSpan ← spanFor tailKids[0]!.1 tailKids[0]!.2
-              pure (some ⟨#[], tailText, tailSpan⟩)
-          pure (.variant cases tail span)
+              pure (some (⟨#[], tailText, tailSpan⟩ : QualName))
+          pure (.variantTy cases tail span)
 
       | .typePi =>
           -- Dependent Pi type: (q? x : A) -> B
@@ -559,7 +543,7 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
               if h2 : domainIdx < binderKids.size then
                 let domain ← lowerTypeExpr binderKids[domainIdx].1 binderKids[domainIdx].2
                 let codomain ← lowerTypeExpr codomainNodes[0]!.1 codomainNodes[0]!.2
-                pure (.pi qty ⟨#[], nameText, nameSpan⟩ domain codomain span)
+                pure (.pi qty .explicit ⟨#[], nameText, nameSpan⟩ domain codomain span)
               else
                 lowerError "Pi type binder missing domain type" span
                 pure (.var ⟨#[], "_error", span⟩)
@@ -639,16 +623,15 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
                 pure (.var ⟨#[], "_error", span⟩)
               else
                 let codomain ← lowerTypeExpr codomainKids[codomainKids.size - 1]!.1 codomainKids[codomainKids.size - 1]!.2
-                pure (.implicit (some ⟨#[], nameText, nameSpan⟩) domain codomain span)
+                pure (.pi .omega .instance_ ⟨#[], nameText, nameSpan⟩ domain codomain span)
             else
               lowerError "Implicit type binder incomplete" span
               pure (.var ⟨#[], "_error", span⟩)
           else
             -- Unnamed implicit: {{A}} -> B
-            -- First semantic child is domain, last is codomain
             let domain ← lowerTypeExpr semanticKids[0]!.1 semanticKids[0]!.2
             let codomain ← lowerTypeExpr semanticKids[semanticKids.size - 1]!.1 semanticKids[semanticKids.size - 1]!.2
-            pure (.implicit none domain codomain span)
+            pure (.pi .omega .instance_ ⟨#[], "_", span⟩ domain codomain span)
 
       | .typePiBinder | .typeQuantity =>
           -- These are helper nodes, not standalone types
@@ -899,7 +882,7 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
               let binder := TypeVarBinder.mk ⟨#[], fname, fnameSpan⟩ (some ftype)
               sig := .forall_ #[binder] sig span
             else
-              sig := .pi .omega ⟨#[], fname, fnameSpan⟩ ftype sig span
+              sig := .pi .omega .explicit ⟨#[], fname, fnameSpan⟩ ftype sig span
           | none => pure ()
         pure { attrs, name, fields := #[], sig := some sig, span }
       else
@@ -945,7 +928,7 @@ def lowerExprToken (kind : TokenKind) (text : String) (span : Span) : LowerM Exp
       pure (.var ⟨#[], "_error", span⟩)
 
 /-- Lower a single parameter -/
-def lowerSingleParam (green : GreenNode) (offset : Nat) : LowerM (QualName × Option TypeExpr) := do
+def lowerSingleParam (green : GreenNode) (offset : Nat) : LowerM (QualName × Option Expr) := do
   let span ← spanFor green offset
   match green.syntaxKind? with
   | some .patVar =>
@@ -971,8 +954,8 @@ def lowerSingleParam (green : GreenNode) (offset : Nat) : LowerM (QualName × Op
   | _ => pure (⟨#[], "_", span⟩, none)
 
 /-- Lower lambda parameters -/
-def lowerLambdaParams (paramNodes : Array (GreenNode × Nat)) : LowerM (Array (QualName × Option TypeExpr)) := do
-  let mut result : Array (QualName × Option TypeExpr) := #[]
+def lowerLambdaParams (paramNodes : Array (GreenNode × Nat)) : LowerM (Array (QualName × Option Expr)) := do
+  let mut result : Array (QualName × Option Expr) := #[]
   for (p, pOffset) in paramNodes do
     match p.syntaxKind? with
     | some .paramList =>
@@ -1493,8 +1476,8 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
 
           -- Extract signature base from either `::` or `->` notation
           let sigNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .signature
-          let mut returnTypeSig : Option TypeExpr := none
-          let mut explicitSig : Option TypeExpr := none
+          let mut returnTypeSig : Option Expr := none
+          let mut explicitSig : Option Expr := none
           for (sigNode, sigOffset) in sigNodes do
             let sigTy ← lowerTypeExpr sigNode sigOffset
             let sigKind := match sigNode.children[0]? with
@@ -1515,14 +1498,13 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               if typedParams.isEmpty then
                 pure (some retTy)
               else
+                -- Always emit explicit typed params with a named `.pi` binder
                 let fullSig := typedParams.foldr (init := retTy) fun param accTy =>
                   if param.isImplicit then
-                    TypeExpr.forall_ #[TypeVarBinder.mk param.name param.type?] accTy span
-                  else match param.quantity? with
-                    | some qty =>
-                      TypeExpr.pi qty param.name (param.type?.getD accTy) accTy span
-                    | none =>
-                      TypeExpr.arrow (param.type?.getD accTy) accTy span
+                    Expr.forall_ #[TypeVarBinder.mk param.name param.type?] accTy span
+                  else
+                    let qty := param.quantity?.getD .omega
+                    Expr.pi qty .explicit param.name (param.type?.getD accTy) accTy span
                 pure (some fullSig)
 
           let clauseNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .defClause
