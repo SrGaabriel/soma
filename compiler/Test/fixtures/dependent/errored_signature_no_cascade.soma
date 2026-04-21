@@ -1,0 +1,5 @@
+// expect: error unknown variable
+
+def broken : Thingamajig := 42
+
+def uses_broken (x : Int32) : Int32 := x

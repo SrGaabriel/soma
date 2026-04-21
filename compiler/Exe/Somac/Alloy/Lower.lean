@@ -626,6 +626,7 @@ partial def collectTyVarLevelsHead (h : Soma.Core.Head) (acc : Std.HashSet Nat)
   | .hVar v => acc.insert v.level.lvl
   | .hMeta m => acc.insert m.id
   | .hConst _ _ => acc
+  | .hErrored => acc
   | .hCase scrutinees _ _ =>
     scrutinees.foldl (fun a s => collectTyVarLevels s a) acc
 

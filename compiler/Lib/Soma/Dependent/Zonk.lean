@@ -114,6 +114,7 @@ partial def zonkHead (h : Head) : TCM Head := do
   match h with
   | .hVar v => return .hVar v
   | .hMeta m => return .hMeta m
+  | .hErrored => return .hErrored
   | .hConst qn ty =>
     let ty' ← zonkValue ty
     return .hConst qn ty'
@@ -356,6 +357,7 @@ partial def hasUnsolvedMetasHead (h : Head) : TCM Bool := do
     | none => return true
   | .hVar _ => return false
   | .hConst _ _ => return false
+  | .hErrored => return false
   | .hCase scrutinees _ _ =>
     for s in scrutinees do
       if ← hasUnsolvedMetas s then
@@ -430,6 +432,7 @@ partial def collectUnsolvedMetasHead (h : Head) (span : Span) : TCM Unit := do
     | none => pure ()
   | .hVar _ => pure ()
   | .hConst _ _ => pure ()
+  | .hErrored => pure ()
   | .hCase scrutinees _ _ =>
     for s in scrutinees do
       collectUnsolvedMetas s span

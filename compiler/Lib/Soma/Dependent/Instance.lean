@@ -257,6 +257,7 @@ where
         return (.hMeta freshId, mapping.insert m.id freshId)
     | .hVar _ => return (h, mapping)
     | .hConst _ _ => return (h, mapping)
+    | .hErrored => return (h, mapping)
     | .hCase scrutinees arms resultTy =>
       let mut currentMapping := mapping
       let mut refreshed : Array Value := #[]
@@ -539,13 +540,17 @@ private partial def deepForceValue (v : Value) : TCM Value := do
     return .vVariant row'
   | other => return other
 
+/-- Best-effort attempt to resolve pending instance-resolution constraints -/
 def solvePendingInstances : TCM (Array InstanceFailure) := do
   let pending ← TCM.getPendingInstances
   let mut failures : Array InstanceFailure := #[]
+  let mut solvedIds : Array MetaId := #[]
 
   for p in pending do
     let solved ← TCM.isMetaSolved p.metaId
-    if solved then continue
+    if solved then
+      solvedIds := solvedIds.push p.metaId
+      continue
     let forcedArgs ← p.args.mapM deepForceValue
     let allConcrete := forcedArgs.all isConcreteForResolution
     if !allConcrete then continue
@@ -554,33 +559,36 @@ def solvePendingInstances : TCM (Array InstanceFailure) := do
     match result with
     | .found value _ =>
       TCM.solveMeta p.metaId value (callerTag := "Instance.solvePendingA")
+      solvedIds := solvedIds.push p.metaId
     | .notFound classId args reason =>
       failures := failures.push {
-        metaId := p.metaId
-        classId := classId
-        args := args
-        reason := reason
-        span := p.span
+        metaId := p.metaId, classId := classId, args := args,
+        reason := reason, span := p.span
       }
     | .cycle classId args =>
       failures := failures.push {
-        metaId := p.metaId
-        classId := classId
-        args := args
-        reason := "cycle in instance resolution"
-        span := p.span
+        metaId := p.metaId, classId := classId, args := args,
+        reason := "cycle in instance resolution", span := p.span
       }
     | .depthExceeded classId =>
       failures := failures.push {
-        metaId := p.metaId
-        classId := classId
-        args := #[]
-        reason := "instance search depth exceeded"
-        span := p.span
+        metaId := p.metaId, classId := classId, args := #[],
+        reason := "instance search depth exceeded", span := p.span
       }
 
-  -- Clear pending instances after processing
-  TCM.clearPendingInstances
+  -- Remove only the constraints we actually solved
+  if solvedIds.size == pending.size then
+    TCM.clearPendingInstances
+  else if !solvedIds.isEmpty then
+    let toDrop : Std.HashSet Nat := solvedIds.foldl (fun s m => s.insert m.id) {}
+    TCM.modifyState fun s =>
+      let (keep, drop) := s.postponed.partition fun tc =>
+        match tc.constraint with
+        | .resolveInstance m _ _ _ => !toDrop.contains m.id
+        | _ => true
+      let droppedCids := drop.map (·.constraintId)
+      let metas' := droppedCids.foldl (fun m cid => m.removeConstraint cid) s.metas
+      { s with postponed := keep, metas := metas' }
   return failures
 
 /-- Solve pending instances and accumulate errors for all failures -/

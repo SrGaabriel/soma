@@ -16,6 +16,7 @@ partial def headToString : Head → String
   | .hCase scrutinees _ _ =>
     let scrutsStr := scrutinees.toList.map valueToString |> String.intercalate ", "
     s!"case {scrutsStr} of ..."
+  | .hErrored => "{errored}"
 
 /-- Format an eliminator applied on top of an already-rendered prefix -/
 partial def elimToString (acc : String) : Elim → String
@@ -157,6 +158,7 @@ partial def headEq (h1 h2 : Head) : Bool :=
   | .hMeta m1, .hMeta m2 => m1 == m2
   | .hConst n1 _, .hConst n2 _ => n1 == n2
   | .hCase _ _ _, .hCase _ _ _ => false
+  | .hErrored, .hErrored => true
   | _, _ => false
 
 /-- Check if two eliminators are equal -/
@@ -502,6 +504,7 @@ partial def quoteHeadExpr (depth : DeBruijnLvl) : Head → Expr
           Arm.mk ac.patterns (quoteExpr bodyDepth bodyVal)
       ) |>.toArray)
       (quoteExpr depth resultTy)
+  | .hErrored => .panic "{errored}"
 
 /-- Apply an eliminator on top of an already-quoted expression -/
 partial def quoteElimExpr (depth : DeBruijnLvl) (acc : Expr) : Elim → Expr

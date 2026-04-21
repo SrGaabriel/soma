@@ -160,6 +160,7 @@ partial def renameHead (ren : PartialRenaming) : Head → RenameResult
     if id == ren.targetMeta then .error .occursCheck
     else .ok (.mvar id)
   | .hConst name constTy => .ok (.const name (quoteExpr0 constTy))
+  | .hErrored => .ok (.panic "{errored}")
   | .hCase scrutinees arms rty => do
     let scrutExprs ← scrutinees.mapM (rename ren)
     let armExprs ← arms.mapM fun arm => do

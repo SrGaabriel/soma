@@ -102,6 +102,7 @@ partial def substituteHead (h : Head) (paramNames : Array String)
   match h with
   | .hVar _ => return h
   | .hMeta _ => return h
+  | .hErrored => return h
   | .hConst name ty =>
     let ty' ← substituteTypeArgsInValue ty paramNames typeArgs depth
     return .hConst name ty'
@@ -432,6 +433,7 @@ where
   headContainsMeta : Head → Bool
     | .hMeta _ => true
     | .hVar _ => false
+    | .hErrored => false
     | .hConst _ ty => valueContainsMeta ty
     | .hCase scrutinees _ rty =>
       scrutinees.any valueContainsMeta || valueContainsMeta rty

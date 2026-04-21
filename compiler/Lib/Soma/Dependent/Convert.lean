@@ -73,6 +73,16 @@ partial def force (v : Value) : TCM Value := do
           force result
         | none => return v
       | none => return v
+    | .hConst qn _ =>
+      let ctx ← TCM.getCtx
+      match ctx.globals.defs.get? qn with
+      | some info =>
+        match info.value with
+        | some bodyVal =>
+          let result ← applySpine bodyVal neu.spine
+          force result
+        | none => return v
+      | none => return v
     | _ => return v
   | .vDataType dId params =>
     let abbrev? ← TCM.lookupAbbrev ⟨dId⟩

@@ -599,25 +599,13 @@ def buildGlobalsAndInstances
         origin := Soma.Dependent.DeclarationOrigin.instanceMethod
       }
 
-  let sigCtx := { baseCtx with
-    globals := fullGlobalsWithInstanceFns
-    currentNamespace := moduleNs
-    instanceEnv := fullInstanceEnv
-    abbrevEnv := fullAbbrevEnv }
-  let sigResult := (Soma.Dependent.Driver.elaborateFunctionSignatures untypedModule).run sigCtx state''
-  let (globalsWithSigs, state''', sigErrors) := match sigResult with
-    | .error e => (fullGlobalsWithInstanceFns, state'', #[e])
-    | .ok (globals, st) => (globals, st, st.errors)
-
-  allErrors := allErrors ++ sigErrors
-
   return {
-    globals := globalsWithSigs
+    globals := fullGlobalsWithInstanceFns
     instanceEnv := fullInstanceEnv
     abbrevEnv := fullAbbrevEnv
     instanceMap := instanceMap
     instanceTypedFunctions := instanceTypedFns
-    finalState := state'''
+    finalState := state''
     errors := allErrors
   }
 
@@ -689,9 +677,17 @@ def typeCheckModule
     instanceEnv := globalsResult.instanceEnv
     abbrevEnv := globalsResult.abbrevEnv }
 
+  -- Drain any instance-resolution constraints that signature elaboration couldn't resolve
+  let sigResult := (Soma.Dependent.Driver.resolveAndZonkSignatures untypedModule).run ctx globalsResult.finalState
+  let (zonkedGlobals, state'', sigErrors) := match sigResult with
+    | .error e => (seededGlobals, globalsResult.finalState, #[e])
+    | .ok (globals, st) => (globals, st, st.errors)
+  allErrors := allErrors ++ sigErrors
+  let ctx := { ctx with globals := zonkedGlobals }
+
   -- Check functions
   let fnResult := checkFunctionsCore
-    untypedModule moduleName ctx globalsResult.finalState baseIncrState dirtyNames
+    untypedModule moduleName ctx state'' baseIncrState dirtyNames
 
   allErrors := allErrors ++ fnResult.errors
 

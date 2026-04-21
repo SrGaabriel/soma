@@ -1924,10 +1924,9 @@ def recoverWithM (action : TCM α) (mkDefault : TCM α) : TCM α := do
     addError e
     mkDefault
 
-/-- Create an error placeholder value -/
+/-- Create an error-recovery value at the given type -/
 def errorPlaceholder (ty : Value) (_span : Span) : TCM Value := do
-  let metaId ← freshMeta ty (origin := .errorRecovery)
-  return .vNeutral ty (.nMeta metaId)
+  return .vNeutral ty (Neutral.ofHead .hErrored)
 
 /-- Create a Type placeholder for when we can't infer a type -/
 def typePlaceholder (span : Span) : TCM Value := do

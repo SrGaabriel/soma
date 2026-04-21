@@ -94,6 +94,7 @@ partial def collectMetasHead : Head → Array MetaId
   | .hVar _ => #[]
   | .hConst _ _ => #[]
   | .hMeta id => #[id]
+  | .hErrored => #[]
   | .hCase scrutinees arms _ =>
     scrutinees.foldl (fun acc s => acc ++ collectMetas s) #[] ++
     arms.foldl (fun acc arm => acc ++ collectMetasClosure arm.closure) #[]
@@ -183,6 +184,7 @@ partial def occursInHead (m : MetaId) : Head → Bool
   | .hVar _ => false
   | .hConst _ _ => false
   | .hMeta id => id == m
+  | .hErrored => false
   | .hCase scrutinees arms _ =>
     scrutinees.any (occursIn m) ||
     arms.any (fun arm => occursInClosure m arm.closure)
@@ -284,6 +286,7 @@ partial def inScopeHead (allowedLevels : List DeBruijnLvl) : Head → Bool
   | .hVar v => allowedLevels.contains v.level
   | .hConst _ _ => true
   | .hMeta _ => true
+  | .hErrored => true
   | .hCase scrutinees _ _ => scrutinees.all (inScope allowedLevels)
 
 partial def inScopeElim (allowedLevels : List DeBruijnLvl) : Elim → Bool
@@ -344,6 +347,7 @@ partial def collectFreeVarsHead : Head → Array DeBruijnLvl
   | .hVar v => #[v.level]
   | .hConst _ _ => #[]
   | .hMeta _ => #[]
+  | .hErrored => #[]
   | .hCase scrutinees arms _ =>
     scrutinees.foldl (fun acc s => acc ++ collectFreeVars s) #[] ++
     arms.foldl (fun acc arm => acc ++ collectFreeVarsClosure arm.closure) #[]
@@ -438,6 +442,7 @@ where
       | .hVar v => s!"nVar({v.name})"
       | .hConst qn _ => s!"nConst({qn})"
       | .hMeta m => s!"nMeta({m.id})"
+      | .hErrored => "hErrored"
       | .hCase _ _ _ => "nCase"
     let elimsStr := String.intercalate "," (n.spine.toList.map fun
       | .eApp _ => "app"

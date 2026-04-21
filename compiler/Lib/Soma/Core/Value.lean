@@ -109,6 +109,8 @@ inductive Head where
   | hConst (name : Soma.Core.QualifiedName) (constTy : Value)
   /-- Case analysis blocked because one or more scrutinees are non-canonical -/
   | hCase (scrutinees : Array Value) (arms : List ArmClosure) (resultTy : Value)
+  /-- Sentinel for a definition whose elaboration failed -/
+  | hErrored
 
 /-- A single eliminator in a neutral spine -/
 inductive Elim where

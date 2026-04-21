@@ -288,13 +288,15 @@ def elaborateFunctionType (sigSyntax : Syntax.Expr) : TCM Value := do
 def checkFunction (fn : Soma.Core.UntypedFunction)
   : TCM (Value × Soma.Core.Expr × Array (Soma.Unique × String)) := do
   let span := fn.span
-  -- Intrinsic/extern functions have no real body — just elaborate the type
+  let storedType : Option Value ← match ← TCM.lookupGlobalByQN fn.name with
+    | some info => pure (some info.type)
+    | none => pure none
   if fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome then
     match fn.declaredTypeSyntax with
-    | some typeSyntax =>
-      let declaredType ← TCM.recoverWithM
-        (elaborateFunctionType typeSyntax)
-        (TCM.typePlaceholder span)
+    | some _ =>
+      let declaredType ← match storedType with
+        | some ty => pure ty
+        | none => TCM.freshMetaVal (.vType .zero)
       Soma.Dependent.solvePendingInstancesOrFail
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
@@ -307,9 +309,12 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       return (ty, placeholderBody, #[])
   match fn.declaredTypeSyntax with
   | some typeSyntax =>
-    let declaredType ← TCM.recoverWithM
-      (elaborateFunctionType typeSyntax)
-      (TCM.typePlaceholder span)
+    let declaredType ← match storedType with
+      | some ty => pure ty
+      | none =>
+        TCM.recoverWithM
+          (elaborateFunctionType typeSyntax)
+          (TCM.typePlaceholder span)
     -- Split declared signature into:
     --   1) telescope prefix needed to check this function's term parameters
     --   2) remaining result type outside that prefix
@@ -823,25 +828,22 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
 
   return globals
 
-/-- Re-elaborate every function's declared signature with the full instance environment available -/
-def elaborateFunctionSignatures (module : Soma.Core.UntypedModule) : TCM Globals := do
+/-- After `buildInstanceEnv`, drain any instance-resolution constraints left and zonk metas -/
+def resolveAndZonkSignatures (module : Soma.Core.UntypedModule) : TCM Globals := do
   let ctx ← TCM.getCtx
   let ns := ctx.currentNamespace
+  Soma.Dependent.solvePendingInstancesOrFail
   let mut globals := ctx.globals
   for fn in module.functions do
-    match fn.declaredTypeSyntax with
-    | none => continue
-    | some typeSyntax =>
-      let elabed ← TCM.recoverWithM
-        (TCM.withGlobals globals (elaborateFunctionType typeSyntax))
-        (TCM.typePlaceholder fn.span)
-      let zonked ← zonkValue elabed
-      match globals.getDef fn.name with
-      | some info =>
-        let info' := { info with type := zonked }
-        globals := { globals with defs := globals.defs.insert fn.name info' }
-        globals := globals.register ns fn.name.display info'
-      | none => pure ()
+    if fn.declaredTypeSyntax.isNone then continue
+    match globals.getDef fn.name with
+    | none => pure ()
+    | some info =>
+      let zonked ← zonkValue info.type
+      let expanded ← expandAbbrevValue zonked
+      let info' := { info with type := expanded }
+      globals := { globals with defs := globals.defs.insert fn.name info' }
+      globals := globals.register ns fn.name.display info'
   return globals
 
 /-- Build the InstanceEnv from module type classes and instances -/

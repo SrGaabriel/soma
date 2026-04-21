@@ -42,6 +42,21 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     return
 
   match v1', v2' with
+  | .vNeutral _ neu1, _ =>
+    if neu1.isBareHead then
+      match neu1.head with
+      | .hErrored => return
+      | _ => pure ()
+  | _, _ => pure ()
+  match v2' with
+  | .vNeutral _ neu2 =>
+    if neu2.isBareHead then
+      match neu2.head with
+      | .hErrored => return
+      | _ => pure ()
+  | _ => pure ()
+
+  match v1', v2' with
   -- Same constructor: unify recursively
   | .vType l1, .vType l2 =>
     unifyLevel l1 l2
@@ -209,6 +224,8 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
 /-- Unify two heads, throwing if the heads are incompatible -/
 partial def unifyHead (h1 h2 : Head) : TCM Unit := do
   match h1, h2 with
+  | .hErrored, _ => pure ()
+  | _, .hErrored => pure ()
   | .hVar v1, .hVar v2 =>
     if v1.level != v2.level then
       let span ← TCM.getSpan

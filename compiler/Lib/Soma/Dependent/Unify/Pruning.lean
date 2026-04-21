@@ -399,6 +399,7 @@ partial def collectMetaOccurrencesHead (m : MetaId) (h : Head) (depth : Nat)
   match h with
   | .hVar _ => #[]
   | .hConst _ _ => #[]
+  | .hErrored => #[]
   | .hMeta id =>
     if id == m then #[{ depth := depth, scopeVars := scope }]
     else #[]

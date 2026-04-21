@@ -204,6 +204,7 @@ where
       | _ => []
     | .hConst _ _ => []
     | .hMeta _ => []
+    | .hErrored => []
     | .hCase scrutinees _ _ =>
       scrutinees.foldl (fun acc s => acc ++ checkIndexValue s reg) []
   checkElim (e : Elim) (reg : TotalityRegistry) : List String :=
