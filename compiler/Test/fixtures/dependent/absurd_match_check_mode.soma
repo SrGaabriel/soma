@@ -1,0 +1,9 @@
+// expect: success
+
+inductive Void : Type
+
+def absurd_check (h : Void) : Int32 :=
+    match h
+
+def absurd_lambda : Void -> Bool :=
+    \h -> match h

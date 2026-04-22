@@ -1,0 +1,12 @@
+// expect: success
+
+inductive Test : Type where
+    | MkTest
+
+inductive Never : Type
+
+def hello : Never -> Test
+
+def ex_falso_poly {a : Type} : Never -> a
+
+def with_header_param (prefix_ : Int32) : Never -> Int32

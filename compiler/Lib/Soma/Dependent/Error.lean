@@ -381,6 +381,12 @@ inductive TCError where
       (missingPatterns : Array String)
       (span : Span)
 
+  /-- Bodiless definition cannot be derived by ex-falso -/
+  | bodilessNotDerivable
+      (defName : String)
+      (resolvedType : Value)
+      (span : Span)
+
   deriving Inhabited
 
 namespace TCError
@@ -415,6 +421,7 @@ def span : TCError → Span
   | .positivityViolation _ _ s _ => s
   | .impossiblePattern _ _ _ s => s
   | .nonExhaustiveMatch _ _ s => s
+  | .bodilessNotDerivable _ _ s => s
 
 /-- Build secondary labels from constraint chain -/
 private def chainToLabels (chain : Array ConstraintInfo) : Array Label :=
@@ -745,6 +752,19 @@ def toDiagnostic : TCError → Diagnostic
     , secondaryLabels := #[]
     , notes := notes
     , help := some "add an arm for each listed case, or a catch-all variable / `_` pattern"
+    }
+
+  | .bodilessNotDerivable name resolvedType span =>
+    { severity := .error
+    , code := some "E1032"
+    , message := s!"bodiless definition '{name}' is not derivable"
+    , primaryLabel := Label.primary span "no explicit parameter with an uninhabited type"
+    , secondaryLabels := #[]
+    , notes := #[
+        s!"after reduction, the declared type is `{resolvedType}`",
+        "a bodiless def is a proof-by-absurdity: it requires at least one explicit parameter whose type has no constructors (e.g. `Never`), so the body is vacuously unreachable"
+      ]
+    , help := some "if you meant to prove that the declared type is unprovable, rewrite as `T -> Never`; otherwise provide a body (`:=` or `|` clauses) or mark as @[intrinsic]/@[extern]"
     }
 
 instance : ToString TCError where

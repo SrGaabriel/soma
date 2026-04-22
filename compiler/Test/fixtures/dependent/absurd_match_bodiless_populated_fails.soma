@@ -1,0 +1,7 @@
+// expect: error not derivable
+
+inductive MyBool where
+    | T
+    | F
+
+def invalid : MyBool -> Int32

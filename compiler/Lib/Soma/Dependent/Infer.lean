@@ -862,10 +862,10 @@ where
       return (thenTy, .if_ condExpr thenExpr elseExpr)
 
     -- Case expressions
-    | .case scruts arms _ => do
+    | .case scruts arms caseSpan => do
       let (scrutTys, scrutsExpr) ← inferSyntaxList scruts.toList
       let resultTy ← TCM.freshMetaVal (.vType .zero)
-      let armsExpr ← inferSyntaxArms arms.toList scrutTys scrutsExpr resultTy
+      let armsExpr ← inferSyntaxArms arms.toList scrutTys scrutsExpr resultTy caseSpan
       let resultTyExpr ← quoteValueToExpr resultTy
       return (resultTy, .«case» scrutsExpr armsExpr resultTyExpr)
 
@@ -1293,6 +1293,7 @@ partial def inferSyntaxRecordFields (fields : List (Soma.Syntax.QualName × Soma
 /-- Infer arms of a case expression from Syntax.MatchArm -/
 partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
     (scrutTys : List Value) (scrutExprs : Array Soma.Core.Expr) (expectedTy : Value)
+    (caseSpan : Span)
     : TCM (Array Soma.Core.Arm) := do
   let ctx ← TCM.getCtx
   let mut scruts : List (Value × Quantity) := []
@@ -1322,7 +1323,7 @@ partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
     armUsagesList := armUsagesList.push armUsages
   let span := match arms.head? with
     | some arm => arm.span
-    | none => default
+    | none => caseSpan
   let joined ← checkMultiBranchUsages armUsagesList span
   applyUsages joined
   Coverage.checkExhaustiveness results scrutTys span

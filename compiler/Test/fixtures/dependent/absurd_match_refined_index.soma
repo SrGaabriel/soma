@@ -1,0 +1,23 @@
+// expect: success
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+inductive Truth : Type where
+    | Trivial : Truth
+
+inductive Never : Type
+
+class Gt (a : Type) where
+    gt : a -> a -> Type
+
+instance Gt Nat where
+    def gt : Nat -> Nat -> Type
+        | Nat::Zero, Nat::Zero => Truth
+        | Nat::Zero, Nat::Succ _ => Never
+        | Nat::Succ _, Nat::Zero => Truth
+        | Nat::Succ n, Nat::Succ m => gt n m
+
+def zero_not_gt_one : gt Nat::Zero (Nat::Succ Nat::Zero) -> Never
+    | h => match h

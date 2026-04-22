@@ -220,13 +220,11 @@ partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) 
         return some (GreenNode.mkNode .declDef children)
 
       else
-        -- Bodiless declaration: only allowed with @[intrinsic] or @[extern]
-        if signature.isSome && hasBodyProvidingAttr attrs then
-          let children := attrs ++ #[defTok, nameNode, signature.get!]
+        if signature.isSome then
+          let children := attrs ++ #[defTok, nameNode] ++
+            (match params with | some p => #[p] | none => #[]) ++
+            #[signature.get!]
           return some (GreenNode.mkNode .declDef children)
-        else if signature.isSome then
-          recordError "bodiless def requires @[intrinsic] or @[extern] attribute"
-          return some (GreenNode.mkError "missing body" (attrs ++ #[defTok, nameNode, signature.get!]))
         else
           recordError "expected ':=', '|', or ':' after function declaration"
           return some (GreenNode.mkError "incomplete definition" (attrs ++ #[defTok, nameNode]))

@@ -752,6 +752,20 @@ def evalExprToValue (e : Soma.Core.Expr) : LowerM Value := do
 private def lowerCoreVar (u : Unique) : LowerM (Option PortId) := do
   lowerVar u
 
+/-- Reserved ctor tag for panic nodes in the Circuit encoding -/
+private def panicTag : Nat := 0xFFFF
+
+/-- Emit a panic-carrying ctor node: `ctor(panicTag, msgHash, line)` -/
+private def emitPanicCtor (msg : String) (ty : Value) : LowerM PortId := do
+  let word64Ty := Value.vPrimTy .word64
+  let word32Ty := Value.vPrimTy .word
+  let msgNode ← LowerM.addNode (Node.num .u64 msg.hash.toUInt32) word64Ty
+  let lineNode ← LowerM.addNode (Node.num .u32 0) word32Ty
+  let panicCtor ← LowerM.addNode (.ctor panicTag 2) ty
+  LowerM.connect ⟨panicCtor, ⟨1⟩⟩ (PortId.principal msgNode)
+  LowerM.connect ⟨panicCtor, ⟨2⟩⟩ (PortId.principal lineNode)
+  pure (PortId.principal panicCtor)
+
 mutual
 
 /-- Lower a Core.Expr to a Circuit IR subgraph. -/
@@ -793,16 +807,7 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
   | .projSnd e => lowerCoreProj e 1 ty
 
   | .panic msg =>
-    let word64Ty := Value.vPrimTy .word64
-    let word32Ty := Value.vPrimTy .word
-    let msgNode ← LowerM.addNode (Node.num .u64 msg.hash.toUInt32) word64Ty
-    let msgPort := PortId.principal msgNode
-    let lineNode ← LowerM.addNode (Node.num .u32 0) word32Ty
-    let panicTag := 0xFFFF
-    let panicCtor ← LowerM.addNode (.ctor panicTag 2) ty
-    LowerM.connect ⟨panicCtor, ⟨1⟩⟩ msgPort
-    LowerM.connect ⟨panicCtor, ⟨2⟩⟩ (PortId.principal lineNode)
-    pure (some (PortId.principal panicCtor))
+    some <$> emitPanicCtor msg ty
 
   | .ann expr _ty => lowerCoreExpr expr ty
 
@@ -1105,6 +1110,11 @@ partial def lowerCoreCase (scruts : Array Soma.Core.Expr) (arms : Array Soma.Cor
 
   if scrutPorts.isEmpty then
     pure none
+  else if arms.isEmpty then
+    for (scrutPort, scrutTy) in scrutPorts.zip scrutTypes do
+      let era ← LowerM.addNode .era scrutTy
+      LowerM.connect (PortId.principal era) scrutPort
+    some <$> emitPanicCtor "unreachable: absurd match on uninhabited type" ty
   else
     let ctx ← LowerM.getCtx
     let variantLabels := PatternMatch.collectArmsVariantLabels arms

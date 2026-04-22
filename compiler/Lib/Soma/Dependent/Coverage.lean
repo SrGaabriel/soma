@@ -222,11 +222,18 @@ partial def isExhaustive
 /-- Entry point -/
 def checkExhaustiveness
     (arms : Array Arm) (scrutTys : List Value) (span : Span) : TCM Unit := do
-  if arms.isEmpty || scrutTys.isEmpty then
-    if arms.isEmpty ∧ !scrutTys.isEmpty then
+  if arms.isEmpty then
+    if scrutTys.isEmpty then return
+    let savedState ← get
+    let uninhabited ← scrutTys.anyM fun ty => do
+      let (isOpen, cands) ← liveCandidates ty
+      pure (!isOpen ∧ cands.isEmpty)
+    set savedState
+    unless uninhabited do
       let scrutType := scrutTys.head?.getD (.vType .zero)
       TCM.addError (.nonExhaustiveMatch scrutType #[] span)
     return
+  if scrutTys.isEmpty then return
   let matrix : Array (Array Pattern) := arms.map (·.patterns)
   let savedState ← get
   let result ← isExhaustive matrix scrutTys

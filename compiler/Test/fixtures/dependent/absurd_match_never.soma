@@ -1,0 +1,9 @@
+// expect: success
+
+inductive Never : Type
+
+def ex_falso {a : Type} : Never -> a
+    | h => match h
+
+def not_zero_gt_one : Never -> Bool
+    | h => match h

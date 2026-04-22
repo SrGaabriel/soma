@@ -41,6 +41,7 @@ structure Function where
   declaredTypeSyntax : Option Soma.Syntax.Expr
   closureInfo : Option ClosureInfo
   attrs : FunctionAttrs
+  isBodilessExFalso : Bool := false
 
 namespace Function
 

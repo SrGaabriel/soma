@@ -1,0 +1,8 @@
+// expect: error non-exhaustive
+
+inductive Pair2 where
+    | Left
+    | Right
+
+def bad : Pair2 -> Int32
+    | x => match x

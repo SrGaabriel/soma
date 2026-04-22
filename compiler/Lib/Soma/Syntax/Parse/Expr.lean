@@ -519,10 +519,6 @@ partial def parseCaseExpr : ParserM (Option GreenNode) := do
       match scrutinees with
       | some scruts =>
           let arms ← layoutSepBy parseMatchArm
-
-          if arms.isEmpty then
-            recordError "expected at least one match arm after 'case'"
-
           return some (GreenNode.mkNode .exprCase (#[caseTok] ++ scruts ++ arms))
       | none =>
           recordError "expected expression after 'case'"

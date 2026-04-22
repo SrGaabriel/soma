@@ -18,3 +18,5 @@ instance Gt Nat where
         | Nat::Succ n, Nat::Succ m => gt n m
 
 def succ_greater_than_zero : gt (Nat::Succ Nat::Zero) Nat::Zero := Truth::Trivial
+
+def not_greater_than_zero : gt Nat::Zero (Nat::Succ Nat::Zero) -> Never

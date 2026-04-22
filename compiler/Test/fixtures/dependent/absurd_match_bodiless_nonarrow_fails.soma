@@ -1,0 +1,5 @@
+// expect: error not derivable
+
+inductive Never : Type
+
+def impossible : Never

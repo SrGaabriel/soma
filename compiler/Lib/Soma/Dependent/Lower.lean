@@ -220,8 +220,20 @@ private def lowerFunctionDeclCore
             closureInfo := none
             attrs := fnAttrs
           }, #[])
+        if let some sigTy := sig then
+          let headerExplicitNames := (headerParams.filter (!·.isImplicit)).map (·.name.name)
+          return (some {
+            name := globalName
+            params := headerExplicitNames
+            body := Syntax.Expr.lit (Syntax.Literal.string "" span)
+            span := span
+            declaredTypeSyntax := sig
+            closureInfo := none
+            attrs := fnAttrs
+            isBodilessExFalso := true
+          }, #[])
         let d := Diagnostic.error
-          (s!"definition '{name.name}' must have at least one clause or be marked @[intrinsic]/@[extern]")
+          (s!"definition '{name.name}' must have a body, at least one clause, an @[intrinsic]/@[extern] attribute, or a type signature")
           span
         return (none, #[d])
     | _ =>

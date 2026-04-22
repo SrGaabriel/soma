@@ -11,6 +11,7 @@ import Soma.Dependent.Totality
 import Soma.Dependent.Elaborate
 import Soma.Dependent.TraitElaborate
 import Soma.Dependent.Zonk
+import Soma.Dependent.Coverage
 import Soma.Core.Eval
 
 namespace Soma.Dependent.Driver
@@ -283,6 +284,40 @@ def elaborateFunctionType (sigSyntax : Syntax.Expr) : TCM Value := do
   let _ ← Soma.Dependent.solvePendingInstances
   return fnType
 
+/-- Finds the index among explicit binders of the first pi whose domain is uninhabited per `Coverage.liveCandidates` -/
+partial def findFirstUninhabitedExplicit (ty : Value) : TCM (Option Nat) := do
+  let rec go (ty : Value) (explicitIdx : Nat) : TCM (Option Nat) := do
+    let ty' ← force ty
+    match ty' with
+    | .vPi _ binder name dom cod =>
+      if binder.isImplicit then
+        let lvl ← TCM.currentLevel
+        let dummy := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+        let codTy ← applyClosure cod dummy
+        go codTy explicitIdx
+      else
+        let savedState ← get
+        let (isOpen, cands) ← Coverage.liveCandidates dom
+        set savedState
+        if !isOpen ∧ cands.isEmpty then
+          return some explicitIdx
+        let lvl ← TCM.currentLevel
+        let dummy := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+        let codTy ← applyClosure cod dummy
+        go codTy (explicitIdx + 1)
+    | _ => return none
+  go ty 0
+
+/-- Synthesise the AST body for a bodiless ex-falso -/
+def synthesizeExFalsoBody (k : Nat) (span : Span) : Soma.Syntax.Expr :=
+  let names : Array String := (Array.range (k + 1)).map (fun i => s!"_arg{i}")
+  let lambdaParams : Array (Soma.Syntax.QualName × Option Soma.Syntax.Expr) :=
+    names.map fun n => (⟨#[], n, span⟩, none)
+  let scrutName := names.back!
+  let scrutinee := Soma.Syntax.Expr.var ⟨#[], scrutName, span⟩
+  let emptyMatch := Soma.Syntax.Expr.case #[scrutinee] #[] span
+  Soma.Syntax.Expr.lambda lambdaParams emptyMatch span
+
 /-- Type check a single function using dependent types.
     Returns (fnType, typedBody, generatedParams) where generatedParams contains local ids. -/
 def checkFunction (fn : Soma.Core.UntypedFunction)
@@ -321,18 +356,31 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     let (allParams, resultType) ← TCM.recoverWith
       (extractSignaturePrefix declaredType fn.params.size)
       (#[], declaredType)
-    -- Extend context with prefix binders and check body against the exact remaining result type
-    let (generatedParams, typedBody) ← withSignaturePrefixBindings allParams fn.params span do
-      TCM.infallible (Soma.Dependent.checkSyntax fn.body resultType) default
-    -- Solve pending instance constraints before zonking
-    Soma.Dependent.solvePendingInstancesOrFail
-    -- Zonk all solved metas so downstream passes see concrete types
-    let declaredType' ← zonkValue declaredType
-    reportUnsolvedMetas declaredType' span
-    let typedBody' ← zonkExpr typedBody
-    -- Expand parameterized type abbreviations so downstream passes see real types
-    let declaredType'' ← expandAbbrevValue declaredType'
-    return (declaredType'', typedBody', generatedParams)
+    -- Bodiless ex-falso: synthesise a body now that we can see the signature's full Pi chain
+    let effectiveBody : Option Soma.Syntax.Expr ←
+      if fn.isBodilessExFalso then
+        match ← findFirstUninhabitedExplicit resultType with
+        | some k => pure (some (synthesizeExFalsoBody k span))
+        | none   => pure none
+      else pure (some fn.body)
+    match effectiveBody with
+    | none =>
+      Soma.Dependent.solvePendingInstancesOrFail
+      let declaredType' ← zonkValue declaredType
+      reportUnsolvedMetas declaredType' span
+      let resolved' ← expandAbbrevValue declaredType'
+      TCM.addError (.bodilessNotDerivable fn.name.display resolved' span)
+      let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
+      return (resolved', placeholderBody, #[])
+    | some body =>
+      let (generatedParams, typedBody) ← withSignaturePrefixBindings allParams fn.params span do
+        TCM.infallible (Soma.Dependent.checkSyntax body resultType) default
+      Soma.Dependent.solvePendingInstancesOrFail
+      let declaredType' ← zonkValue declaredType
+      reportUnsolvedMetas declaredType' span
+      let typedBody' ← zonkExpr typedBody
+      let declaredType'' ← expandAbbrevValue declaredType'
+      return (declaredType'', typedBody', generatedParams)
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
