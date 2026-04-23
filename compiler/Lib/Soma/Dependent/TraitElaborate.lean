@@ -630,7 +630,7 @@ private def elaborateWithEagerDicts
       value := dictVal
       span := span
     }
-    resolvedInstEnv := resolvedInstEnv.addInstanceWithId tempInst
+    resolvedInstEnv ← resolvedInstEnv.addInstanceWithIdForced tempInst
   TCM.withInstanceEnv resolvedInstEnv elabMethods
 
 /-- A constraint with an optional user-chosen dict name from instance binders. -/
@@ -675,7 +675,7 @@ private def elaborateDictPassingInstance
       value := dictVal
       span := span
     }
-    tempInstEnv := tempInstEnv.addInstanceWithId tempInst
+    tempInstEnv ← tempInstEnv.addInstanceWithIdForced tempInst
 
   -- 2. Elaborate methods within the modified instance env and bindings.
   let result ← TCM.withInstanceEnv tempInstEnv do
@@ -977,19 +977,27 @@ partial def runInstanceBodies
     let result ← elaborateInstanceBodiesCore pending.jobs pending.selfRefs #[]
     return result.typedFns
 
-/-- Merge a module-local instance env with a seed env (from dependencies).
-    Classes and instances from both are combined, deduplicating by instance ID. -/
-private def mergeInstanceEnvs (local_ seed : InstanceEnv) : InstanceEnv := {
-  classes := local_.classes.fold (init := seed.classes) fun acc uid info => acc.insert uid info
-  instances := local_.instances.fold (init := seed.instances) fun acc uid insts =>
-    match seed.instances.get? uid with
-    | none => acc.insert uid insts
-    | some existing =>
-      let merged := insts.foldl (init := existing) fun a inst =>
-        if a.any (·.instanceId == inst.instanceId) then a else a.push inst
-      acc.insert uid merged
-  moduleName := local_.moduleName
-}
+private def mergeInstanceEnvs (local_ seed : InstanceEnv) : InstanceEnv := Id.run do
+  let mergedClasses := local_.classes.fold (init := seed.classes)
+    fun acc uid info => acc.insert uid info
+  let mut mergedInstances := seed.instances
+  let mut mergedIndices := seed.indices
+  for (uid, insts) in local_.instances.toList do
+    let existingInsts := mergedInstances.getD uid #[]
+    let mut dedupedAdds : Array InstanceInfo := #[]
+    for inst in insts do
+      if !existingInsts.any (·.instanceId == inst.instanceId) then
+        dedupedAdds := dedupedAdds.push inst
+    mergedInstances := mergedInstances.insert uid (existingInsts ++ dedupedAdds)
+    let existingIdx := mergedIndices.getD uid DiscrTree.empty
+    let addedIdx := dedupedAdds.foldl (init := DiscrTree.empty) DiscrTree.insert
+    mergedIndices := mergedIndices.insert uid (DiscrTree.merge existingIdx addedIdx)
+  return {
+    classes := mergedClasses
+    instances := mergedInstances
+    indices := mergedIndices
+    moduleName := local_.moduleName
+  }
 
 /-- Try the skeleton path for an instance -/
 private def trySimpleInstanceSkeleton
@@ -1033,7 +1041,7 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
           typeClass?
       match ← TCM.withInstanceEnv visible attemptSkeleton with
       | some (instInfo, p) =>
-        env := env.addInstanceWithId instInfo
+        env ← env.addInstanceWithIdForced instInfo
         instanceMap := instanceMap.insert inst.span instInfo
         pending := pending.push p
       | none =>
@@ -1043,7 +1051,7 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
           | none           => elaborateInstanceFromClassInfo inst classInfo
         match ← TCM.withInstanceEnv visible attemptFull with
         | some (instInfo, methodFns) =>
-          env := env.addInstanceWithId instInfo
+          env ← env.addInstanceWithIdForced instInfo
           instanceMap := instanceMap.insert inst.span instInfo
           allTypedFns := allTypedFns ++ methodFns
         | none => pure ()
@@ -1120,20 +1128,20 @@ def buildInstanceEnvFromModuleIncremental
       let visible := mergeInstanceEnvs env seedEnv
       match ← elaborateOne inst visible with
       | some (instInfo, methodFns) =>
-        env := env.addInstanceWithId instInfo
+        env ← env.addInstanceWithIdForced instInfo
         instanceMap := instanceMap.insert inst.span instInfo
         allTypedFns := allTypedFns ++ methodFns
       | none => pure ()
     else
       match prevInstanceMap.get? inst.span with
       | some prevInst =>
-        env := env.addInstanceWithId prevInst
+        env ← env.addInstanceWithIdForced prevInst
         instanceMap := instanceMap.insert inst.span prevInst
       | none =>
         let visible := mergeInstanceEnvs env seedEnv
         match ← elaborateOne inst visible with
         | some (instInfo, methodFns) =>
-          env := env.addInstanceWithId instInfo
+          env ← env.addInstanceWithIdForced instInfo
           instanceMap := instanceMap.insert inst.span instInfo
           allTypedFns := allTypedFns ++ methodFns
         | none => pure ()

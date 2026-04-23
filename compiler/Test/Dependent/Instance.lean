@@ -179,76 +179,209 @@ def run : IO TestRunner := do
 
 end InstanceEnvTests
 
-/-! ## Resolution State Tests -/
+namespace NormalizationTests
 
-namespace ResolutionStateTests
+private def runTCM (m : TCM α) : IO (Except TCError α) := do
+  let ctx := TCContext.withDefaultInstances
+  match m.run ctx with
+  | .ok (a, _) => return .ok a
+  | .error e   => return .error e
 
-/-- Test: Empty state is not too deep -/
-def testEmptyNotTooDeep : IO TestResult := do
-  let state := ResolutionState.empty
-  if state.tooDeep then
-    return .failed "Empty state should not be too deep"
-  else
-    return .passed
-
-/-- Test: State becomes too deep at max depth -/
-def testMaxDepth : IO TestResult := do
-  let mut state := ResolutionState.empty
-  for _ in [:100] do
-    state := state.deeper
-  if state.tooDeep then
-    return .passed
-  else
-    return .failed "Should be too deep at depth 100"
-
-/-- Test: Push and pop goals -/
-def testPushPopGoals : IO TestResult := do
+/-- Two ground goals with the same class and identical args share a key -/
+def testGroundArgsIdentical : IO TestResult := do
   let classId := mkTestClassId "Eq" 0
-  let state := ResolutionState.empty
-    |>.pushGoal classId #[]
-    |>.pushGoal classId #[Value.vPrimTy .int]
+  let args    := #[Value.vPrimTy .int]
+  match ← runTCM (do
+      let k1 ← normalizeGoalKey classId args
+      let k2 ← normalizeGoalKey classId args
+      pure (k1, k2)) with
+  | .ok (k1, k2) =>
+    if k1 == k2 then return .passed
+    else return .failed s!"identical goals got different keys: {k1} vs {k2}"
+  | .error e => return .failed s!"unexpected error: {e}"
 
-  if state.activeGoals.size == 2 then
-    let state' := state.popGoal
-    if state'.activeGoals.size == 1 then
-      return .passed
-    else
-      return .failed "Pop didn't work"
-  else
-    return .failed s!"Expected 2 goals, got {state.activeGoals.size}"
-
-/-- Test: Cycle detection with same primitive type -/
-def testCycleDetectionPrimitive : IO TestResult := do
+/-- Goals with different arg shapes must not share a key -/
+def testDifferentArgsDistinct : IO TestResult := do
   let classId := mkTestClassId "Eq" 0
-  let args := #[Value.vPrimTy .int]
-  let state := ResolutionState.empty.pushGoal classId args
-  if state.isActive classId args then
-    return .passed
-  else
-    return .failed "Should detect cycle with same primitive type"
+  match ← runTCM (do
+      let k1 ← normalizeGoalKey classId #[Value.vPrimTy .int]
+      let k2 ← normalizeGoalKey classId #[Value.vPrimTy .string]
+      pure (k1, k2)) with
+  | .ok (k1, k2) =>
+    if k1 != k2 then return .passed
+    else return .failed s!"distinct goals got the same key: {k1}"
+  | .error e => return .failed s!"unexpected error: {e}"
 
-/-- Test: No false positive cycle detection -/
-def testNoCycleForDifferentArgs : IO TestResult := do
+/-- Goals differing only in the identity of unassigned metas must share a key -/
+def testAlphaEquivalent : IO TestResult := do
   let classId := mkTestClassId "Eq" 0
-  let state := ResolutionState.empty.pushGoal classId #[Value.vPrimTy .int]
-  if state.isActive classId #[Value.vPrimTy .string] then
-    return .failed "Should not detect cycle for different args"
-  else
-    return .passed
+  match ← runTCM (do
+      let m1 ← TCM.freshMetaVal (Value.vType .zero)
+      let m2 ← TCM.freshMetaVal (Value.vType .zero)
+      let k1 ← normalizeGoalKey classId #[m1]
+      let k2 ← normalizeGoalKey classId #[m2]
+      pure (k1, k2)) with
+  | .ok (k1, k2) =>
+    if k1 == k2 then return .passed
+    else return .failed s!"α-equivalent goals got different keys: {k1} vs {k2}"
+  | .error e => return .failed s!"unexpected error: {e}"
+
+/-- Goals with the same metas in different positions must produce different keys -/
+def testMetaPositionsMatter : IO TestResult := do
+  let classId := mkTestClassId "Pair" 0
+  match ← runTCM (do
+      let m1 ← TCM.freshMetaVal (Value.vType .zero)
+      let m2 ← TCM.freshMetaVal (Value.vType .zero)
+      let k1 ← normalizeGoalKey classId #[m1, m2]
+      let k2 ← normalizeGoalKey classId #[m1, m1]
+      pure (k1, k2)) with
+  | .ok (k1, k2) =>
+    if k1 != k2 then return .passed
+    else return .failed s!"positional meta identity not captured: {k1}"
+  | .error e => return .failed s!"unexpected error: {e}"
 
 def run : IO TestRunner := do
-  IO.println "  === Resolution State Tests ==="
+  IO.println "  === α-Normalization Tests ==="
   let mut runner := TestRunner.init
 
-  runner := runner.record "empty_not_too_deep" (← testEmptyNotTooDeep)
-  runner := runner.record "max_depth" (← testMaxDepth)
-  runner := runner.record "push_pop_goals" (← testPushPopGoals)
-  runner := runner.record "cycle_detection_primitive" (← testCycleDetectionPrimitive)
-  runner := runner.record "no_false_positive_cycle" (← testNoCycleForDifferentArgs)
+  runner := runner.record "ground_args_identical"    (← testGroundArgsIdentical)
+  runner := runner.record "different_args_distinct"  (← testDifferentArgsDistinct)
+  runner := runner.record "alpha_equivalent"         (← testAlphaEquivalent)
+  runner := runner.record "meta_positions_matter"    (← testMetaPositionsMatter)
 
   return runner
 
-end ResolutionStateTests
+end NormalizationTests
+
+namespace DiscrTreeTests
+
+private def mkInst (id : Nat) (classId : Unique) (firstArg : Value) : InstanceInfo :=
+  { instanceId := { id, module := "test", original := s!"inst{id}" }
+    classId
+    args := #[firstArg]
+    argQuantities := #[.omega]
+    constraints := #[]
+    value := Value.vRecordVal []
+    constraintDictCount := 0
+    span := Span.uninhabited }
+
+private def mkInst2 (id : Nat) (classId : Unique) (a0 a1 : Value) : InstanceInfo :=
+  { instanceId := { id, module := "test", original := s!"inst{id}" }
+    classId
+    args := #[a0, a1]
+    argQuantities := #[.omega, .omega]
+    constraints := #[]
+    value := Value.vRecordVal []
+    constraintDictCount := 0
+    span := Span.uninhabited }
+
+/-- Ground values produce distinct keys -/
+def testGroundKeysDistinct : IO TestResult := do
+  let kInt  := DiscrKey.ofValue (Value.vPrimTy .int)
+  let kStr  := DiscrKey.ofValue (Value.vPrimTy .string)
+  if kInt != kStr then return .passed
+  else return .failed s!"Int and String got the same key: {repr kInt}"
+
+/-- Values with equal head produce equal keys regardless of substructure -/
+def testSameDataTypeSameKey : IO TestResult := do
+  let listId : Unique := mkTestClassId "List" 42
+  let k1 := DiscrKey.ofValue (Value.vDataType listId [Value.vPrimTy .int])
+  let k2 := DiscrKey.ofValue (Value.vDataType listId [Value.vPrimTy .string])
+  if k1 == k2 then return .passed
+  else return .failed "same datatype head gave different keys"
+
+/-- Meta values map to the wildcard key -/
+def testMetaIsWildcard : IO TestResult := do
+  let metaVal : Value := Value.vNeutral (Value.vType .zero) (.nMeta ⟨999⟩)
+  let k := DiscrKey.ofValue metaVal
+  if k.isWildcard then return .passed
+  else return .failed s!"meta didn't map to wildcard: {repr k}"
+
+/-- Query by key narrows to exact + wildcard buckets -/
+def testTreeQueryNarrows : IO TestResult := do
+  let classId := mkTestClassId "C" 0
+  let intInst   := mkInst 1 classId (Value.vPrimTy .int)
+  let strInst   := mkInst 2 classId (Value.vPrimTy .string)
+  let metaInst  := mkInst 3 classId (Value.vNeutral (Value.vType .zero) (.nMeta ⟨7⟩))
+  let tree : DiscrTree :=
+    DiscrTree.empty |>.insert intInst |>.insert strInst |>.insert metaInst
+  let candidatesForInt := tree.query [.primType .int]
+  let hasInt  := candidatesForInt.any (·.instanceId == intInst.instanceId)
+  let hasStr  := candidatesForInt.any (·.instanceId == strInst.instanceId)
+  let hasMeta := candidatesForInt.any (·.instanceId == metaInst.instanceId)
+  if hasInt && !hasStr && hasMeta then return .passed
+  else return .failed s!"narrowing wrong: hasInt={hasInt} hasStr={hasStr} hasMeta={hasMeta}"
+
+/-- Flatten returns everything inserted -/
+def testTreeFlatten : IO TestResult := do
+  let classId := mkTestClassId "C" 0
+  let a := mkInst 10 classId (Value.vPrimTy .int)
+  let b := mkInst 11 classId (Value.vPrimTy .string)
+  let c := mkInst 12 classId (Value.vNeutral (Value.vType .zero) (.nMeta ⟨0⟩))
+  let tree := DiscrTree.empty |>.insert a |>.insert b |>.insert c
+  let all := tree.flatten
+  if all.size == 3 then return .passed
+  else return .failed s!"expected 3 flattened, got {all.size}"
+
+/-- Deep discrimination -/
+def testMultiArgDiscrimination : IO TestResult := do
+  let classId := mkTestClassId "Coe" 0
+  let i := Value.vPrimTy .int
+  let s := Value.vPrimTy .string
+  let b := Value.vPrimTy .bool
+  let mv := Value.vNeutral (Value.vType .zero) (.nMeta ⟨99⟩)
+  let intStr  := mkInst2 101 classId i s
+  let intBool := mkInst2 102 classId i b
+  let refl    := mkInst2 103 classId mv mv
+  let tree := DiscrTree.empty |>.insert intStr |>.insert intBool |>.insert refl
+  let cands := tree.query [.primType .int, .primType .string]
+  let hasIntStr  := cands.any (·.instanceId == intStr.instanceId)
+  let hasIntBool := cands.any (·.instanceId == intBool.instanceId)
+  let hasRefl    := cands.any (·.instanceId == refl.instanceId)
+  if hasIntStr && !hasIntBool && hasRefl then return .passed
+  else return .failed s!"multi-arg narrowing wrong: intStr={hasIntStr} intBool={hasIntBool} refl={hasRefl}"
+
+/-- Instance-side wildcard at a specific position. `instance Coe α String` has a wildcard at arg 0 -/
+def testInstanceSideWildcardAtPosition : IO TestResult := do
+  let classId := mkTestClassId "Coe" 0
+  let i := Value.vPrimTy .int
+  let s := Value.vPrimTy .string
+  let mv0 := Value.vNeutral (Value.vType .zero) (.nMeta ⟨200⟩)
+  let anyStr := mkInst2 104 classId mv0 s      -- Coe α String
+  let intBool := mkInst2 105 classId i (Value.vPrimTy .bool)
+  let tree := DiscrTree.empty |>.insert anyStr |>.insert intBool
+  let cands := tree.query [.primType .int, .primType .string]
+  let hasAnyStr  := cands.any (·.instanceId == anyStr.instanceId)
+  let hasIntBool := cands.any (·.instanceId == intBool.instanceId)
+  if hasAnyStr && !hasIntBool then return .passed
+  else return .failed s!"instance-wildcard-at-position wrong: anyStr={hasAnyStr} intBool={hasIntBool}"
+
+/-- Merging two trees combines their buckets -/
+def testTreeMerge : IO TestResult := do
+  let classId := mkTestClassId "C" 0
+  let a := mkInst 20 classId (Value.vPrimTy .int)
+  let b := mkInst 21 classId (Value.vPrimTy .string)
+  let t1 := DiscrTree.empty |>.insert a
+  let t2 := DiscrTree.empty |>.insert b
+  let merged := DiscrTree.merge t1 t2
+  let size := merged.size
+  if size == 2 then return .passed
+  else return .failed s!"expected merge size 2, got {size}"
+
+def run : IO TestRunner := do
+  IO.println "  === Discrimination Tree Tests ==="
+  let mut runner := TestRunner.init
+  runner := runner.record "ground_keys_distinct"            (← testGroundKeysDistinct)
+  runner := runner.record "same_datatype_same_key"          (← testSameDataTypeSameKey)
+  runner := runner.record "meta_is_wildcard"                (← testMetaIsWildcard)
+  runner := runner.record "tree_query_narrows"              (← testTreeQueryNarrows)
+  runner := runner.record "tree_flatten"                    (← testTreeFlatten)
+  runner := runner.record "multi_arg_discrimination"        (← testMultiArgDiscrimination)
+  runner := runner.record "instance_wildcard_at_position"   (← testInstanceSideWildcardAtPosition)
+  runner := runner.record "tree_merge"                      (← testTreeMerge)
+  return runner
+
+end DiscrTreeTests
 
 /-! ## Built-in Environment Tests -/
 
@@ -438,17 +571,51 @@ def testResolveNonMatchingType : IO TestResult := do
     | _ => return .failed s!"Expected notFound, got {result}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
-/-- Test: Depth exceeded detection -/
-def testDepthExceeded : IO TestResult := do
+/-- Exercise memoization -/
+def testMemoizationFreshAcrossCalls : IO TestResult := do
   let ctx := TCContext.withDefaultInstances
-  -- Create a state that's already at max depth
-  let state := { ResolutionState.empty with depth := 100 }
-  let action : TCM ResolutionResult := resolveInstance BuiltinClass.eq #[Value.vPrimTy .int] state
+  let action : TCM Bool := do
+    let r1 ← resolveInstance BuiltinClass.eq #[Value.vPrimTy .int]
+    let r2 ← resolveInstance BuiltinClass.eq #[Value.vPrimTy .int]
+    return r1.isFound && r2.isFound
+  match action.run ctx with
+  | .ok (ok, _) =>
+    if ok then return .passed else return .failed "one of the two calls failed"
+  | .error e => return .failed s!"Unexpected error: {e}"
+
+/-- Exercise superclasses through tabled resolution -/
+def testSuperclassChain : IO TestResult := do
+  let ctx := TCContext.withDefaultInstances
+  let action : TCM Bool := do
+    let instanceEnv := ctx.instanceEnv
+    let ordIntInst : InstanceInfo := {
+      instanceId := { id := 900001, module := "test", original := "OrdInt" }
+      classId := BuiltinClass.ord
+      args := #[Value.vPrimTy .int]
+      argQuantities := #[.omega]
+      constraints := #[]
+      value := Value.vRecordVal []
+      constraintDictCount := 0
+      span := Span.uninhabited
+    }
+    let instanceEnv' := instanceEnv.addInstanceWithId ordIntInst
+    TCM.withInstanceEnv instanceEnv' do
+      let r ← resolveInstance BuiltinClass.ord #[Value.vPrimTy .int]
+      return r.isFound
+  match action.run ctx with
+  | .ok (ok, _) =>
+    if ok then return .passed else return .failed "Ord Int didn't resolve"
+  | .error e => return .failed s!"Unexpected error: {e}"
+
+def testFailedLookupNotFound : IO TestResult := do
+  let ctx := TCContext.withDefaultInstances
+  let bogus := mkTestClassId "DoesNotExist" 12345
+  let action : TCM ResolutionResult := resolveInstance bogus #[Value.vPrimTy .int]
   match action.run ctx with
   | .ok (result, _) =>
     match result with
-    | .depthExceeded _ => return .passed
-    | _ => return .failed s!"Expected depthExceeded, got {result}"
+    | .notFound _ _ _ => return .passed
+    | other => return .failed s!"expected notFound, got {other}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
 /-- Test: Resolution result preserves class ID -/
@@ -472,7 +639,9 @@ def run : IO TestRunner := do
   runner := runner.record "resolve_eq_int" (← testResolveEqInt)
   runner := runner.record "resolve_non_existent_class" (← testResolveNonExistentClass)
   runner := runner.record "resolve_non_matching_type" (← testResolveNonMatchingType)
-  runner := runner.record "depth_exceeded" (← testDepthExceeded)
+  runner := runner.record "memoization_fresh_across_calls" (← testMemoizationFreshAcrossCalls)
+  runner := runner.record "superclass_chain" (← testSuperclassChain)
+  runner := runner.record "failed_lookup_not_found" (← testFailedLookupNotFound)
   runner := runner.record "result_preserves_class_id" (← testResultPreservesClassId)
 
   return runner
@@ -519,8 +688,11 @@ def run : IO TestRunner := do
   let envRunner ← InstanceEnvTests.run
   envRunner.printSummary "Instance Environment"
 
-  let stateRunner ← ResolutionStateTests.run
-  stateRunner.printSummary "Resolution State"
+  let normRunner ← NormalizationTests.run
+  normRunner.printSummary "α-Normalization"
+
+  let discrRunner ← DiscrTreeTests.run
+  discrRunner.printSummary "Discrimination Tree"
 
   let builtinRunner ← BuiltinTests.run
   builtinRunner.printSummary "Built-in Environment"
@@ -533,8 +705,8 @@ def run : IO TestRunner := do
 
   IO.println ""
 
-  let combined := envRunner.merge stateRunner |>.merge builtinRunner
-    |>.merge resRunner |>.merge ctxRunner
+  let combined := envRunner.merge normRunner |>.merge discrRunner
+    |>.merge builtinRunner |>.merge resRunner |>.merge ctxRunner
 
   IO.println s!"Total: {combined.passed} passed, {combined.failed} failed"
 

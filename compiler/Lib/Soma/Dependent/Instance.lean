@@ -31,81 +31,338 @@ namespace BuiltinClass
   def applicative : Unique := mkBuiltinClassId "Applicative" 6
 end BuiltinClass
 
-/-- Default maximum depth for instance resolution -/
-def defaultInstanceMaxDepth : Nat := 20
+def tabledIterationCap : Nat := 100000
 
-/-- Configuration for instance resolution -/
-structure InstanceResolutionConfig where
-  /-- Maximum search depth before giving up -/
-  maxDepth : Nat := defaultInstanceMaxDepth
+private abbrev NormMap := Std.HashMap Nat Nat
+
+mutual
+
+partial def normKey (v : Value) (depth : Nat) (m : NormMap)
+    : TCM (String × NormMap) := do
+  let v' ← force v
+  match v' with
+  | .vType lvl         => return (s!"T{toString lvl}", m)
+  | .vPrimTy p         => return (s!"P{toString p}", m)
+  | .vRowSort          => return ("RS", m)
+  | .vLabelSort        => return ("LS", m)
+  | .vRowEmpty         => return ("RE", m)
+  | .vLabelLit s       => return (s!"L{s}", m)
+  | .vIntLit n         => return (s!"i{n}", m)
+  | .vFloatLit f       => return (s!"f{f}", m)
+  | .vStringLit s      => return (s!"s{s}", m)
+  | .vDataType id ps   =>
+    let (parts, m') ← normKeyList ps depth m
+    return (s!"D{id.id}[{parts}]", m')
+  | .vConstructor _ tag as _ =>
+    let (parts, m') ← normKeyList as depth m
+    return (s!"C{tag}[{parts}]", m')
+  | .vPair fst snd =>
+    let (f, m₁) ← normKey fst depth m
+    let (s, m₂) ← normKey snd depth m₁
+    return (s!"({f},{s})", m₂)
+  | .vRecord row =>
+    let (r, m') ← normKey row depth m
+    return (s!"R({r})", m')
+  | .vVariant row =>
+    let (r, m') ← normKey row depth m
+    return (s!"V({r})", m')
+  | .vRowExtend l f t =>
+    let (ls, m₁) ← normKey l depth m
+    let (fs, m₂) ← normKey f depth m₁
+    let (ts, m₃) ← normKey t depth m₂
+    return (s!"RX({ls}:{fs}|{ts})", m₃)
+  | .vRecordVal fields =>
+    let mut m' := m
+    let mut parts : List String := []
+    for (name, val) in fields do
+      let (sv, m'') ← normKey val depth m'
+      m' := m''
+      parts := parts ++ [s!"{name}={sv}"]
+    let body := ",".intercalate parts
+    return ("RV{" ++ body ++ "}", m')
+  | .vEq lv ty lhs rhs =>
+    let (t, m₁) ← normKey ty depth m
+    let (l, m₂) ← normKey lhs depth m₁
+    let (r, m₃) ← normKey rhs depth m₂
+    return (s!"EQ{toString lv}({t};{l}={r})", m₃)
+  | .vRefl _ x =>
+    let (x', m') ← normKey x depth m
+    return (s!"refl({x'})", m')
+  | .vTransport lv ty motive lhs rhs eq body =>
+    let (t, m₁) ← normKey ty depth m
+    let (mo, m₂) ← normKey motive depth m₁
+    let (l, m₃) ← normKey lhs depth m₂
+    let (r, m₄) ← normKey rhs depth m₃
+    let (e, m₅) ← normKey eq depth m₄
+    let (b, m₆) ← normKey body depth m₅
+    return (s!"tp{toString lv}({t};{mo};{l};{r};{e};{b})", m₆)
+  | .vPi qty binder _ dom cod =>
+    let (ds, m₁) ← normKey dom depth m
+    let dummy := Value.vNeutral dom (.nVar ⟨"_κ", ⟨depth⟩⟩)
+    let codV ← applyClosure cod dummy
+    let (cs, m₂) ← normKey codV (depth + 1) m₁
+    return (s!"Π{toString qty}{toString binder}({ds}→{cs})", m₂)
+  | .vSigma qty _ fst snd =>
+    let (fs, m₁) ← normKey fst depth m
+    let dummy := Value.vNeutral fst (.nVar ⟨"_σ", ⟨depth⟩⟩)
+    let sndV ← applyClosure snd dummy
+    let (ss, m₂) ← normKey sndV (depth + 1) m₁
+    return (s!"Σ{toString qty}({fs}×{ss})", m₂)
+  | .vLam _ body =>
+    let dummy := Value.vNeutral (.vType .zero) (.nVar ⟨"_λ", ⟨depth⟩⟩)
+    let bV ← applyClosure body dummy
+    let (bs, m') ← normKey bV (depth + 1) m
+    return (s!"λ.{bs}", m')
+  | .vNeutral _ neu =>
+    normNeuKey neu depth m
+
+partial def normNeuKey (neu : Neutral) (depth : Nat) (m : NormMap)
+    : TCM (String × NormMap) := do
+  let (hs, m₁) ← normHeadKey neu.head depth m
+  let mut m' := m₁
+  let mut parts : List String := []
+  for e in neu.spine do
+    let (es, m'') ← normElimKey e depth m'
+    m' := m''
+    parts := parts ++ [es]
+  return (s!"{hs}·[{",".intercalate parts}]", m')
+
+partial def normHeadKey (h : Head) (depth : Nat) (m : NormMap)
+    : TCM (String × NormMap) := do
+  match h with
+  | .hMeta mid =>
+    match m.get? mid.id with
+    | some idx => return (s!"θ{idx}", m)
+    | none     => let idx := m.size; return (s!"θ{idx}", m.insert mid.id idx)
+  | .hVar bv    => return (s!"B{bv.level.lvl}", m)
+  | .hConst n _ => return (s!"K{n.id}", m)
+  | .hErrored   => return ("⊥", m)
+  | .hCase scruts _ rty =>
+    let mut m' := m
+    let mut parts : List String := []
+    for s in scruts do
+      let (x, m'') ← normKey s depth m'
+      m' := m''
+      parts := parts ++ [x]
+    let (rs, m'') ← normKey rty depth m'
+    return (s!"case[{",".intercalate parts}/{rs}]", m'')
+
+partial def normElimKey (e : Elim) (depth : Nat) (m : NormMap)
+    : TCM (String × NormMap) := do
+  match e with
+  | .eApp a    => let (s, m') ← normKey a depth m; return (s!"@{s}", m')
+  | .eFst      => return (".1", m)
+  | .eSnd      => return (".2", m)
+  | .eField n  => return (s!".{n}", m)
+
+partial def normKeyList (vs : List Value) (depth : Nat) (m : NormMap)
+    : TCM (String × NormMap) := do
+  let mut m' := m
+  let mut parts : List String := []
+  for v in vs do
+    let (s, m'') ← normKey v depth m'
+    m' := m''
+    parts := parts ++ [s]
+  return (",".intercalate parts, m')
+
+end
+
+/-- Produce the canonical α-normalized key for a `(classId, args)` subgoal -/
+def normalizeGoalKey (classId : Unique) (args : Array Value) : TCM String := do
+  let mut m : NormMap := {}
+  let mut parts : List String := []
+  for a in args do
+    let (s, m') ← normKey a 0 m
+    m := m'
+    parts := parts ++ [s]
+  return s!"#{classId.id}|{",".intercalate parts}"
+
+/-- One solution attached to a table entry -/
+structure Solution where
+  value : Value
+  usedInstances : Array Unique
   deriving Inhabited
 
-/-- State for instance resolution (tracks search to prevent loops) -/
-structure ResolutionState where
-  /-- Goals we're currently trying to solve (for cycle detection) -/
-  activeGoals : Array (Unique × Array Value) := #[]
-  /-- Maximum search depth (from configuration) -/
-  maxDepth : Nat := defaultInstanceMaxDepth
-  /-- Current depth -/
-  depth : Nat := 0
-  /-- Metavariables created during this resolution (for rollback) -/
-  createdMetas : Array MetaId := #[]
+/-- Entry in the resolver table, one per α-distinct subgoal -/
+structure TableEntry where
+  /-- The class being resolved -/
+  classId : Unique
+  /-- The args at first registration -/
+  args : Array Value
+  /-- Solutions discovered so far -/
+  solutions : Array Solution := #[]
+  /-- Consumer ids currently suspended on a solution from this entry -/
+  dependents : Array Nat := #[]
+  /-- Whether the generator for this entry has popped -/
+  generatorDone : Bool := false
   deriving Inhabited
 
-namespace ResolutionState
+/-- A generator node -/
+structure GenNode where
+  key : String
+  classId : Unique
+  args : Array Value
+  instances : Array InstanceInfo
+  nextIdx : Nat := 0
+  baseEnv : Soma.Dependent.TCState
+  deriving Inhabited
 
-def empty : ResolutionState := {}
+/-- A remaining subgoal within a consumer's workqueue -/
+structure PendingGoal where
+  classId : Unique
+  args : Array Value
+  isDictConstraint : Bool
+  deriving Inhabited
 
-/-- Check if we've exceeded max depth -/
-def tooDeep (s : ResolutionState) : Bool :=
-  s.depth >= s.maxDepth
+/-- A consumer node -/
+structure ConsNode where
+  /-- Ancestor goal key -/
+  ancestorKey : String
+  /-- Trail of instance ids that contributed to this consumer -/
+  usedInstances : Array Unique
+  /-- Base instance value -/
+  instValue : Value
+  /-- Whether the base instance value needs `applyConstraintDicts` -/
+  usesDicts : Bool
+  /-- Dict values from already satisfied constraints -/
+  accumDicts : Array Value := #[]
+  /-- Subgoals that we still need to discharge -/
+  remaining : Array PendingGoal
+  /-- Elaborator state at suspension -/
+  savedEnv : Soma.Dependent.TCState
+  deriving Inhabited
 
-/-- Increment depth -/
-def deeper (s : ResolutionState) : ResolutionState :=
-  { s with depth := s.depth + 1 }
+/-- The resolver's internal state -/
+structure TabledState where
+  table : Std.HashMap String TableEntry := {}
+  consumers : Array ConsNode := #[]
+  genStack : Array GenNode := #[]
+  resumeStack : Array (Nat × Nat) := #[]
+  originalKey : String := ""
+  fuel : Nat := tabledIterationCap
 
-/-- Add an active goal (for cycle detection) -/
-def pushGoal (s : ResolutionState) (classId : Unique) (args : Array Value)
-    : ResolutionState :=
-  { s with activeGoals := s.activeGoals.push (classId, args) }
+abbrev TabledM := StateT TabledState TCM
 
-/-- Remove an active goal -/
-def popGoal (s : ResolutionState) : ResolutionState :=
-  { s with activeGoals := s.activeGoals.pop }
+namespace TabledM
 
-/-- Record a created metavariable -/
-def recordMeta (s : ResolutionState) (m : MetaId) : ResolutionState :=
-  { s with createdMetas := s.createdMetas.push m }
+def getTable : TabledM (Std.HashMap String TableEntry) := return (← get).table
 
-/-- Check if a goal is already active (cycle detection).
-    Uses structural equality on heads to avoid expensive conversion. -/
-def isActive (s : ResolutionState) (classId : Unique) (args : Array Value) : Bool :=
-  s.activeGoals.any fun (cid, as) =>
-    cid == classId && as.size == args.size && Id.run do
-      -- Quick structural check on value heads
-      for i in [:as.size] do
-        if let (some a1, some a2) := (as[i]?, args[i]?) then
-          -- Compare value heads structurally (fast check)
-          if !valueHeadsMatch a1 a2 then
-            return false
-        else
-          return false
+def lookupEntry (key : String) : TabledM (Option TableEntry) :=
+  return (← get).table.get? key
+
+def setEntry (key : String) (entry : TableEntry) : TabledM Unit :=
+  modify fun s => { s with table := s.table.insert key entry }
+
+def addSolution (key : String) (sol : Solution) : TabledM (Option Nat) := do
+  match ← lookupEntry key with
+  | none => return none
+  | some entry =>
+    let idx := entry.solutions.size
+    setEntry key { entry with solutions := entry.solutions.push sol }
+    for dep in entry.dependents do
+      modify fun s => { s with resumeStack := s.resumeStack.push (dep, idx) }
+    return some idx
+
+def addDependent (key : String) (cid : Nat) : TabledM Unit := do
+  match ← lookupEntry key with
+  | none => pure ()
+  | some entry =>
+    setEntry key { entry with dependents := entry.dependents.push cid }
+
+def pushGen (g : GenNode) : TabledM Unit :=
+  modify fun s => { s with genStack := s.genStack.push g }
+
+/-- Mark a subgoal's generator as exhausted -/
+def markGeneratorDone (key : String) : TabledM Unit := do
+  match ← lookupEntry key with
+  | none => pure ()
+  | some entry =>
+    setEntry key { entry with generatorDone := true }
+
+/-- Check if a table entry is exhausted and prune it if so -/
+def pruneIfExhausted (key : String) : TabledM Bool := do
+  let s ← get
+  match s.table.get? key with
+  | none => return false
+  | some entry =>
+    let exhausted :=
+      entry.generatorDone &&
+      entry.solutions.isEmpty &&
+      entry.dependents.isEmpty &&
+      key != s.originalKey
+    if exhausted then
+      set { s with table := s.table.erase key }
       return true
-where
-  /-- Quick structural comparison of value heads -/
-  valueHeadsMatch (v1 v2 : Value) : Bool :=
-    match v1, v2 with
-    | .vPrimTy p1, .vPrimTy p2 => p1 == p2
-    | .vType l1, .vType l2 => l1 == l2
-    | .vLabelLit s1, .vLabelLit s2 => s1 == s2
-    | .vRowSort, .vRowSort => true
-    | .vLabelSort, .vLabelSort => true
-    | .vDataType id1 _, .vDataType id2 _ => id1 == id2
-    | .vNeutral _ (.nMeta m1), .vNeutral _ (.nMeta m2) => m1 == m2
-    | .vNeutral _ (.nVar v1), .vNeutral _ (.nVar v2) => v1.level == v2.level
-    | _, _ => false  -- Different heads or complex values
+    else
+      return false
 
-end ResolutionState
+def popGen : TabledM Unit := do
+  let s ← get
+  if let some g := s.genStack.back? then
+    set { s with genStack := s.genStack.pop }
+    markGeneratorDone g.key
+    let _ ← pruneIfExhausted g.key
+  else
+    pure ()
+
+def peekGen : TabledM (Option GenNode) := do
+  let s ← get
+  return s.genStack.back?
+
+/-- Replace the top generator node; used to advance `nextIdx` after a try -/
+def updateTopGen (f : GenNode → GenNode) : TabledM Unit :=
+  modify fun s =>
+    if s.genStack.size > 0 then
+      let i := s.genStack.size - 1
+      let g := s.genStack[i]!
+      { s with genStack := s.genStack.set! i (f g) }
+    else s
+
+def newConsumer (c : ConsNode) : TabledM Nat :=
+  modifyGet fun s =>
+    let id := s.consumers.size
+    (id, { s with consumers := s.consumers.push c })
+
+def getConsumer (cid : Nat) : TabledM ConsNode := do
+  let s ← get
+  return s.consumers[cid]!
+
+def popResume : TabledM (Option (Nat × Nat)) :=
+  modifyGet fun s =>
+    match s.resumeStack.back? with
+    | none => (none, s)
+    | some r => (some r, { s with resumeStack := s.resumeStack.pop })
+
+def consumeFuel : TabledM Bool :=
+  modifyGet fun s =>
+    if s.fuel == 0 then (false, s)
+    else (true, { s with fuel := s.fuel - 1 })
+
+def originalHasSolution : TabledM (Option Solution) := do
+  let s ← get
+  match s.table.get? s.originalKey with
+  | some entry => return entry.solutions[0]?
+  | none => return none
+
+/-- Scans the entire table and removes every exhausted entry -/
+def pruneExhausted : TabledM Nat := do
+  let s ← get
+  let mut kept : Std.HashMap String TableEntry := {}
+  let mut removed := 0
+  for (key, entry) in s.table.toList do
+    let exhausted :=
+      entry.generatorDone &&
+      entry.solutions.isEmpty &&
+      entry.dependents.isEmpty &&
+      key != s.originalKey
+    if exhausted then
+      removed := removed + 1
+    else
+      kept := kept.insert key entry
+  set { s with table := kept }
+  return removed
+
+end TabledM
 
 /-- Result of instance resolution -/
 inductive ResolutionResult where
@@ -363,121 +620,162 @@ private def applyConstraintDicts (instValue : Value) (constraintDicts : Array Va
       | other => pure other
   return result
 
-mutual
+/-- Extract the pending subgoals that an instance match leaves behind -/
+private def buildRemainingGoals
+    (instMatch : InstanceMatch) (classInfo? : Option ClassInfo)
+    (goalArgs : Array Value) : TCM (Array PendingGoal) := do
+  let mut out : Array PendingGoal := #[]
+  for (cid, cargs) in instMatch.refreshedConstraints do
+    let forced ← cargs.mapM force
+    out := out.push ⟨cid, forced, true⟩
+  match classInfo? with
+  | none => pure ()
+  | some info =>
+    for (scid, paramIdxs) in info.superclasses do
+      let mut sArgs : Array Value := #[]
+      let mut ok := true
+      for idx in paramIdxs do
+        if let some a := goalArgs[idx]? then sArgs := sArgs.push a
+        else ok := false
+      if ok then out := out.push ⟨scid, sArgs, false⟩
+  return out
 
-/-- Resolve superclass constraints for a class
-    Returns the superclass instance values if all can be resolved -/
-partial def resolveSuperclasses (classInfo : ClassInfo) (args : Array Value)
-    (state : ResolutionState) : TCM (Option (Array Value)) := do
-  if classInfo.superclasses.isEmpty then
-    return some #[]
+/-- Ensure the goal `(classId, args)` has an entry in the table -/
+private partial def ensureSubgoal (key : String) (classId : Unique) (args : Array Value)
+    : TabledM Unit := do
+  match ← TabledM.lookupEntry key with
+  | some _ => pure ()
+  | none =>
+    let argsF ← match args[0]? with
+      | some a => do let af ← force a; pure (args.set! 0 af)
+      | none   => pure args
+    let instances ← TCM.getCandidateInstances classId argsF
+    let baseEnv ← TCM.getState
+    TabledM.setEntry key { classId, args := argsF, solutions := #[], dependents := #[] }
+    TabledM.pushGen { key, classId, args := argsF, instances, nextIdx := 0, baseEnv }
 
-  let mut superInstances : Array Value := #[]
-
-  for (superclassId, paramIndices) in classInfo.superclasses do
-    -- Build superclass arguments from the class arguments using the indices
-    let mut superArgs : Array Value := #[]
-    for idx in paramIndices do
-      if let some arg := args[idx]? then
-        superArgs := superArgs.push arg
+/-- Install a newly-created consumer -/
+private partial def installConsumer (c : ConsNode) : TabledM Unit := do
+  if c.remaining.isEmpty then
+    -- No more subgoals so we complete and publish the solution
+    let value ←
+      if c.usesDicts && !c.accumDicts.isEmpty then
+        applyConstraintDicts c.instValue c.accumDicts
       else
-        return none -- Invalid index
+        pure c.instValue
+    let _ ← TabledM.addSolution c.ancestorKey { value, usedInstances := c.usedInstances }
+    return
+  let cid ← TabledM.newConsumer c
+  let first := c.remaining[0]!
+  let firstKey ← normalizeGoalKey first.classId first.args
+  match ← TabledM.lookupEntry firstKey with
+  | some entry =>
+    -- Already tabled
+    TabledM.addDependent firstKey cid
+    for i in [:entry.solutions.size] do
+      modify fun s => { s with resumeStack := s.resumeStack.push (cid, i) }
+  | none =>
+    ensureSubgoal firstKey first.classId first.args
+    TabledM.addDependent firstKey cid
 
-    -- Recursively resolve the superclass
-    let result ← resolveInstance superclassId superArgs state
-    match result with
-    | .found value _ =>
-      superInstances := superInstances.push value
-    | _ =>
-      return none -- Superclass resolution failed
+/-- Resume a suspended consumer with one of the solutions its first-remaining subgoal has accumulated -/
+private partial def resumeConsumer (cid : Nat) (solIdx : Nat) : TabledM Unit := do
+  let c ← TabledM.getConsumer cid
+  if c.remaining.isEmpty then return
+  let first := c.remaining[0]!
+  let firstKey ← normalizeGoalKey first.classId first.args
+  match ← TabledM.lookupEntry firstKey with
+  | none => return
+  | some entry =>
+    if h : solIdx < entry.solutions.size then
+      let sol := entry.solutions[solIdx]
+      TCM.modifyState fun _ => c.savedEnv
+      let mut unifyOk := true
+      for i in [:first.args.size] do
+        if let (some a, some b) := (first.args[i]?, entry.args[i]?) then
+          let af ← force a
+          let bf ← force b
+          try unify af bf catch _ => unifyOk := false
+        if !unifyOk then break
+      if !unifyOk then return
+      let dicts' :=
+        if first.isDictConstraint then c.accumDicts.push sol.value
+        else c.accumDicts
+      let newEnv ← TCM.getState
+      let advanced : ConsNode := {
+        ancestorKey := c.ancestorKey
+        usedInstances := c.usedInstances ++ sol.usedInstances
+        instValue := c.instValue
+        usesDicts := c.usesDicts
+        accumDicts := dicts'
+        remaining := c.remaining.extract 1 c.remaining.size
+        savedEnv := newEnv
+      }
+      installConsumer advanced
+    else return
 
-  return some superInstances
-
-/-- Resolve an instance for a type class constraint -/
-partial def resolveInstance (classId : Unique) (args : Array Value)
-    (state : ResolutionState := ResolutionState.empty) : TCM ResolutionResult := do
-  -- Check depth limit
-  if state.tooDeep then
-    return .depthExceeded classId
-
-  -- Check for cycles (using fast structural check)
-  if state.isActive classId args then
-    return .cycle classId args
-
-  -- Add this goal to active set
-  let state' := state.pushGoal classId args |>.deeper
-
-  -- Look up class info for superclass resolution
-  let classInfo ← TCM.lookupClass classId
-
-  -- Look up instances for this class
-  let instances ← TCM.getClassInstances classId
-  if instances.isEmpty then
-    return .notFound classId args s!"no instances registered for class '{classId.original}'"
-
-  -- Try each instance
-  for inst in instances do
-    -- Save state for rollback if this instance doesn't work
-    let stateBefore ← TCM.getState
-
-    -- Check if instance matches using unification
-    match ← matchInstance inst classId args with
+/-- Advance the top generator by one instance attempt -/
+private partial def extendGenerator : TabledM Unit := do
+  match ← TabledM.peekGen with
+  | none => pure ()
+  | some g =>
+    if g.nextIdx >= g.instances.size then
+      TabledM.popGen
+      return
+    let inst := g.instances[g.nextIdx]!
+    TabledM.updateTopGen fun g => { g with nextIdx := g.nextIdx + 1 }
+    TCM.modifyState fun _ => g.baseEnv
+    match ← matchInstance inst g.classId g.args with
+    | none => return
     | some instMatch =>
-      -- Instance matches! Now check constraints using the refreshed constraints
-      -- (which share fresh metas with the refreshed instance args)
+      let classInfo? ← TCM.lookupClass g.classId
+      let remaining ← buildRemainingGoals instMatch classInfo? g.args
+      let envAfterMatch ← TCM.getState
+      let cons : ConsNode := {
+        ancestorKey := g.key
+        usedInstances := #[inst.instanceId]
+        instValue := instMatch.value
+        usesDicts := inst.constraintDictCount > 0
+        accumDicts := #[]
+        remaining
+        savedEnv := envAfterMatch
+      }
+      installConsumer cons
 
-      -- 1. Check instance's own constraints, capturing resolved dict values
-      let mut resolvedConstraintDicts : Array Value := #[]
-      let constraintsSatisfied ← do
-        if instMatch.refreshedConstraints.isEmpty then
-          pure true
-        else
-          let mut allSatisfied := true
-          for (constraintClassId, constraintArgs) in instMatch.refreshedConstraints do
-            let forcedArgs ← constraintArgs.mapM force
-            let result ← resolveInstance constraintClassId forcedArgs state'
-            match result with
-            | .found value _ =>
-              resolvedConstraintDicts := resolvedConstraintDicts.push value
-            | _ =>
-              allSatisfied := false
-              break
-          pure allSatisfied
-
-      if !constraintsSatisfied then
-        -- Rollback and try next instance
-        TCM.modifyState fun _ => stateBefore
-        continue
-
-      -- 2. Check superclass constraints (if we have class info)
-      let superclassesSatisfied ← do
-        match classInfo with
-        | some info =>
-          match ← resolveSuperclasses info args state' with
-          | some _ => pure true
-          | none => pure false
-        | none => pure true -- No class info, skip superclass check
-
-      if !superclassesSatisfied then
-        -- Rollback and try next instance
-        TCM.modifyState fun _ => stateBefore
-        continue
-
-      -- All constraints satisfied!
-      let finalValue ←
-        if inst.constraintDictCount > 0 && !resolvedConstraintDicts.isEmpty then
-          applyConstraintDicts instMatch.value resolvedConstraintDicts
-        else
-          pure instMatch.value
-      return .found finalValue #[inst.instanceId]
-
+/-- The main loop -/
+private partial def mainLoop (classId : Unique) (args : Array Value)
+    : TabledM ResolutionResult := do
+  let rec step : Unit → TabledM ResolutionResult := fun _ => do
+    if !(← TabledM.consumeFuel) then
+      return .depthExceeded classId
+    if let some sol ← TabledM.originalHasSolution then
+      return .found sol.value sol.usedInstances
+    match ← TabledM.popResume with
+    | some (cid, solIdx) =>
+      resumeConsumer cid solIdx
+      step ()
     | none =>
-      -- Instance doesn't match, try next
-      continue
+      match ← TabledM.peekGen with
+      | some _ =>
+        extendGenerator
+        step ()
+      | none =>
+        match ← TabledM.originalHasSolution with
+        | some sol => return .found sol.value sol.usedInstances
+        | none =>
+          return .notFound classId args
+            s!"no matching instance for '{classId.original}' with given arguments"
+  step ()
 
-  return .notFound classId args s!"no matching instance for '{classId.original}' with given arguments"
-
-end
+/-- Public resolver entry -/
+partial def resolveInstance (classId : Unique) (args : Array Value)
+    : TCM ResolutionResult := do
+  let key ← normalizeGoalKey classId args
+  let action : TabledM ResolutionResult := do
+    ensureSubgoal key classId args
+    mainLoop classId args
+  let (r, _) ← action.run { originalKey := key }
+  return r
 
 /-- Resolve an instance, returning just the value or none -/
 def resolveInstanceValue (classId : Unique) (args : Array Value) : TCM (Option Value) := do
@@ -515,7 +813,7 @@ private partial def isConcreteForResolution : Value → Bool
   | _ => true
 
 /-- Deeply force metavariables inside values -/
-private partial def deepForceValue (v : Value) : TCM Value := do
+partial def deepForceValue (v : Value) : TCM Value := do
   let v' ← force v
   match v' with
   | .vDataType id params =>
@@ -539,6 +837,21 @@ private partial def deepForceValue (v : Value) : TCM Value := do
     let row' ← deepForceValue row
     return .vVariant row'
   | other => return other
+
+/-- Deep-force every argument of an `InstanceInfo` -/
+def forceInstanceInfoArgs (inst : InstanceInfo) : TCM InstanceInfo := do
+  let forcedArgs ← inst.args.mapM deepForceValue
+  return { inst with args := forcedArgs }
+
+namespace InstanceEnv
+
+/-- Force args before storing, then delegate to the pure update -/
+def addInstanceWithIdForced (env : InstanceEnv) (inst : InstanceInfo)
+    : TCM InstanceEnv := do
+  let inst' ← forceInstanceInfoArgs inst
+  return env.addInstanceWithId inst'
+
+end InstanceEnv
 
 /-- Best-effort attempt to resolve pending instance-resolution constraints -/
 def solvePendingInstances : TCM (Array InstanceFailure) := do

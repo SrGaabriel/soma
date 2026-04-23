@@ -725,12 +725,195 @@ def displayName (i : InstanceInfo) : String := i.instanceId.original
 
 end InstanceInfo
 
+/-- Structural discrimination key for a `Value` -/
+inductive DiscrKey where
+  | dataType (id : Soma.Unique)
+  | primType (p : Soma.Core.PrimType)
+  | type_ (lvl : Nat)
+  | rowSort
+  | labelSort
+  | rowEmpty
+  | pi | sigma | lam | pair
+  | record | variant | rowExtend
+  | labelLit (s : String)
+  | intLit (n : Int)
+  | floatLit
+  | strLit
+  | boolLit
+  | constHead (qn : Soma.Core.QualifiedName)
+  | boundVar (lvl : Nat)
+  | equality | refl_ | transport
+  /-- Meta variables and anything we can't meaningfully discriminate -/
+  | wildcard
+  deriving BEq, Hashable, Inhabited, Repr
+
+namespace DiscrKey
+
+/-- Compute the discrimination key of a value -/
+partial def ofValue : Value → DiscrKey
+  | .vDataType id _ => .dataType id
+  | .vPrimTy p => .primType p
+  | .vType (.lit n) => .type_ n
+  | .vType _ => .type_ 0
+  | .vRowSort => .rowSort
+  | .vLabelSort => .labelSort
+  | .vRowEmpty => .rowEmpty
+  | .vLabelLit s => .labelLit s
+  | .vIntLit n => .intLit n
+  | .vFloatLit _ => .floatLit
+  | .vStringLit _ => .strLit
+  | .vPi _ _ _ _ _ => .pi
+  | .vSigma _ _ _ _ => .sigma
+  | .vLam _ _ => .lam
+  | .vPair _ _ => .pair
+  | .vRecord _ => .record
+  | .vVariant _ => .variant
+  | .vRowExtend _ _ _ => .rowExtend
+  | .vEq _ _ _ _ => .equality
+  | .vRefl _ _ => .refl_
+  | .vTransport _ _ _ _ _ _ _ => .transport
+  | .vNeutral _ neu =>
+    match neu.head with
+    | .hConst qn _ => .constHead qn
+    | .hVar bv => .boundVar bv.level.lvl
+    | _ => .wildcard
+  | _ => .wildcard
+
+/-- Is this key the wildcard -/
+def isWildcard : DiscrKey → Bool
+  | .wildcard => true
+  | _ => false
+
+end DiscrKey
+
+/-- Per-class discrimination tree -/
+inductive DiscrTree where
+  | leaf (instances : Array InstanceInfo)
+  | branch (children : Array (DiscrKey × DiscrTree)) (wildcard : Option DiscrTree)
+  deriving Inhabited
+
+namespace DiscrTree
+
+/-- Empty leaf -/
+def empty : DiscrTree := .leaf #[]
+
+/-- Look up a child by key in an association-array children list -/
+private def findChild? (children : Array (DiscrKey × DiscrTree)) (k : DiscrKey)
+    : Option DiscrTree := Id.run do
+  for (k', sub) in children do
+    if k' == k then return some sub
+  return none
+
+/-- Replace (or insert) a child by key in an association-array children list -/
+private def setChild (children : Array (DiscrKey × DiscrTree))
+    (k : DiscrKey) (sub : DiscrTree) : Array (DiscrKey × DiscrTree) := Id.run do
+  let mut replaced := false
+  let mut out : Array (DiscrKey × DiscrTree) := Array.mkEmpty children.size
+  for (k', s) in children do
+    if k' == k then
+      out := out.push (k, sub); replaced := true
+    else
+      out := out.push (k', s)
+  if replaced then out else out.push (k, sub)
+
+/-- Insert an instance into the trie along the key path derived from its arguments -/
+partial def insertAt (keys : List DiscrKey) (inst : InstanceInfo) : DiscrTree → DiscrTree
+  | .leaf insts =>
+    match keys with
+    | [] => .leaf (insts.push inst)
+    | k :: ks =>
+      let subtree := (DiscrTree.empty).insertAt ks inst
+      if k.isWildcard then
+        .branch #[] (some subtree)
+      else
+        .branch #[(k, subtree)] none
+  | .branch children wildcard =>
+    match keys with
+    | [] =>
+      let wc' := (wildcard.getD .empty).insertAt [] inst
+      .branch children (some wc')
+    | k :: ks =>
+      if k.isWildcard then
+        let wc' := (wildcard.getD .empty).insertAt ks inst
+        .branch children (some wc')
+      else
+        let sub  := (findChild? children k).getD .empty
+        let sub' := sub.insertAt ks inst
+        .branch (setChild children k sub') wildcard
+
+/-- Insert an instance given its full arg list -/
+def insert (tree : DiscrTree) (inst : InstanceInfo) : DiscrTree :=
+  let keys := inst.args.toList.map DiscrKey.ofValue
+  tree.insertAt keys inst
+
+/-- Walk the trie collecting every instance reachable under `keys` -/
+partial def queryAt : List DiscrKey → DiscrTree → Array InstanceInfo
+  | [], .leaf insts => insts
+  | [], .branch _ _ => #[]
+  | _ :: _, .leaf insts => insts
+  | k :: ks, .branch children wildcard =>
+    let byKey : Array InstanceInfo :=
+      if k.isWildcard then
+        children.foldl (init := #[]) fun acc (_, sub) => acc ++ sub.queryAt ks
+      else
+        match findChild? children k with
+        | some sub => sub.queryAt ks
+        | none     => #[]
+    let byWild : Array InstanceInfo :=
+      wildcard.map (·.queryAt ks) |>.getD #[]
+    byKey ++ byWild
+
+/-- Query with a full list of arg keys -/
+def query (tree : DiscrTree) (keys : List DiscrKey) : Array InstanceInfo :=
+  tree.queryAt keys
+
+/-- Every instance in the trie, flattened. Deterministic post-order -/
+partial def flatten : DiscrTree → Array InstanceInfo
+  | .leaf insts => insts
+  | .branch children wildcard =>
+    let fromChildren : Array InstanceInfo :=
+      children.foldl (init := #[]) fun acc (_, sub) => acc ++ sub.flatten
+    let fromWild : Array InstanceInfo :=
+      wildcard.map DiscrTree.flatten |>.getD #[]
+    fromChildren ++ fromWild
+
+/-- Merge two tries -/
+partial def merge : DiscrTree → DiscrTree → DiscrTree
+  | .leaf a, .leaf b => .leaf (a ++ b)
+  | .leaf a, .branch cs wc =>
+    .branch cs (some ((wc.getD .empty).merge (.leaf a)))
+  | .branch cs wc, .leaf b =>
+    .branch cs (some ((wc.getD .empty).merge (.leaf b)))
+  | .branch ac aw, .branch bc bw =>
+    let merged : Array (DiscrKey × DiscrTree) :=
+      ac.foldl (init := bc) fun acc (k, asub) =>
+        match findChild? acc k with
+        | none      => acc.push (k, asub)
+        | some bsub => setChild acc k (bsub.merge asub)
+    let wildcard := match aw, bw with
+      | none,   bw => bw
+      | aw,     none => aw
+      | some a, some b => some (a.merge b)
+    .branch merged wildcard
+
+/-- Total instance count -/
+partial def size : DiscrTree → Nat
+  | .leaf insts => insts.size
+  | .branch children wildcard =>
+    let childSize := children.foldl (init := 0) fun acc (_, s) => acc + s.size
+    let wcSize := wildcard.map size |>.getD 0
+    childSize + wcSize
+
+end DiscrTree
+
 /-- Environment tracking all type classes and their instances -/
 structure InstanceEnv where
   /-- All registered classes, indexed by unique id -/
   classes : Std.HashMap Unique ClassInfo := {}
   /-- All registered instances, indexed by class unique -/
   instances : Std.HashMap Unique (Array InstanceInfo) := {}
+  /-- Per-class discrimination trees, kept in sync with `instances` -/
+  indices : Std.HashMap Unique DiscrTree := {}
   /-- Next instance ID counter (for generating synthetic instance uniques) -/
   nextInstanceId : Nat := 0
   /-- Module name for generating instance uniques -/
@@ -753,7 +936,10 @@ def addClass (env : InstanceEnv) (info : ClassInfo) : InstanceEnv :=
 /-- Register a new instance with explicit unique -/
 def addInstanceWithId (env : InstanceEnv) (info : InstanceInfo) : InstanceEnv :=
   let existing := env.instances.getD info.classId #[]
-  { env with instances := env.instances.insert info.classId (existing.push info) }
+  let existingIdx := env.indices.getD info.classId DiscrTree.empty
+  { env with
+    instances := env.instances.insert info.classId (existing.push info)
+    indices := env.indices.insert info.classId (existingIdx.insert info) }
 
 /-- Register a new instance, generating a unique if not provided -/
 def addInstance (env : InstanceEnv) (classId : Unique) (args : Array Value)
@@ -776,8 +962,10 @@ def addInstance (env : InstanceEnv) (classId : Unique) (args : Array Value)
     span := span
   }
   let existing := env.instances.getD classId #[]
+  let existingIdx := env.indices.getD classId DiscrTree.empty
   { env with
     instances := env.instances.insert classId (existing.push info)
+    indices := env.indices.insert classId (existingIdx.insert info)
     nextInstanceId := env.nextInstanceId + 1
   }
 
@@ -788,6 +976,15 @@ def getClass (env : InstanceEnv) (classId : Unique) : Option ClassInfo :=
 /-- Look up all instances for a class -/
 def getInstances (env : InstanceEnv) (classId : Unique) : Array InstanceInfo :=
   env.instances.getD classId #[]
+
+/-- Narrow the candidate instances for a goal via the discrimination tree -/
+def getCandidateInstances (env : InstanceEnv) (classId : Unique)
+    (args : Array Value) : Array InstanceInfo :=
+  match env.indices.get? classId with
+  | none => env.getInstances classId
+  | some tree =>
+    let keys := args.toList.map DiscrKey.ofValue
+    tree.query keys
 
 /-- Check if a class exists -/
 def hasClass (env : InstanceEnv) (classId : Unique) : Bool :=
@@ -1800,6 +1997,12 @@ def lookupClass (classId : Unique) : TCM (Option ClassInfo) := do
 def getClassInstances (classId : Unique) : TCM (Array InstanceInfo) := do
   let env ← getInstanceEnv
   return env.getInstances classId
+
+/-- Narrowed candidate instances via the discrimination tree -/
+def getCandidateInstances (classId : Unique) (args : Array Value)
+    : TCM (Array InstanceInfo) := do
+  let env ← getInstanceEnv
+  return env.getCandidateInstances classId args
 
 /-- Check if a class exists -/
 def hasClass (classId : Unique) : TCM Bool := do
