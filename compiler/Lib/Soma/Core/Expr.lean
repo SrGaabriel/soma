@@ -127,7 +127,8 @@ inductive Expr where
 
   -- Data types and constructors
   | construct (name : QualifiedName) (tag : Nat) (args : Array Expr) (resultTy : Expr)
-  | «case» (scrutinees : Array Expr) (arms : Array Arm) (resultTy : Expr)
+  /-- Dependent case analysis -/
+  | «case» (scrutinees : Array Expr) (motive : Expr) (arms : Array Arm)
 
   -- Records and variants (row polymorphism)
   | record (fields : Array (String × Expr))
@@ -205,7 +206,7 @@ partial def Expr.containsPairExpr : Expr → Bool
   | .app f a => f.containsPairExpr || a.containsPairExpr
   | .lam _ _ _ b => b.containsPairExpr
   | .let_ _ _ v b => v.containsPairExpr || b.containsPairExpr
-  | .«case» scruts arms _ => scruts.any (·.containsPairExpr) || arms.any (·.body.containsPairExpr)
+  | .«case» scruts _ arms => scruts.any (·.containsPairExpr) || arms.any (·.body.containsPairExpr)
   | .closure _ caps => caps.any (·.containsPairExpr)
   | .projFst e | .projSnd e => e.containsPairExpr
   | _ => false
@@ -230,6 +231,9 @@ def Expr.ctorName : Expr → String
 
 deriving instance Serialize, Deserialize for Expr
 deriving instance Serialize, Deserialize for Arm
+deriving instance BEq for Pattern
+deriving instance BEq for Expr
+deriving instance BEq for Arm
 
 private def patternsBindingCount (ps : Array Pattern) : Nat :=
   ps.foldl (fun acc p => acc + p.bindingCount) 0
@@ -269,10 +273,10 @@ partial def shift (e : Expr) (amount : Int) (cutoff : Nat) : Expr :=
   | .projSnd x => .projSnd (x.shift amount cutoff)
   | .construct n t args rty =>
     .construct n t (args.map (·.shift amount cutoff)) (rty.shift amount cutoff)
-  | .«case» scruts arms rty =>
+  | .«case» scruts motive arms =>
     .«case» (scruts.map (·.shift amount cutoff))
+      (motive.shift amount cutoff)
       (mapArmBodies arms (fun b d => b.shift amount d) cutoff)
-      (rty.shift amount cutoff)
   | .record fields =>
     .record (fields.map fun (n, e) => (n, e.shift amount cutoff))
   | .recordUpdate b us =>
@@ -322,10 +326,10 @@ where
     | .projFst x => .projFst (go x depth)
     | .projSnd x => .projSnd (go x depth)
     | .construct n t args rty => .construct n t (args.map (go · depth)) (go rty depth)
-    | .«case» scruts arms rty =>
+    | .«case» scruts motive arms =>
       .«case» (scruts.map (go · depth))
+        (go motive depth)
         (mapArmBodies arms (fun b d => go b d) depth)
-        (go rty depth)
     | .record fields => .record (fields.map fun (n, e) => (n, go e depth))
     | .recordUpdate b us =>
       .recordUpdate (go b depth) (us.map fun (n, e) => (n, go e depth))
@@ -370,10 +374,10 @@ where
     | .projFst x => .projFst (go x depth)
     | .projSnd x => .projSnd (go x depth)
     | .construct n t args rty => .construct n t (args.map (go · depth)) (go rty depth)
-    | .«case» scruts arms rty =>
+    | .«case» scruts motive arms =>
       .«case» (scruts.map (go · depth))
+        (go motive depth)
         (mapArmBodies arms (fun b d => go b d) depth)
-        (go rty depth)
     | .record fields => .record (fields.map fun (n, e) => (n, go e depth))
     | .recordUpdate b us =>
       .recordUpdate (go b depth) (us.map fun (n, e) => (n, go e depth))
@@ -419,10 +423,10 @@ partial def replaceFVar (e : Expr) (fvar : Unique) (replacement : Expr) : Expr :
   | .projSnd x => .projSnd (x.replaceFVar fvar replacement)
   | .construct n t args rty =>
     .construct n t (args.map (·.replaceFVar fvar replacement)) (rty.replaceFVar fvar replacement)
-  | .«case» scruts arms rty =>
+  | .«case» scruts motive arms =>
     .«case» (scruts.map (·.replaceFVar fvar replacement))
+      (motive.replaceFVar fvar replacement)
       (mapArmBodiesSimple arms (·.replaceFVar fvar replacement))
-      (rty.replaceFVar fvar replacement)
   | .record fields =>
     .record (fields.map fun (n, e) => (n, e.replaceFVar fvar replacement))
   | .recordUpdate b us =>
@@ -474,10 +478,10 @@ where
     | .projFst x => go x acc
     | .projSnd x => go x acc
     | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
-    | .«case» scruts arms rty =>
+    | .«case» scruts motive arms =>
       let acc := scruts.foldl (fun a e => go e a) acc
-      let acc := arms.foldl (fun a arm => go arm.body a) acc
-      go rty acc
+      let acc := go motive acc
+      arms.foldl (fun a arm => go arm.body a) acc
     | .record fields => fields.foldl (fun a (_, e) => go e a) acc
     | .recordUpdate b us =>
       let acc := go b acc
@@ -515,8 +519,8 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
   | .projFst x => x.hasFVar fvar
   | .projSnd x => x.hasFVar fvar
   | .construct _ _ args rty => args.any (·.hasFVar fvar) || rty.hasFVar fvar
-  | .«case» scruts arms rty =>
-    scruts.any (·.hasFVar fvar) || arms.any (fun arm => arm.body.hasFVar fvar) || rty.hasFVar fvar
+  | .«case» scruts motive arms =>
+    scruts.any (·.hasFVar fvar) || motive.hasFVar fvar || arms.any (fun arm => arm.body.hasFVar fvar)
   | .record fields => fields.any (fun p => p.2.hasFVar fvar)
   | .recordUpdate b us =>
     b.hasFVar fvar || us.any (fun p => p.2.hasFVar fvar)
@@ -567,11 +571,12 @@ partial def countBVar (e : Expr) (depth : Nat := 0) : Nat :=
   | .app f a => countBVar f depth + countBVar a depth
   | .lam _ _ d b => countBVar d depth + countBVar b (depth + 1)
   | .let_ _ t v b => countBVar t depth + countBVar v depth + countBVar b (depth + 1)
-  | .«case» scruts arms _ =>
+  | .«case» scruts motive arms =>
     let s := scruts.foldl (fun acc e => acc + countBVar e depth) 0
+    let m := countBVar motive depth
     let a := arms.foldl (fun acc arm =>
       acc + countBVar arm.body (depth + arm.patterns.foldl (fun n p => n + p.bindingCount) 0)) 0
-    s + a
+    s + m + a
   | .if_ c t el => countBVar c depth + countBVar t depth + countBVar el depth
   | .construct _ _ args _ => args.foldl (fun acc e => acc + countBVar e depth) 0
   | .pair f s => countBVar f depth + countBVar s depth
@@ -617,10 +622,10 @@ partial def betaReduce (e : Expr) (stripTypeArgs : Bool := false) : Expr :=
   | .projFst x => .projFst (betaReduce x stripTypeArgs)
   | .projSnd x => .projSnd (betaReduce x stripTypeArgs)
   | .if_ c t el => .if_ (betaReduce c stripTypeArgs) (betaReduce t stripTypeArgs) (betaReduce el stripTypeArgs)
-  | .«case» scruts arms resultTy =>
+  | .«case» scruts motive arms =>
     .«case» (scruts.map (betaReduce · stripTypeArgs))
+      (betaReduce motive stripTypeArgs)
       (arms.map fun arm => Arm.mk arm.patterns (betaReduce arm.body stripTypeArgs))
-      (betaReduce resultTy stripTypeArgs)
   | .construct name tag args resultTy =>
     .construct name tag (args.map (betaReduce · stripTypeArgs)) (betaReduce resultTy stripTypeArgs)
   | .fieldAccess expr field idx => .fieldAccess (betaReduce expr stripTypeArgs) field idx
@@ -651,10 +656,10 @@ partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   | .projFst x => x.countFVar fvar
   | .projSnd x => x.countFVar fvar
   | .construct _ _ args rty => args.foldl (fun acc a => acc + a.countFVar fvar) 0 + rty.countFVar fvar
-  | .«case» scruts arms rty =>
+  | .«case» scruts motive arms =>
     let scrutCount := scruts.foldl (fun acc s => acc + s.countFVar fvar) 0
     let armSum := arms.foldl (fun acc arm => acc + arm.body.countFVar fvar) 0
-    scrutCount + armSum + rty.countFVar fvar
+    scrutCount + motive.countFVar fvar + armSum
   | .record fields => fields.foldl (fun acc (_, e) => acc + e.countFVar fvar) 0
   | .recordUpdate b us =>
     b.countFVar fvar + us.foldl (fun acc (_, e) => acc + e.countFVar fvar) 0

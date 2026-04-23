@@ -118,13 +118,13 @@ partial def zonkHead (h : Head) : TCM Head := do
   | .hConst qn ty =>
     let ty' ← zonkValue ty
     return .hConst qn ty'
-  | .hCase scrutinees arms rty =>
+  | .hCase scrutinees motive arms =>
     let scrutinees' ← scrutinees.mapM zonkValue
+    let motive' ← zonkValue motive
     let arms' ← arms.mapM fun arm => do
       let clos' ← zonkClosure arm.closure
       return ArmClosure.mk arm.pattern clos'
-    let rty' ← zonkValue rty
-    return .hCase scrutinees' arms' rty'
+    return .hCase scrutinees' motive' arms'
 
 /-- Zonk a spine eliminator by walking its subvalues -/
 partial def zonkElim (e : Elim) : TCM Elim := do
@@ -186,10 +186,10 @@ partial def collectMvarIds (e : Expr) (acc : Std.HashSet MetaId := {}) : Std.Has
   | .projSnd e => collectMvarIds e acc
   | .construct _ _ args rty =>
     args.foldl (fun a e => collectMvarIds e a) acc |> collectMvarIds rty
-  | .«case» scruts arms rty =>
+  | .«case» scruts motive arms =>
     let a := scruts.foldl (fun a e => collectMvarIds e a) acc
-    let a := arms.foldl (fun a arm => collectMvarIds arm.body a) a
-    collectMvarIds rty a
+    let a := collectMvarIds motive a
+    arms.foldl (fun a arm => collectMvarIds arm.body a) a
   | .record fields => fields.foldl (fun a (_, e) => collectMvarIds e a) acc
   | .recordUpdate base updates =>
     let a := collectMvarIds base acc
@@ -234,12 +234,12 @@ partial def applyMvarSubst (e : Expr) (subst : Std.HashMap MetaId Expr) (depth :
   | .projSnd x => .projSnd (applyMvarSubst x subst depth)
   | .construct name tag args rty =>
     .construct name tag (args.map (applyMvarSubst · subst depth)) (applyMvarSubst rty subst depth)
-  | .«case» scruts arms rty =>
+  | .«case» scruts motive arms =>
     .«case» (scruts.map (applyMvarSubst · subst depth))
+      (applyMvarSubst motive subst depth)
       (arms.map fun arm =>
         let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
         Arm.mk arm.patterns (applyMvarSubst arm.body subst (depth + binds)))
-      (applyMvarSubst rty subst depth)
   | .record fields => .record (fields.map fun (n, e) => (n, applyMvarSubst e subst depth))
   | .recordUpdate base updates =>
     .recordUpdate (applyMvarSubst base subst depth)
@@ -358,11 +358,11 @@ partial def hasUnsolvedMetasHead (h : Head) : TCM Bool := do
   | .hVar _ => return false
   | .hConst _ _ => return false
   | .hErrored => return false
-  | .hCase scrutinees _ _ =>
+  | .hCase scrutinees motive _ =>
     for s in scrutinees do
       if ← hasUnsolvedMetas s then
         return true
-    return false
+    hasUnsolvedMetas motive
 
 partial def hasUnsolvedMetasElim (e : Elim) : TCM Bool := do
   match e with
@@ -433,9 +433,10 @@ partial def collectUnsolvedMetasHead (h : Head) (span : Span) : TCM Unit := do
   | .hVar _ => pure ()
   | .hConst _ _ => pure ()
   | .hErrored => pure ()
-  | .hCase scrutinees _ _ =>
+  | .hCase scrutinees motive _ =>
     for s in scrutinees do
       collectUnsolvedMetas s span
+    collectUnsolvedMetas motive span
 
 partial def collectUnsolvedMetasElim (e : Elim) (span : Span) : TCM Unit := do
   match e with

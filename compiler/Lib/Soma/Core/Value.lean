@@ -108,7 +108,7 @@ inductive Head where
   /-- Stuck on an unresolved global constant -/
   | hConst (name : Soma.Core.QualifiedName) (constTy : Value)
   /-- Case analysis blocked because one or more scrutinees are non-canonical -/
-  | hCase (scrutinees : Array Value) (arms : List ArmClosure) (resultTy : Value)
+  | hCase (scrutinees : Array Value) (motive : Value) (arms : List ArmClosure)
   /-- Sentinel for a definition whose elaboration failed -/
   | hErrored
 
@@ -417,8 +417,8 @@ def nConst (name : Soma.Core.QualifiedName) (constTy : Value) : Neutral :=
   ofHead (.hConst name constTy)
 
 /-- Case blocked on non-canonical scrutinees -/
-def nCase (scrutinees : Array Value) (arms : List ArmClosure) (resultTy : Value) : Neutral :=
-  ofHead (.hCase scrutinees arms resultTy)
+def nCase (scrutinees : Array Value) (motive : Value) (arms : List ArmClosure) : Neutral :=
+  ofHead (.hCase scrutinees motive arms)
 
 /-- Application `fn arg` where `fn` is already a neutral -/
 def nApp (fn : Neutral) (arg : Value) : Neutral := fn.pushElim (.eApp arg)

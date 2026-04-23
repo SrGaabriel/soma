@@ -95,8 +95,9 @@ partial def collectMetasHead : Head → Array MetaId
   | .hConst _ _ => #[]
   | .hMeta id => #[id]
   | .hErrored => #[]
-  | .hCase scrutinees arms _ =>
+  | .hCase scrutinees motive arms =>
     scrutinees.foldl (fun acc s => acc ++ collectMetas s) #[] ++
+    collectMetas motive ++
     arms.foldl (fun acc arm => acc ++ collectMetasClosure arm.closure) #[]
 
 partial def collectMetasElim : Elim → Array MetaId
@@ -185,8 +186,8 @@ partial def occursInHead (m : MetaId) : Head → Bool
   | .hConst _ _ => false
   | .hMeta id => id == m
   | .hErrored => false
-  | .hCase scrutinees arms _ =>
-    scrutinees.any (occursIn m) ||
+  | .hCase scrutinees motive arms =>
+    scrutinees.any (occursIn m) || occursIn m motive ||
     arms.any (fun arm => occursInClosure m arm.closure)
 
 partial def occursInElim (m : MetaId) : Elim → Bool
@@ -215,8 +216,9 @@ where
     | .projFst e => occursInExpr m e
     | .projSnd e => occursInExpr m e
     | .if_ c t e => occursInExpr m c || occursInExpr m t || occursInExpr m e
-    | .«case» scruts arms _ =>
-        scruts.any (occursInExpr m) || arms.any fun arm => occursInExpr m arm.body
+    | .«case» scruts motive arms =>
+        scruts.any (occursInExpr m) || occursInExpr m motive ||
+        arms.any fun arm => occursInExpr m arm.body
     | .eqTy _ ty l r => occursInExpr m ty || occursInExpr m l || occursInExpr m r
     | .refl ty x => occursInExpr m ty || occursInExpr m x
     | .transport _ ty mot l r eq b =>
@@ -287,7 +289,8 @@ partial def inScopeHead (allowedLevels : List DeBruijnLvl) : Head → Bool
   | .hConst _ _ => true
   | .hMeta _ => true
   | .hErrored => true
-  | .hCase scrutinees _ _ => scrutinees.all (inScope allowedLevels)
+  | .hCase scrutinees motive _ =>
+    scrutinees.all (inScope allowedLevels) && inScope allowedLevels motive
 
 partial def inScopeElim (allowedLevels : List DeBruijnLvl) : Elim → Bool
   | .eApp arg => inScope allowedLevels arg
@@ -348,8 +351,9 @@ partial def collectFreeVarsHead : Head → Array DeBruijnLvl
   | .hConst _ _ => #[]
   | .hMeta _ => #[]
   | .hErrored => #[]
-  | .hCase scrutinees arms _ =>
+  | .hCase scrutinees motive arms =>
     scrutinees.foldl (fun acc s => acc ++ collectFreeVars s) #[] ++
+    collectFreeVars motive ++
     arms.foldl (fun acc arm => acc ++ collectFreeVarsClosure arm.closure) #[]
 
 partial def collectFreeVarsElim : Elim → Array DeBruijnLvl

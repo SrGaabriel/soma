@@ -111,10 +111,10 @@ partial def applyPushingDown (expr : Soma.Core.Expr) (arg : Soma.Core.Expr)
     : Soma.Core.Expr :=
   match expr with
   | .lam _ _ _ body => Soma.Core.Expr.instantiate body arg
-  | .«case» scruts arms rty =>
+  | .«case» scruts motive arms =>
     let arms' := arms.map fun arm =>
       Soma.Core.Arm.mk arm.patterns (applyPushingDown arm.body arg)
-    .«case» scruts arms' rty
+    .«case» scruts motive arms'
   | .let_ name ty val body =>
     .let_ name ty val (applyPushingDown body arg)
   | .if_ c t e =>
@@ -162,8 +162,9 @@ partial def inlineIOBind (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
           -- locally-nameless convention the rest of the compiler expects.
           let closedBody :=
             (appliedBody'.abstractFVar wFresh).abstractFVar valFresh
-          let resultTy := Soma.Core.Expr.sort .zero
-          return .case #[mApplied] #[Soma.Core.Arm.mk #[pairPat] closedBody] resultTy
+          let motive : Soma.Core.Expr :=
+            .lam .explicit "_" (.sort .zero) (.sort .zero)
+          return .case #[mApplied] motive #[Soma.Core.Arm.mk #[pairPat] closedBody]
         | none => pure ()
       -- Saturated pure_io x w → Pair::Mk w x. Emit a Pair construct literal
       -- whose stated result type is a real `vDataType pairUid [World, X]`
@@ -203,11 +204,12 @@ partial def inlineIOBind (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   | .projSnd x => return .projSnd (← inlineIOBind x)
   | .construct n t args rty =>
     return .construct n t (← args.mapM inlineIOBind) (← inlineIOBind rty)
-  | .«case» scruts arms rty =>
+  | .«case» scruts motive arms =>
     let scruts' ← scruts.mapM inlineIOBind
+    let motive' ← inlineIOBind motive
     let arms' ← arms.mapM fun arm => do
       return Soma.Core.Arm.mk arm.patterns (← inlineIOBind arm.body)
-    return .case scruts' arms' (← inlineIOBind rty)
+    return .case scruts' motive' arms'
   | .record fields =>
     let fields' ← fields.mapM fun (n, x) => do return (n, ← inlineIOBind x)
     return .record fields'
@@ -264,10 +266,10 @@ where
     | .projFst x => go x acc
     | .projSnd x => go x acc
     | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
-    | .«case» scruts arms rty =>
+    | .«case» scruts motive arms =>
       let acc := scruts.foldl (fun a e => go e a) acc
-      let acc := arms.foldl (fun a arm => go arm.body a) acc
-      go rty acc
+      let acc := go motive acc
+      arms.foldl (fun a arm => go arm.body a) acc
     | .record fields => fields.foldl (fun a (_, e) => go e a) acc
     | .recordUpdate b us =>
       let acc := go b acc
@@ -393,8 +395,9 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   | .projSnd x => do pure (.projSnd (← liftCoreExpr x))
   | .construct n t args rty => do
     pure (.construct n t (← args.mapM (liftCoreExpr ·)) (← liftCoreExpr rty))
-  | .«case» scruts arms rty => do
+  | .«case» scruts motive arms => do
     let scruts' ← scruts.mapM (liftCoreExpr ·)
+    let motive' ← liftCoreExpr motive
     let arms' ← arms.mapM fun arm => do
       let bindingIds := arm.patterns.foldl
         (fun acc p => acc ++ p.collectBindingIds) #[]
@@ -408,7 +411,7 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
       let closedBody := freshIds.reverse.foldl
         (fun body u => body.abstractFVar u) liftedBody
       pure (Soma.Core.Arm.mk arm.patterns closedBody)
-    pure (.«case» scruts' arms' (← liftCoreExpr rty))
+    pure (.«case» scruts' motive' arms')
   | .record fields => do
     let fields' ← fields.mapM fun (n, e') => do pure (n, ← liftCoreExpr e')
     pure (.record fields')

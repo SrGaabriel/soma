@@ -1,0 +1,13 @@
+// expect: success
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+def is_zero : Nat -> Nat
+    | Nat::Zero => Nat::Zero
+    | Nat::Succ _ => Nat::Succ Nat::Zero
+
+def constantly : Nat -> Nat -> Nat
+    | Nat::Zero, _ => Nat::Zero
+    | Nat::Succ _, m => m

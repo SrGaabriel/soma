@@ -263,19 +263,20 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   | .construct name tag args rty =>
     .vConstructor name tag (args.toList.map (evalCoreExpr ctx)) (evalCoreExpr ctx rty)
 
-  | .«case» scruts arms resultTyExpr =>
+  | .«case» scruts motiveExpr arms =>
     let scrutVals := scruts.map (evalCoreExpr ctx)
     match selectArm scrutVals arms with
     | some (bindings, body) =>
       let ctx' := bindings.foldl (fun c v => c.extendEnv "_" v) ctx
       evalCoreExpr ctx' body
     | none =>
-      let resultTy := evalCoreExpr ctx resultTyExpr
+      let motiveVal := evalCoreExpr ctx motiveExpr
+      let resultTy := scrutVals.foldl (fun m v => vApp m v ctx) motiveVal
       let hasNeutral := scrutVals.any fun
         | .vNeutral _ _ => true
         | _ => false
       if !hasNeutral then
-        .vNeutral .type0 (.nVar ⟨"case-no-arm", ctx.env.level⟩)
+        .vNeutral resultTy (.mk .hErrored #[])
       else
         let armClosures := arms.toList.map fun arm =>
           let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
@@ -287,7 +288,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
             ArmClosure.mk patName (.const patName (evalCoreExpr ctx arm.body)) arm.patterns
           else
             ArmClosure.mk patName (Closure.mkWithBody patName ctx.env arm.body) arm.patterns
-        .vNeutral resultTy (.nCase scrutVals armClosures resultTy)
+        .vNeutral resultTy (.nCase scrutVals motiveVal armClosures)
 
   | .record fields =>
     .vRecordVal (fields.toList.map fun (n, e) => (n, evalCoreExpr ctx e))
@@ -340,7 +341,8 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     | .vConstructor _ 1 _ _ => evalCoreExpr ctx else_
     | _ => .vNeutral .type0 (.nVar ⟨"if", ctx.env.level⟩)
 
-  | .panic msg => .vNeutral .type0 (.nVar ⟨s!"panic: {msg}", ctx.env.level⟩)
+  | .panic _msg =>
+    .vNeutral .type0 (.mk .hErrored #[])
 
   | .closure name _captures =>
     -- Post lambda-lift closure: treated as global reference
@@ -516,7 +518,11 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
 
   | .if_ _ then_ _ => typeOfWith bvarCtx globals unfoldTy evalEnv metas then_
 
-  | .«case» _ _ resultTy => evalCoreExpr { env := evalEnv, globals, metas } resultTy
+  | .«case» scruts motiveExpr _ =>
+    let ctx : EvalCtx := { env := evalEnv, globals, metas }
+    let motiveVal := evalCoreExpr ctx motiveExpr
+    let scrutVals := scruts.map (evalCoreExpr ctx)
+    scrutVals.foldl (fun m v => vApp m v ctx) motiveVal
 
   | .array _ resultTy => evalCoreExpr { env := evalEnv, globals, metas } resultTy
 

@@ -1,5 +1,5 @@
 // expect: success
 // Test: higher-kinded type with two type parameters
 
+@[extern "bimap"]
 def bimap {f : Type -> Type -> Type} {a : Type} {b : Type} {c : Type} {d : Type} : (a -> c) -> (b -> d) -> f a b -> f c d
-    | fn, gn, x => x

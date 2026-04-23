@@ -161,15 +161,15 @@ partial def renameHead (ren : PartialRenaming) : Head → RenameResult
     else .ok (.mvar id)
   | .hConst name constTy => .ok (.const name (quoteExpr0 constTy))
   | .hErrored => .ok (.panic "{errored}")
-  | .hCase scrutinees arms rty => do
+  | .hCase scrutinees motive arms => do
     let scrutExprs ← scrutinees.mapM (rename ren)
+    let motiveE ← rename ren motive
     let armExprs ← arms.mapM fun arm => do
       let argVal := Value.vNeutral .type0 (.nVar ⟨arm.pattern, ⟨ren.dom⟩⟩)
       let bodyVal := applyClosurePure arm.closure argVal
       let bodyE ← rename ren.lift bodyVal
       pure (Soma.Core.Arm.mk #[Soma.Core.Pattern.wildcard] bodyE)
-    let rtyE ← rename ren rty
-    .ok (.«case» scrutExprs armExprs.toArray rtyE)
+    .ok (.«case» scrutExprs motiveE armExprs.toArray)
 
 partial def renameElim (ren : PartialRenaming) (acc : Soma.Core.Expr) : Elim → RenameResult
   | .eApp arg => do

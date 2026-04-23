@@ -15,7 +15,7 @@ partial def headToString : Head → String
   | .hConst name _ => name.display
   | .hCase scrutinees _ _ =>
     let scrutsStr := scrutinees.toList.map valueToString |> String.intercalate ", "
-    s!"case {scrutsStr} of ..."
+    s!"case {scrutsStr} of …"
   | .hErrored => "{errored}"
 
 /-- Format an eliminator applied on top of an already-rendered prefix -/
@@ -149,6 +149,7 @@ partial def valueEq (v1 v2 : Value) : Bool :=
   | .vTransport l1 t1 m1 lhs1 rhs1 eq1 b1, .vTransport l2 t2 m2 lhs2 rhs2 eq2 b2 =>
     l1 == l2 && valueEq t1 t2 && valueEq m1 m2 && valueEq lhs1 lhs2 &&
     valueEq rhs1 rhs2 && valueEq eq1 eq2 && valueEq b1 b2
+  | .vLam _ b1, .vLam _ b2 => closureEq b1 b2
   | _, _ => false
 
 /-- Check if two heads are equal -/
@@ -157,9 +158,36 @@ partial def headEq (h1 h2 : Head) : Bool :=
   | .hVar v1, .hVar v2 => v1.level == v2.level
   | .hMeta m1, .hMeta m2 => m1 == m2
   | .hConst n1 _, .hConst n2 _ => n1 == n2
-  | .hCase _ _ _, .hCase _ _ _ => false
+  | .hCase ss1 m1 as1, .hCase ss2 m2 as2 =>
+    -- Two stuck cases are equal when their scrutinees, motive and arm closures all match structurally
+    ss1.size == ss2.size &&
+    (ss1.zip ss2).all (fun (s1, s2) => valueEq s1 s2) &&
+    valueEq m1 m2 &&
+    armsEq as1 as2
   | .hErrored, .hErrored => true
   | _, _ => false
+
+/-- Check if two lists of arm closures are structurally equal -/
+partial def armsEq (as1 as2 : List ArmClosure) : Bool :=
+  as1.length == as2.length &&
+  (as1.zip as2 |>.all (fun (a1, a2) =>
+    a1.patterns.size == a2.patterns.size &&
+    (a1.patterns.zip a2.patterns).all (fun (p1, p2) => p1 == p2) &&
+    closureEq a1.closure a2.closure))
+
+/-- Structural equality for closures -/
+partial def closureEq (c1 c2 : Closure) : Bool :=
+  match c1, c2 with
+  | .const _ v1, .const _ v2 => valueEq v1 v2
+  | .term _ env1 body1, .term _ env2 body2 =>
+    body1 == body2 && envEq env1 env2
+  | _, _ => false
+
+/-- Pointwise value equality on captured environments -/
+partial def envEq (e1 e2 : Env) : Bool :=
+  e1.size == e2.size &&
+  e1.values.length == e2.values.length &&
+  (e1.values.zip e2.values |>.all (fun ((_, v1), (_, v2)) => valueEq v1 v2))
 
 /-- Check if two eliminators are equal -/
 partial def elimEq (e1 e2 : Elim) : Bool :=
@@ -272,6 +300,18 @@ partial def applyClosurePure (clos : Closure) (arg : Value) : Value :=
     let env' := env.extend name arg
     evalExprPure env' body
 
+/-- Pure value application for quoting -/
+partial def vAppPure (fn : Value) (arg : Value) : Value :=
+  match fn with
+  | .vLam _ body => applyClosurePure body arg
+  | .vNeutral ty neu => .vNeutral ty (.nApp neu arg)
+  | .vDataType id params => .vDataType id (params ++ [arg])
+  | _ => fn
+
+/-- Apply a spine of arguments to a value left to right -/
+partial def vAppSpinePure (fn : Value) (args : Array Value) : Value :=
+  args.foldl (fun f a => vAppPure f a) fn
+
 /-- Pure Expr evaluation for quoting (no TCM, no metas) -/
 partial def evalExprPure (env : Env) (e : Expr) : Value :=
   match e with
@@ -323,11 +363,7 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
   | .app fn arg =>
     let fnVal := evalExprPure env fn
     let argVal := evalExprPure env arg
-    match fnVal with
-    | .vLam _ body => applyClosurePure body argVal
-    | .vNeutral ty neu => .vNeutral ty (.nApp neu argVal)
-    | .vDataType id params => .vDataType id (params ++ [argVal])
-    | other => other
+    vAppPure fnVal argVal
   | .lam _info name _domain body =>
     .vLam name (Closure.mkWithBody name env body)
   | .let_ name _ty val body =>
@@ -360,19 +396,20 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
     | _ => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ⟨env.size⟩⟩) field)
   | .construct name tag args rty =>
     .vConstructor name tag (args.toList.map (evalExprPure env)) (evalExprPure env rty)
-  | .«case» scruts arms resultTyExpr =>
+  | .«case» scruts motiveExpr arms =>
     let scrutVals := scruts.map (evalExprPure env)
     match selectArmPure scrutVals arms with
     | some (bindings, body) =>
       let env' := bindings.foldl (fun e v => e.extend "_" v) env
       evalExprPure env' body
     | none =>
-      let resultTy := evalExprPure env resultTyExpr
+      let motiveVal := evalExprPure env motiveExpr
+      let resultTy := vAppSpinePure motiveVal scrutVals
       let hasNeutral := scrutVals.any fun
         | .vNeutral _ _ => true
         | _ => false
       if !hasNeutral then
-        .vNeutral .type0 (.nVar ⟨"case-no-arm", ⟨env.size⟩⟩)
+        .vNeutral resultTy (.mk .hErrored #[])
       else
         let armClosures := arms.toList.map fun arm =>
           let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
@@ -384,7 +421,7 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
             ArmClosure.mk patName (.const patName (evalExprPure env arm.body)) arm.patterns
           else
             ArmClosure.mk patName (Closure.mkWithBody patName env arm.body) arm.patterns
-        .vNeutral resultTy (.nCase scrutVals armClosures resultTy)
+        .vNeutral resultTy (.nCase scrutVals motiveVal armClosures)
   | .inject _label _args _ =>
     .vNeutral .type0 (.nVar ⟨s!"inject:{_label}", ⟨env.size⟩⟩)
   | .dataTy id params => .vDataType id (params.toList.map (evalExprPure env))
@@ -398,7 +435,7 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
     | _ => .vTransport tyLevel (evalExprPure env ty) (evalExprPure env motive)
                        (evalExprPure env lhs) (evalExprPure env rhs)
                        eqVal (evalExprPure env body)
-  | .panic msg => .vNeutral .type0 (.nVar ⟨s!"panic: {msg}", ⟨env.size⟩⟩)
+  | .panic _msg => .vNeutral .type0 (.mk .hErrored #[])
   | .closure name _captures =>
     .vNeutral .type0 (.nConst name .type0)
   | .array _elements _ => .vNeutral .type0 (.nVar ⟨"array", ⟨env.size⟩⟩)
@@ -482,8 +519,9 @@ partial def quoteHeadExpr (depth : DeBruijnLvl) : Head → Expr
       .fvar ⟨v.level.lvl, "__tyvar", v.name⟩ (.sort .zero)
   | .hMeta id => .mvar id
   | .hConst name constTy => .const name (quoteExpr depth constTy)
-  | .hCase scrutinees arms resultTy =>
+  | .hCase scrutinees motive arms =>
     .«case» (scrutinees.map (quoteExpr depth))
+      (quoteExpr depth motive)
       (arms.map (fun ac =>
         let binds := ac.patterns.foldl (fun a p => a + p.bindingCount) 0
         let bodyDepth : DeBruijnLvl := ⟨depth.lvl + binds⟩
@@ -503,7 +541,6 @@ partial def quoteHeadExpr (depth : DeBruijnLvl) : Head → Expr
               evalExprPure env' body
           Arm.mk ac.patterns (quoteExpr bodyDepth bodyVal)
       ) |>.toArray)
-      (quoteExpr depth resultTy)
   | .hErrored => .panic "{errored}"
 
 /-- Apply an eliminator on top of an already-quoted expression -/

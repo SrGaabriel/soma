@@ -203,7 +203,7 @@ where
       for arg in args do
         checkTerm arg
 
-    | .«case» scruts arms _ =>
+    | .«case» scruts _ arms =>
       for scrut in scruts do
         checkTerm scrut
 

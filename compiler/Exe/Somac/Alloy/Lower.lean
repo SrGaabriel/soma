@@ -627,8 +627,9 @@ partial def collectTyVarLevelsHead (h : Soma.Core.Head) (acc : Std.HashSet Nat)
   | .hMeta m => acc.insert m.id
   | .hConst _ _ => acc
   | .hErrored => acc
-  | .hCase scrutinees _ _ =>
-    scrutinees.foldl (fun a s => collectTyVarLevels s a) acc
+  | .hCase scrutinees motive _ =>
+    let acc := scrutinees.foldl (fun a s => collectTyVarLevels s a) acc
+    collectTyVarLevels motive acc
 
 /-- Collect all de Bruijn levels from a spine eliminator -/
 partial def collectTyVarLevelsElim (e : Soma.Core.Elim) (acc : Std.HashSet Nat)

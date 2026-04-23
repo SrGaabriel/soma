@@ -403,9 +403,10 @@ partial def collectMetaOccurrencesHead (m : MetaId) (h : Head) (depth : Nat)
   | .hMeta id =>
     if id == m then #[{ depth := depth, scopeVars := scope }]
     else #[]
-  | .hCase scrutinees arms _ =>
+  | .hCase scrutinees motive arms =>
     scrutinees.foldl (fun acc s =>
       acc ++ collectMetaOccurrences m s depth scope) #[] ++
+    collectMetaOccurrences m motive depth scope ++
     arms.foldl (fun acc arm =>
       acc ++ collectMetaOccurrencesClosure m arm.closure (depth + 1) scope) #[]
 

@@ -243,10 +243,36 @@ partial def unifyHead (h1 h2 : Head) : TCM Unit := do
       let span ← TCM.getSpan
       TCM.throw (.unificationFailed
         (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+  | .hCase ss1 m1 as1, .hCase ss2 m2 as2 =>
+    -- Two stuck cases: unify each component
+    if ss1.size != ss2.size then
+      let span ← TCM.getSpan
+      TCM.throw (.unificationFailed
+        (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+    for (s1, s2) in ss1.zip ss2 do
+      unify s1 s2
+    unify m1 m2
+    if as1.length != as2.length then
+      let span ← TCM.getSpan
+      TCM.throw (.unificationFailed
+        (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+    for (arm1, arm2) in as1.zip as2 do
+      if arm1.patterns.size != arm2.patterns.size then
+        let span ← TCM.getSpan
+        TCM.throw (.unificationFailed
+          (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+      let baseLvl ← TCM.currentLevel
+      let arity := arm1.patterns.foldl (fun acc p => acc + p.bindingCount) 0
+      let freshArgs : Array Value := Array.ofFn (n := arity) fun i =>
+        Value.vNeutral .type0 (.nVar ⟨s!"_arm_arg_{i.val}", ⟨baseLvl.lvl + i.val⟩⟩)
+      let body1 ← applyArmClosureSpine arm1.closure freshArgs
+      let body2 ← applyArmClosureSpine arm2.closure freshArgs
+      unify body1 body2
   | _, _ =>
     let span ← TCM.getSpan
     TCM.throw (.unificationFailed
       (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+
 
 /-- Unify two eliminators -/
 partial def unifyElim (e1 e2 : Elim) : TCM Unit := do

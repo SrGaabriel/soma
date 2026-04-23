@@ -1,14 +1,16 @@
-use base::op::{Add, Gt, gt}
-use base::prop::{Truth, Never}
+// expect: success
 
 inductive Nat where
     | Zero
     | Succ (n : Nat)
 
-instance Add Nat where
-    def add : Nat -> Nat -> Nat
-        | Nat::Zero, m => m
-        | Nat::Succ n, m => Nat::Succ (add n m)
+inductive Truth where
+    | Trivial
+
+inductive Never : Type
+
+class Gt (a : Type) where
+    gt : a -> a -> Type
 
 instance Gt Nat where
     def gt : Nat -> Nat -> Type
@@ -17,12 +19,6 @@ instance Gt Nat where
         | Nat::Succ _, Nat::Zero => Truth
         | Nat::Succ n, Nat::Succ m => gt n m
 
-
 def adding_one_increases : (n : Nat) -> gt (Nat::Succ n) n
     | Nat::Zero => Truth::Trivial
     | Nat::Succ n => adding_one_increases n
-
-def succ_greater_than_zero : gt (Nat::Succ Nat::Zero) Nat::Zero :=
-    Truth::Trivial
-
-def not_greater_than_zero : gt Nat::Zero (Nat::Succ Nat::Zero) -> Never

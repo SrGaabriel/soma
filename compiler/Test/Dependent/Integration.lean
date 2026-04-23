@@ -121,8 +121,8 @@ partial def valueContainsMetaHead (v : Soma.Core.Value) : Bool :=
   | .vNeutral ty neu =>
     let headIsMeta := match neu.head with
       | .hMeta _ => true
-      | .hCase scruts _ rty =>
-        scruts.any valueContainsMetaHead || valueContainsMetaHead rty
+      | .hCase scruts motive _ =>
+        scruts.any valueContainsMetaHead || valueContainsMetaHead motive
       | _ => false
     headIsMeta
       || valueContainsMetaHead ty

@@ -559,6 +559,7 @@ structure PatternBinding where
   name : String
   type : Value
   qty : Quantity
+  nbeValue? : Option Value := none
   deriving Inhabited
 
 /-- Build a nested Pair pattern from a list of core patterns: (a, b, c) → Pair(a, Pair(b, c))
@@ -593,20 +594,42 @@ partial def buildListPattern (elems : List Soma.Core.Pattern) (span : Span)
     | some info => pure (.ctor info.name info.ctorTag #[head, tailPat])
     | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
 
-/-- Convert a Syntax.Pattern to a Core.Pattern and the `PatternBinding`s it introduces -/
+/-- Convert a Syntax.Pattern to a Core.Pattern, a pattern Value and the `PatternBinding`s it introduces -/
 partial def convertPatternWithBindings
     (pat : Soma.Syntax.Pattern) (scrutTy : Value) (scrutQty : Quantity)
-    : TCM (Soma.Core.Pattern × List PatternBinding) := do
+    (startLvl : Nat) (scrutVal? : Option Value := none)
+    : TCM (Soma.Core.Pattern × Value × List PatternBinding × Nat) := do
   match pat with
   | .var name =>
     let u ← TCM.freshUnique name.name
-    pure (.var (some u), [{ fvarId := u, name := name.name, type := scrutTy, qty := scrutQty }])
-  | .wildcard _ => pure (.wildcard, [])
+    match scrutVal? with
+    | some scrutVal =>
+      -- Top-level var pattern: alias the scrutinee
+      let b : PatternBinding :=
+        { fvarId := u, name := name.name, type := scrutTy, qty := scrutQty,
+          nbeValue? := some scrutVal }
+      pure (.var (some u), scrutVal, [b], startLvl + 1)
+    | none =>
+      -- Nested var pattern: allocate a fresh neutral at startLvl
+      let patVal := Value.vNeutral scrutTy (.nVar ⟨name.name, ⟨startLvl⟩⟩)
+      let b : PatternBinding :=
+        { fvarId := u, name := name.name, type := scrutTy, qty := scrutQty }
+      pure (.var (some u), patVal, [b], startLvl + 1)
+  | .wildcard _ =>
+    -- Wildcards: bind no name
+    let patVal ← TCM.freshMetaVal scrutTy
+    pure (.wildcard, patVal, [], startLvl)
   | .lit l =>
-    pure (.lit (match l with
-      | .int n _ => .int n
-      | .string s _ => .string s
-      | .bool b _ => .bool b), [])
+    let (corePat, patVal) := match l with
+      | .int n _ => ((.lit (.int n) : Soma.Core.Pattern), Value.vIntLit n)
+      | .string s _ => (.lit (.string s), Value.vStringLit s)
+      | .bool b _ =>
+        let ctor : Value :=
+          if b
+          then .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
+          else .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 [] (.vPrimTy .bool)
+        (.lit (.bool b), ctor)
+    pure (corePat, patVal, [], startLvl)
   | .con name args span => do
     let ctorInfo? ← do
       match ← TCM.lookupGlobal name.path name.name with
@@ -622,7 +645,9 @@ partial def convertPatternWithBindings
     | some ctorInfo =>
       let fields ← extractConstructorFieldTypes ctorInfo.type scrutTy (some name.name) span
       let mut coreArgs : Array Soma.Core.Pattern := #[]
+      let mut argVals : Array Value := #[]
       let mut bindings : List PatternBinding := []
+      let mut curLvl := startLvl
       for h : i in [:args.size] do
         let arg := args[i]
         let (fieldTy, fieldQty) ← if h' : i < fields.size then
@@ -630,16 +655,22 @@ partial def convertPatternWithBindings
         else
           let ty ← TCM.freshMetaVal (.vType .zero)
           pure (ty, .omega)
-        let (corePat, argBindings) ← convertPatternWithBindings arg fieldTy (scrutQty * fieldQty)
+        let (corePat, argVal, argBindings, curLvl') ←
+          convertPatternWithBindings arg fieldTy (scrutQty * fieldQty) curLvl
         coreArgs := coreArgs.push corePat
+        argVals := argVals.push argVal
         bindings := bindings ++ argBindings
-      pure (.ctor ctorInfo.name ctorInfo.ctorTag coreArgs, bindings)
+        curLvl := curLvl'
+      let patVal := Value.vConstructor ctorInfo.name ctorInfo.ctorTag argVals.toList scrutTy
+      pure (.ctor ctorInfo.name ctorInfo.ctorTag coreArgs, patVal, bindings, curLvl)
     | none =>
       TCM.throw (.unboundVariable name.name span #[])
   | .tuple elems span => do
-    let (coreElems, bindings) ← convertTuplePatternWithBindings elems.toList scrutTy scrutQty
+    let (coreElems, elemVals, bindings, nextLvl) ←
+      convertTuplePatternWithBindings elems.toList scrutTy scrutQty startLvl
     let nested ← buildNestedPairPattern coreElems span
-    pure (nested, bindings)
+    let patVal ← buildNestedPairValue elemVals span
+    pure (nested, patVal, bindings, nextLvl)
   | .list elems span => do
     let elemTy ← TCM.freshMetaVal (.vType .zero)
     let scrutTy' ← force scrutTy
@@ -651,13 +682,19 @@ partial def convertPatternWithBindings
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
     let mut coreElems : List Soma.Core.Pattern := []
+    let mut elemVals : List Value := []
     let mut bindings : List PatternBinding := []
+    let mut curLvl := startLvl
     for elem in elems do
-      let (corePat, elemBindings) ← convertPatternWithBindings elem elemTy scrutQty
+      let (corePat, elemVal, elemBindings, curLvl') ←
+        convertPatternWithBindings elem elemTy scrutQty curLvl
       coreElems := coreElems ++ [corePat]
+      elemVals := elemVals ++ [elemVal]
       bindings := bindings ++ elemBindings
+      curLvl := curLvl'
     let listPat ← buildListPattern coreElems span
-    pure (listPat, bindings)
+    let listVal ← buildListValue elemVals elemTy scrutTy span
+    pure (listPat, listVal, bindings, curLvl)
   | .cons head tail span => do
     let elemTy ← TCM.freshMetaVal (.vType .zero)
     let scrutTy' ← force scrutTy
@@ -668,66 +705,160 @@ partial def convertPatternWithBindings
       let listId := listInfo.name.id
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
-    let (coreHead, headBindings) ← convertPatternWithBindings head elemTy scrutQty
-    let (coreTail, tailBindings) ← convertPatternWithBindings tail scrutTy scrutQty
+    let (coreHead, headVal, headBindings, midLvl) ←
+      convertPatternWithBindings head elemTy scrutQty startLvl
+    let (coreTail, tailVal, tailBindings, endLvl) ←
+      convertPatternWithBindings tail scrutTy scrutQty midLvl
     match ← TCM.lookupWiredIn .cons with
-    | some info => pure (.ctor info.name info.ctorTag #[coreHead, coreTail], headBindings ++ tailBindings)
+    | some info =>
+      let consVal := Value.vConstructor info.name info.ctorTag [headVal, tailVal] scrutTy
+      pure (.ctor info.name info.ctorTag #[coreHead, coreTail], consVal,
+            headBindings ++ tailBindings, endLvl)
     | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
-  | .parens inner _ => convertPatternWithBindings inner scrutTy scrutQty
-  | .typed pat _ _ => convertPatternWithBindings pat scrutTy scrutQty
+  | .parens inner _ => convertPatternWithBindings inner scrutTy scrutQty startLvl scrutVal?
+  | .typed pat _ _ => convertPatternWithBindings pat scrutTy scrutQty startLvl scrutVal?
   | .variant label arg _ => do
+    -- Synthesize a QualifiedName uniquely identified by the label string
+    let qn : Soma.Core.QualifiedName :=
+      ⟨{ id := label.name.hash.toNat, module := "__variant", original := label.name }⟩
     match arg with
     | some p =>
       let argTy ← TCM.freshMetaVal (.vType .zero)
-      let (coreArg, bindings) ← convertPatternWithBindings p argTy scrutQty
-      pure (.inject label.name (some coreArg), bindings)
-    | none => pure (.inject label.name none, [])
+      let (coreArg, argVal, bindings, nextLvl) ←
+        convertPatternWithBindings p argTy scrutQty startLvl
+      let patVal := Value.vConstructor qn 0 [argVal] scrutTy
+      pure (.inject label.name (some coreArg), patVal, bindings, nextLvl)
+    | none =>
+      let patVal := Value.vConstructor qn 0 [] scrutTy
+      pure (.inject label.name none, patVal, [], startLvl)
 where
   convertTuplePatternWithBindings
       (elems : List Soma.Syntax.Pattern) (ty : Value) (scrutQty : Quantity)
-      : TCM (List Soma.Core.Pattern × List PatternBinding) := do
+      (startLvl : Nat)
+      : TCM (List Soma.Core.Pattern × List Value × List PatternBinding × Nat) := do
     match elems with
-    | [] => return ([], [])
+    | [] => return ([], [], [], startLvl)
     | [lastElem] =>
-      let (pat, bindings) ← convertPatternWithBindings lastElem ty scrutQty
-      pure ([pat], bindings)
+      let (pat, val, bindings, nextLvl) ←
+        convertPatternWithBindings lastElem ty scrutQty startLvl
+      pure ([pat], [val], bindings, nextLvl)
     | elem :: rest =>
       let ty' ← force ty
       match ty' with
       | .vSigma fstQty _ fstTy sndClos =>
-        let (elemPat, elemBindings) ←
-          convertPatternWithBindings elem fstTy (scrutQty * fstQty)
-        let lvl ← TCM.currentLevel
-        let dummyVal := Value.vNeutral fstTy (.nVar ⟨"_", lvl⟩)
-        let sndTy ← applyClosure sndClos dummyVal
-        let (restPats, restBindings) ←
-          convertTuplePatternWithBindings rest sndTy scrutQty
-        return (elemPat :: restPats, elemBindings ++ restBindings)
+        let (elemPat, elemVal, elemBindings, midLvl) ←
+          convertPatternWithBindings elem fstTy (scrutQty * fstQty) startLvl
+        let sndTy ← applyClosure sndClos elemVal
+        let (restPats, restVals, restBindings, nextLvl) ←
+          convertTuplePatternWithBindings rest sndTy scrutQty midLvl
+        return (elemPat :: restPats, elemVal :: restVals,
+                elemBindings ++ restBindings, nextLvl)
       | _ =>
         let mut pats : List Soma.Core.Pattern := []
+        let mut vals : List Value := []
         let mut bindings : List PatternBinding := []
+        let mut curLvl := startLvl
         for e in (elem :: rest) do
           let eTy ← TCM.freshMetaVal (.vType .zero)
-          let (p, bs) ← convertPatternWithBindings e eTy scrutQty
+          let (p, v, bs, curLvl') ←
+            convertPatternWithBindings e eTy scrutQty curLvl
           pats := pats ++ [p]
+          vals := vals ++ [v]
           bindings := bindings ++ bs
-        return (pats, bindings)
+          curLvl := curLvl'
+        return (pats, vals, bindings, curLvl)
+  buildNestedPairValue (vs : List Value) (span : Span) : TCM Value := do
+    match vs with
+    | [] => pure (.vNeutral (.vPrimTy .unit) (.nVar ⟨"_unit", ⟨0⟩⟩))
+    | [v] => pure v
+    | v :: rest =>
+      let restV ← buildNestedPairValue rest span
+      match ← TCM.lookupWiredIn .pair with
+      | some info =>
+        let fstTy ← inferValueType v
+        let sndTy ← inferValueType restV
+        pure (.vConstructor info.name info.ctorTag [v, restV] (Value.prod fstTy sndTy))
+      | none =>
+        TCM.throw (.unboundGlobal "pair (no @[wired_in \"pair\"] constructor in scope)" span #[])
+  buildListValue (vs : List Value) (elemTy scrutTy : Value) (span : Span) : TCM Value := do
+    match vs with
+    | [] =>
+      match ← TCM.lookupWiredIn .nil with
+      | some info =>
+        pure (.vConstructor info.name info.ctorTag [] scrutTy)
+      | none => TCM.throw (.unboundGlobal "nil (no @[wired_in \"nil\"] constructor in scope)" span #[])
+    | v :: rest =>
+      let restV ← buildListValue rest elemTy scrutTy span
+      match ← TCM.lookupWiredIn .cons with
+      | some info =>
+        pure (.vConstructor info.name info.ctorTag [v, restV] scrutTy)
+      | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
+  inferValueType (v : Value) : TCM Value := do
+    match v with
+    | .vNeutral ty _ => pure ty
+    | .vConstructor _ _ _ ty => pure ty
+    | .vIntLit _ => pure (.vPrimTy .int)
+    | .vStringLit _ => pure (.vPrimTy .string)
+    | .vFloatLit _ => pure (.vPrimTy .double)
+    | _ => pure (.vType .zero)
 
-/-- Convert a list of Syntax.Patterns against parallel `(scrutineeType, scrutineeQty)` pairs -/
+/-- Convert a pattern row against parallel scrutinee -/
 partial def convertPatternListWithBindings
-    (pats : List Soma.Syntax.Pattern) (scruts : List (Value × Quantity))
-    : TCM (Array Soma.Core.Pattern × List PatternBinding) := do
-  match pats, scruts with
-  | [], _ => return (#[], [])
-  | pat :: rest, (ty, qty) :: tys =>
-    let (corePat, patBindings) ← convertPatternWithBindings pat ty qty
-    let (restPats, restBindings) ← convertPatternListWithBindings rest tys
-    return (#[corePat] ++ restPats, patBindings ++ restBindings)
-  | pat :: rest, [] =>
-    let freshTy ← TCM.freshMetaVal (.vType .zero)
-    let (corePat, patBindings) ← convertPatternWithBindings pat freshTy .omega
-    let (restPats, restBindings) ← convertPatternListWithBindings rest []
-    return (#[corePat] ++ restPats, patBindings ++ restBindings)
+    (pats : List Soma.Syntax.Pattern)
+    (scruts : List (Value × Quantity × Value))
+    (startLvl : Nat)
+    : TCM (Array Soma.Core.Pattern × Array Value × List PatternBinding × Nat) := do
+  goList pats scruts startLvl LevelSubst.empty #[] #[] []
+where
+  goList (pats : List Soma.Syntax.Pattern)
+      (scruts : List (Value × Quantity × Value)) (curLvl : Nat)
+      (σ : LevelSubst)
+      (accPats : Array Soma.Core.Pattern) (accVals : Array Value)
+      (accBindings : List PatternBinding)
+      : TCM (Array Soma.Core.Pattern × Array Value × List PatternBinding × Nat) := do
+    match pats, scruts with
+    | [], _ =>
+      let refinedBindings ← accBindings.mapM fun b => do
+        let ty' ← substValue σ b.type
+        pure { b with type := ty' }
+      return (accPats, accVals, refinedBindings, curLvl)
+    | pat :: rest, (ty, qty, scrutVal) :: restScruts =>
+      let refinedTy ← substValue σ ty
+      let refinedScrutVal ← substValue σ scrutVal
+      let (corePat, patVal, patBindings, midLvl) ←
+        convertPatternWithBindings pat refinedTy qty curLvl (some refinedScrutVal)
+      let σ' ← do
+        if patternConcretelyMatches corePat then
+          match ← scrutLevel? refinedScrutVal with
+          | some lvl => pure (σ.extend lvl patVal)
+          | none => pure σ
+        else pure σ
+      goList rest restScruts midLvl σ'
+        (accPats.push corePat) (accVals.push patVal)
+        (accBindings ++ patBindings)
+    | pat :: rest, [] =>
+      let freshTy ← TCM.freshMetaVal (.vType .zero)
+      let (corePat, patVal, patBindings, midLvl) ←
+        convertPatternWithBindings pat freshTy .omega curLvl none
+      goList rest [] midLvl σ
+        (accPats.push corePat) (accVals.push patVal)
+        (accBindings ++ patBindings)
+  /-- True when the pattern pins the scrutinee to a specific structural shape -/
+  patternConcretelyMatches : Soma.Core.Pattern → Bool
+    | .ctor _ _ _ => true
+    | .lit _ => true
+    | .inject _ _ => true
+    | .var _ | .wildcard => false
+  /-- Extract the de Bruijn level of a value that is a bare bound variable -/
+  scrutLevel? (v : Value) : TCM (Option DeBruijnLvl) := do
+    match ← force v with
+    | .vNeutral _ neu =>
+      if neu.isBareHead then
+        match neu.head with
+        | .hVar bv => return some bv.level
+        | _ => return none
+      else return none
+    | _ => return none
 
 
 /-- Desugar a compose block into nested >>= applications -/
@@ -864,10 +995,12 @@ where
     -- Case expressions
     | .case scruts arms caseSpan => do
       let (scrutTys, scrutsExpr) ← inferSyntaxList scruts.toList
-      let resultTy ← TCM.freshMetaVal (.vType .zero)
-      let armsExpr ← inferSyntaxArms arms.toList scrutTys scrutsExpr resultTy caseSpan
-      let resultTyExpr ← quoteValueToExpr resultTy
-      return (resultTy, .«case» scrutsExpr armsExpr resultTyExpr)
+      let level ← TCM.freshLevel "caseU"
+      let resultTy ← TCM.freshMetaVal (.vType level)
+      let motive := buildConstantMotive scrutTys resultTy
+      let armsExpr ← checkSyntaxArms arms.toList scrutTys scrutsExpr motive caseSpan
+      let motiveExpr ← quoteValueToExpr motive
+      return (resultTy, .«case» scrutsExpr motiveExpr armsExpr)
 
     -- Tuple: desugar to nested pairs
     | .tuple elems span => do
@@ -1290,13 +1423,71 @@ partial def inferSyntaxRecordFields (fields : List (Soma.Syntax.QualName × Soma
     let row := Value.vRowExtend (.vLabelLit name.name) ty restRow
     return (row, #[(name.name, exprE)] ++ restFields)
 
-/-- Infer arms of a case expression from Syntax.MatchArm -/
-partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
-    (scrutTys : List Value) (scrutExprs : Array Soma.Core.Expr) (expectedTy : Value)
+/-- Build a constant motive, one lambda per scrutinee type -/
+private partial def buildConstantMotive (scrutTys : List Value) (target : Value) : Value :=
+  match scrutTys with
+  | [] => target
+  | _ :: rest =>
+    Value.vLam "_" (Closure.const "_" (buildConstantMotive rest target))
+
+/-- Apply a motive value to a spine of scrutinee/pattern values left to right -/
+partial def applyMotiveSpine (motive : Value) (args : Array Value) : TCM Value := do
+  let mut m := motive
+  for a in args do
+    let m' ← force m
+    m ← vAppMotive m' a
+  force m
+
+/-- Synthesize a motive Value from an expected arm type in check mode -/
+partial def synthesizeMotive (scrutVals : Array Value) (scrutTys : List Value)
+    (expected : Value) (_span : Span) : TCM Value := do
+  -- Quote at depth 0 so every outer bound variable becomes a sentinel fvar
+  let expectedExpr := Soma.Core.quoteExpr ⟨0⟩ expected
+  let tyArr := scrutTys.toArray
+  let mut body := expectedExpr
+  let n := scrutVals.size
+  for idx in [:n] do
+    -- The Ith scrutinee becomes the i-th utermost lambda, so we must abstract the last one first and wrap our way outward
+    let i := n - 1 - idx
+    let scrutVal ← force scrutVals[i]!
+    let abstracted : Soma.Core.Expr :=
+      match scrutVal with
+      | .vNeutral _ neu =>
+        if neu.isBareHead then
+          match neu.head with
+          | .hVar bv =>
+            -- Sentinel fvar produced by `quoteHeadExpr` for this level
+            let sentinel : Soma.Unique :=
+              { id := bv.level.lvl, module := "__tyvar", original := bv.name }
+            body.abstractFVar sentinel
+          | _ =>
+            -- Not a bound variable: motive is constant in this arg
+            body.shiftUp
+        else
+          body.shiftUp
+      | _ =>
+        body.shiftUp
+    let tyVal ← if h' : i < tyArr.size then pure tyArr[i] else pure (.vType .zero)
+    let tyExpr := Soma.Core.quoteExpr ⟨0⟩ tyVal
+    let name :=
+      match scrutVal with
+      | .vNeutral _ neu =>
+        match neu.head with
+        | .hVar bv => bv.name
+        | _ => s!"s{i}"
+      | _ => s!"s{i}"
+    body := .lam .explicit name tyExpr abstracted
+  -- Evaluate the motive Expr to a Value
+  TCM.evalExpr body
+
+/-- Check each arm of a case expression against `motive @ patternValues` -/
+partial def checkSyntaxArms (arms : List Soma.Syntax.MatchArm)
+    (scrutTys : List Value) (scrutExprs : Array Soma.Core.Expr) (motive : Value)
     (caseSpan : Span)
     : TCM (Array Soma.Core.Arm) := do
   let ctx ← TCM.getCtx
-  let mut scruts : List (Value × Quantity) := []
+  let scrutVals ← scrutExprs.mapM TCM.evalExpr
+  let mut scruts : List (Value × Quantity × Value) := []
   let mut i : Nat := 0
   for ty in scrutTys do
     let baseQty : Quantity :=
@@ -1308,15 +1499,18 @@ partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
           | none => .omega
         | _ => .omega
       else .omega
-    scruts := scruts ++ [(ty, baseQty)]
+    let scrutVal := if h' : i < scrutVals.size then scrutVals[i] else ty
+    scruts := scruts ++ [(ty, baseQty, scrutVal)]
     i := i + 1
   let mut results : Array Soma.Core.Arm := #[]
   let mut armUsagesList : Array UsageSnapshot := #[]
   for arm in arms do
     let pats := arm.patterns.toList
-    let (corePatterns, bindings) ← convertPatternListWithBindings pats scruts
+    let startLvl := (← TCM.getCtx).level.lvl
+    let (corePatterns, patVals, bindings, _endLvl) ←
+      convertPatternListWithBindings pats scruts startLvl
     let (bodyExpr, armUsages) ← captureUsages
-      (inferSyntaxArmBodyWithBindings bindings arm.body expectedTy arm.span)
+      (checkArmBodyWithBindings bindings patVals motive arm.body arm.span)
     let abstractedBody := bindings.foldl
       (fun body b => body.abstractFVar b.fvarId) bodyExpr
     results := results.push (Soma.Core.Arm.mk corePatterns abstractedBody)
@@ -1329,17 +1523,23 @@ partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
   Coverage.checkExhaustiveness results scrutTys span
   return results
 
-/-- Extend the context with pattern bindings (each carrying its computed QTT
-    quantity) and check the arm body against the expected arm type -/
-partial def inferSyntaxArmBodyWithBindings
-    (bindings : List PatternBinding)
-    (body : Soma.Syntax.Expr) (expectedTy : Value) (span : Span)
+/-- Push pattern bindings into the context and check the body against the reduced version -/
+partial def checkArmBodyWithBindings
+    (bindings : List PatternBinding) (patVals : Array Value) (motive : Value)
+    (body : Soma.Syntax.Expr) (span : Span)
     : TCM Soma.Core.Expr := do
   match bindings with
-  | [] => checkSyntax body expectedTy
+  | [] =>
+    let armExpectedTy ← applyMotiveSpine motive patVals
+    checkSyntax body armExpectedTy
   | b :: rest =>
-    withCheckedBinding b.name b.fvarId b.type b.qty .explicit span do
-      inferSyntaxArmBodyWithBindings rest body expectedTy span
+    match b.nbeValue? with
+    | some nbeVal =>
+      withCheckedBindingValue b.name b.fvarId b.type b.qty .explicit span nbeVal do
+        checkArmBodyWithBindings rest patVals motive body span
+    | none =>
+      withCheckedBinding b.name b.fvarId b.type b.qty .explicit span do
+        checkArmBodyWithBindings rest patVals motive body span
 
 /-- Infer nested tuple as nested pairs -/
 partial def inferSyntaxTuple (elems : List Soma.Syntax.Expr) (span : Span)
@@ -1427,6 +1627,15 @@ where
       let joined ← checkBranchUsages thenUsages elseUsages span
       applyUsages joined
       return .if_ condExpr thenExpr elseExpr
+
+    -- Case expression in check mode synthesizes a dependent motive from the expected type by abstracting scrutinee values
+    | .case scruts arms caseSpan, _ => do
+      let (scrutTys, scrutsExpr) ← inferSyntaxList scruts.toList
+      let scrutVals ← scrutsExpr.mapM TCM.evalExpr
+      let motive ← synthesizeMotive scrutVals scrutTys expected' caseSpan
+      let armsExpr ← checkSyntaxArms arms.toList scrutTys scrutsExpr motive caseSpan
+      let motiveExpr ← quoteValueToExpr motive
+      return .«case» scrutsExpr motiveExpr armsExpr
 
     -- Tuple against Sigma: desugar to nested pair checks
     | .tuple elems _, .vSigma _ _ _ _ =>

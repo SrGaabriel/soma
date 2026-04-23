@@ -160,10 +160,10 @@ private partial def inlineProducerLets (ctx : FusionCtx) (e : Expr) : Expr :=
       .let_ name ty val' body'
   | .lam info n d b => .lam info n d (inlineProducerLets ctx b)
   | .app f a => .app (inlineProducerLets ctx f) (inlineProducerLets ctx a)
-  | .«case» scruts arms resultTy =>
+  | .«case» scruts motive arms =>
     .«case» (scruts.map (inlineProducerLets ctx))
+      motive
       (arms.map fun arm => Arm.mk arm.patterns (inlineProducerLets ctx arm.body))
-      resultTy
   | .if_ c t el => .if_ (inlineProducerLets ctx c) (inlineProducerLets ctx t) (inlineProducerLets ctx el)
   | .construct n tag args rty => .construct n tag (args.map (inlineProducerLets ctx)) rty
   | .pair f s => .pair (inlineProducerLets ctx f) (inlineProducerLets ctx s)
@@ -219,10 +219,10 @@ private partial def fuseChildren (ctx : FusionCtx) (e : Expr) : Expr :=
     .lam info name domain (fuseExpr ctx body)
   | .let_ name ty val body =>
     .let_ name ty (fuseExpr ctx val) (fuseExpr ctx body)
-  | .«case» scruts arms resultTy =>
+  | .«case» scruts motive arms =>
     .«case» (scruts.map (fuseExpr ctx))
+      (fuseExpr ctx motive)
       (arms.map fun arm => Arm.mk arm.patterns (fuseExpr ctx arm.body))
-      (fuseExpr ctx resultTy)
   | .if_ c t el => .if_ (fuseExpr ctx c) (fuseExpr ctx t) (fuseExpr ctx el)
   | .construct name tag args resultTy =>
     .construct name tag (args.map (fuseExpr ctx)) (fuseExpr ctx resultTy)

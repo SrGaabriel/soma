@@ -205,8 +205,9 @@ where
     | .hConst _ _ => []
     | .hMeta _ => []
     | .hErrored => []
-    | .hCase scrutinees _ _ =>
-      scrutinees.foldl (fun acc s => acc ++ checkIndexValue s reg) []
+    | .hCase scrutinees motive _ =>
+      scrutinees.foldl (fun acc s => acc ++ checkIndexValue s reg) [] ++
+      checkIndexValue motive reg
   checkElim (e : Elim) (reg : TotalityRegistry) : List String :=
     match e with
     | .eApp arg => checkIndexValue arg reg

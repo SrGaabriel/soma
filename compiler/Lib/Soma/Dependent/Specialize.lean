@@ -132,10 +132,10 @@ private partial def specializeChildren (registry : ClassMethodRegistry) (e : Exp
   | .projSnd e => .projSnd (specializeExpr registry e)
   | .if_ c t e => .if_ (specializeExpr registry c) (specializeExpr registry t)
     (specializeExpr registry e)
-  | .«case» scruts arms resultTy =>
+  | .«case» scruts motive arms =>
     .«case» (scruts.map (specializeExpr registry))
+      (specializeExpr registry motive)
       (arms.map fun arm => Arm.mk arm.patterns (specializeExpr registry arm.body))
-      (specializeExpr registry resultTy)
   | .construct name tag args resultTy =>
     .construct name tag (args.map (specializeExpr registry)) (specializeExpr registry resultTy)
   | .fieldAccess expr field idx =>

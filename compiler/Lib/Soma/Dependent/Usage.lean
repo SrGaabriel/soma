@@ -132,6 +132,15 @@ def withCheckedBinding (name : String) (bindingId : Unique) (ty : Value)
     checkLinearBinding bindingId span
   return result
 
+/-- Run an action with a binding whose NbE value is a caller-supplied value instead of a fresh neutral -/
+def withCheckedBindingValue (name : String) (bindingId : Unique) (ty : Value)
+    (qty : Quantity) (binder : BinderInfo) (span : Span)
+    (nbeValue : Value) (action : TCM α) : TCM α := do
+  let result ← TCM.withBindingValue name bindingId ty qty binder span nbeValue action
+  if qty == .one then
+    checkLinearBinding bindingId span
+  return result
+
 /-- Run an action in erased context (quantity 0).
     All usages in this context don't count toward runtime usage. -/
 def inErasedScope (action : TCM α) : TCM α :=

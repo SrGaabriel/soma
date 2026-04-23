@@ -432,7 +432,7 @@ partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
     args.foldl (init := {}) fun acc arg => usageAdd acc (countUsesExpr arg)
   | .if_ cond then_ else_ =>
     usageAdd (countUsesExpr cond) (usageAdd (countUsesExpr then_) (countUsesExpr else_))
-  | .«case» scruts arms _ =>
+  | .«case» scruts _ arms =>
     let scrutUses := scruts.foldl (init := {}) fun acc s => usageAdd acc (countUsesExpr s)
     let armUses := arms.foldl (init := {}) fun acc arm => usageAdd acc (countUsesExpr arm.body)
     usageAdd scrutUses armUses
@@ -786,7 +786,7 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   | .if_ cond then_ else_ => lowerCoreIf cond then_ else_ ty
 
-  | .«case» scruts arms _ => lowerCoreCase scruts arms ty
+  | .«case» scruts _ arms => lowerCoreCase scruts arms ty
 
   | .const qn _ => some <$> lowerGlobal qn ty
 

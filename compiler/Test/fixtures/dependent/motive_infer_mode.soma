@@ -1,0 +1,11 @@
+// expect: success
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+def double : Nat -> Nat
+    | Nat::Zero => Nat::Zero
+    | Nat::Succ m => Nat::Succ (Nat::Succ (double m))
+
+def two_doubled : Nat := double (Nat::Succ (Nat::Succ Nat::Zero))

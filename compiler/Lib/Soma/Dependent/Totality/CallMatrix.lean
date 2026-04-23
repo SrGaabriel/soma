@@ -507,7 +507,7 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
   | .projFst e => collectCallsGo caller targets e ctx acc
   | .projSnd e => collectCallsGo caller targets e ctx acc
   | .construct _ _ args _ => collectCallsGoArgs caller targets args.toList ctx acc
-  | .«case» scruts arms _ =>
+  | .«case» scruts _ arms =>
     let acc' := match scruts[0]? with
       | some s => collectCallsGo caller targets s ctx acc
       | none => acc

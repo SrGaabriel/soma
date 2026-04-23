@@ -202,7 +202,7 @@ where
 
     | .lam _ _ _ body => go body guard
 
-    | .«case» scruts arms _ =>
+    | .«case» scruts _ arms =>
       let g := scruts.foldl (fun g' s => combineGuardedness g' (go s guard)) guard
       arms.toList.foldl (fun g' arm => combineGuardedness g' (go arm.body guard)) g
 

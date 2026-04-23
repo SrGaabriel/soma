@@ -186,20 +186,23 @@ partial def extractParamTypes (ty : Value) (numParams : Nat) : TCM (Array Value 
 /-- Extract a binder telescope prefix from a Pi type, preserving QTT quantities -/
 partial def extractSignaturePrefix (ty : Value) (numExplicit : Nat)
     : TCM (Array (String × Value × Soma.Core.BinderInfo × Soma.Core.Quantity) × Value) := do
-  let ty' ← force ty
-  match ty' with
-  | .vPi qty binder name dom cod =>
-    -- Once we consumed all explicit term parameters, stop before the next explicit binder
-    if numExplicit == 0 && !binder.isImplicit then
+  let startLvl ← TCM.currentLevel
+  go ty numExplicit startLvl.lvl
+where
+  go (ty : Value) (numExplicit : Nat) (lvl : Nat)
+      : TCM (Array (String × Value × Soma.Core.BinderInfo × Soma.Core.Quantity) × Value) := do
+    let ty' ← force ty
+    match ty' with
+    | .vPi qty binder name dom cod =>
+      if numExplicit == 0 && !binder.isImplicit then
+        return (#[], ty')
+      let dummyArg := Value.vNeutral dom (.nVar ⟨name, ⟨lvl⟩⟩)
+      let codTy ← applyClosure cod dummyArg
+      let remainingExplicit := if binder.isImplicit then numExplicit else numExplicit - 1
+      let (restParams, resultTy) ← go codTy remainingExplicit (lvl + 1)
+      return (#[(name, dom, binder, qty)] ++ restParams, resultTy)
+    | _ =>
       return (#[], ty')
-    let lvl ← TCM.currentLevel
-    let dummyArg := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
-    let codTy ← applyClosure cod dummyArg
-    let remainingExplicit := if binder.isImplicit then numExplicit else numExplicit - 1
-    let (restParams, resultTy) ← extractSignaturePrefix codTy remainingExplicit
-    return (#[(name, dom, binder, qty)] ++ restParams, resultTy)
-  | _ =>
-    return (#[], ty')
 
 /-- Extend the context with function parameters and run an action -/
 def withFunctionParams (params : Array String) (paramTypes : Array Value)

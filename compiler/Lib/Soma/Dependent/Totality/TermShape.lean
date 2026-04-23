@@ -68,7 +68,7 @@ partial def collectExprVars : Expr → List String
   | .projFst e => collectExprVars e
   | .projSnd e => collectExprVars e
   | .construct _ _ args _ => args.toList.flatMap collectExprVars
-  | .«case» scruts arms _ =>
+  | .«case» scruts _ arms =>
     scruts.toList.flatMap collectExprVars ++
       arms.toList.flatMap fun arm => collectExprVars arm.body
   | .record fields => fields.toList.flatMap fun (_, t) => collectExprVars t

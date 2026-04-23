@@ -118,6 +118,155 @@ partial def applyClosure (clos : Closure) (arg : Value) : TCM Value := do
 
 end
 
+abbrev LevelSubst := Std.HashMap Nat Value
+
+namespace LevelSubst
+
+def empty : LevelSubst := {}
+
+def isEmpty (σ : LevelSubst) : Bool := σ.toList.isEmpty
+
+def extend (σ : LevelSubst) (lvl : DeBruijnLvl) (v : Value) : LevelSubst :=
+  Std.HashMap.insert σ lvl.lvl v
+
+def lookup (σ : LevelSubst) (lvl : DeBruijnLvl) : Option Value :=
+  σ.get? lvl.lvl
+
+end LevelSubst
+
+mutual
+
+/-- Apply a level substitution to a Value -/
+partial def substValue (σ : LevelSubst) (v : Value) : TCM Value := do
+  if σ.isEmpty then return v
+  match v with
+  | .vType _ | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
+  | .vLabelLit _ | .vRowSort | .vLabelSort | .vRowEmpty => return v
+  | .vPi q b n d c =>
+    let d' ← substValue σ d
+    let c' ← substClosure σ c
+    return .vPi q b n d' c'
+  | .vLam n c =>
+    let c' ← substClosure σ c
+    return .vLam n c'
+  | .vSigma q n f s =>
+    let f' ← substValue σ f
+    let s' ← substClosure σ s
+    return .vSigma q n f' s'
+  | .vPair a b =>
+    let a' ← substValue σ a
+    let b' ← substValue σ b
+    return .vPair a' b'
+  | .vRowExtend l t tail =>
+    let l' ← substValue σ l
+    let t' ← substValue σ t
+    let tail' ← substValue σ tail
+    return .vRowExtend l' t' tail'
+  | .vRecord r => do let r' ← substValue σ r; return .vRecord r'
+  | .vVariant r => do let r' ← substValue σ r; return .vVariant r'
+  | .vRecordVal fields =>
+    let fields' ← fields.mapM fun (n, v) => do
+      let v' ← substValue σ v
+      return (n, v')
+    return .vRecordVal fields'
+  | .vDataType id params =>
+    let params' ← params.mapM (substValue σ)
+    return .vDataType id params'
+  | .vConstructor name tag args rty =>
+    let args' ← args.mapM (substValue σ)
+    let rty' ← substValue σ rty
+    return .vConstructor name tag args' rty'
+  | .vEq l t lhs rhs =>
+    let t' ← substValue σ t
+    let lhs' ← substValue σ lhs
+    let rhs' ← substValue σ rhs
+    return .vEq l t' lhs' rhs'
+  | .vRefl t x =>
+    let t' ← substValue σ t
+    let x' ← substValue σ x
+    return .vRefl t' x'
+  | .vTransport l t m lhs rhs eq body =>
+    let t' ← substValue σ t
+    let m' ← substValue σ m
+    let lhs' ← substValue σ lhs
+    let rhs' ← substValue σ rhs
+    let eq' ← substValue σ eq
+    let body' ← substValue σ body
+    return .vTransport l t' m' lhs' rhs' eq' body'
+  | .vNeutral ty neu =>
+    let ty' ← substValue σ ty
+    substNeutral σ ty' neu
+
+partial def substNeutral (σ : LevelSubst) (refinedTy : Value) (neu : Neutral) : TCM Value := do
+  match neu.head with
+  | .hVar bv =>
+    match σ.lookup bv.level with
+    | some replacement =>
+      -- Spine may itself reference substituted variables
+      let spine' ← neu.spine.mapM (substElim σ)
+      -- Apply original spine of eliminators to the replacement value
+      let mut result := replacement
+      for e in spine' do
+        result ← applyElim result e
+      return result
+    | none =>
+      let spine' ← neu.spine.mapM (substElim σ)
+      return .vNeutral refinedTy (.mk neu.head spine')
+  | _ =>
+    let head' ← substHead σ neu.head
+    let spine' ← neu.spine.mapM (substElim σ)
+    return .vNeutral refinedTy (.mk head' spine')
+
+partial def substHead (σ : LevelSubst) (h : Head) : TCM Head := do
+  match h with
+  | .hVar _ | .hMeta _ | .hErrored => return h
+  | .hConst name ty =>
+    let ty' ← substValue σ ty
+    return .hConst name ty'
+  | .hCase scruts motive arms =>
+    let scruts' ← scruts.mapM (substValue σ)
+    let motive' ← substValue σ motive
+    let arms' ← arms.mapM fun arm => do
+      let clos' ← substClosure σ arm.closure
+      return ArmClosure.mk arm.pattern clos' arm.patterns
+    return .hCase scruts' motive' arms'
+
+partial def substElim (σ : LevelSubst) (e : Elim) : TCM Elim := do
+  match e with
+  | .eApp arg => do let arg' ← substValue σ arg; return .eApp arg'
+  | e => pure e
+
+partial def substClosure (σ : LevelSubst) (c : Closure) : TCM Closure := do
+  match c with
+  | .const name v =>
+    let v' ← substValue σ v
+    return .const name v'
+  | .term name env body =>
+    -- Substitute inside env values
+    let values' ← env.values.mapM fun (n, v) => do
+      let v' ← substValue σ v
+      return (n, v')
+    return .term name (Env.mk values' env.size) body
+
+end
+
+/-- Apply an arm closure to a spine of fresh neutrals, one per pattern binding -/
+partial def applyArmClosureSpine (clos : Closure) (args : Array Value) : TCM Value := do
+  match clos with
+  | .const _ v => return v
+  | .term _ env body =>
+    let mut env' := env
+    for arg in args do
+      env' := env'.extend "_" arg
+    let state ← TCM.getState
+    let ctx ← TCM.getCtx
+    let evalCtx : EvalCtx := {
+      env := env'
+      globals := ctx.globals.toGlobalEnvWithClasses ctx.instanceEnv
+      metas := state.metas
+    }
+    return Soma.Core.evalCoreExpr evalCtx body
+
 /-- Eta-expand a value to a lambda if checking against a Pi type
     For a value v and Pi type (x : A) -> B, we create λx. v x -/
 def etaExpandLam (v : Value) (piTy : Value) : TCM Value := do
@@ -358,18 +507,22 @@ partial def convertHead (h1 h2 : Head) : TCM Bool := do
   | .hVar v1, .hVar v2 => return v1.level == v2.level
   | .hMeta m1, .hMeta m2 => return m1 == m2
   | .hConst c1 _, .hConst c2 _ => return c1 == c2
-  | .hCase ss1 as1 _, .hCase ss2 as2 _ =>
+  | .hCase ss1 m1 as1, .hCase ss2 m2 as2 =>
     if ss1.size != ss2.size then return false
     for (s1, s2) in ss1.zip ss2 do
       let eq ← convert s1 s2
       if !eq then return false
+    let motiveEq ← convert m1 m2
+    if !motiveEq then return false
     if as1.length != as2.length then return false
     for (arm1, arm2) in as1.zip as2 do
-      if arm1.pattern != arm2.pattern then return false
-      let lvl ← TCM.currentLevel
-      let freshArg := Value.vNeutral .type0 (.nVar ⟨"_case_arg", lvl⟩)
-      let body1 ← applyClosure arm1.closure freshArg
-      let body2 ← applyClosure arm2.closure freshArg
+      if arm1.patterns.size != arm2.patterns.size then return false
+      let baseLvl ← TCM.currentLevel
+      let arity := arm1.patterns.foldl (fun acc p => acc + p.bindingCount) 0
+      let freshArgs : Array Value := Array.ofFn (n := arity) fun i =>
+        Value.vNeutral .type0 (.nVar ⟨s!"_arm_arg_{i.val}", ⟨baseLvl.lvl + i.val⟩⟩)
+      let body1 ← applyArmClosureSpine arm1.closure freshArgs
+      let body2 ← applyArmClosureSpine arm2.closure freshArgs
       let bodiesEq ← convert body1 body2
       if !bodiesEq then return false
     return true

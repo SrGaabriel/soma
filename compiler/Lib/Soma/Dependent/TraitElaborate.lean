@@ -111,10 +111,10 @@ partial def substituteHead (h : Head) (paramNames : Array String)
   | .hConst name ty =>
     let ty' ← substituteTypeArgsInValue ty paramNames typeArgs depth
     return .hConst name ty'
-  | .hCase scrutinees arms rty =>
+  | .hCase scrutinees motive arms =>
     let scrutinees' ← scrutinees.mapM (substituteTypeArgsInValue · paramNames typeArgs depth)
-    let rty' ← substituteTypeArgsInValue rty paramNames typeArgs depth
-    return .hCase scrutinees' arms rty'
+    let motive' ← substituteTypeArgsInValue motive paramNames typeArgs depth
+    return .hCase scrutinees' motive' arms
 
 partial def substituteElim (e : Elim) (paramNames : Array String)
     (typeArgs : Array Value) (depth : Nat) : TCM Elim := do
@@ -425,8 +425,8 @@ where
     | .hVar _ => false
     | .hErrored => false
     | .hConst _ ty => valueContainsMeta ty
-    | .hCase scrutinees _ rty =>
-      scrutinees.any valueContainsMeta || valueContainsMeta rty
+    | .hCase scrutinees motive _ =>
+      scrutinees.any valueContainsMeta || valueContainsMeta motive
   elimContainsMeta : Elim → Bool
     | .eApp arg => valueContainsMeta arg
     | .eFst | .eSnd | .eField _ => false

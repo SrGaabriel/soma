@@ -137,15 +137,15 @@ partial def normHeadKey (h : Head) (depth : Nat) (m : NormMap)
   | .hVar bv    => return (s!"B{bv.level.lvl}", m)
   | .hConst n _ => return (s!"K{n.id}", m)
   | .hErrored   => return ("⊥", m)
-  | .hCase scruts _ rty =>
+  | .hCase scruts motive _ =>
     let mut m' := m
     let mut parts : List String := []
     for s in scruts do
       let (x, m'') ← normKey s depth m'
       m' := m''
       parts := parts ++ [x]
-    let (rs, m'') ← normKey rty depth m'
-    return (s!"case[{",".intercalate parts}/{rs}]", m'')
+    let (ms, m'') ← normKey motive depth m'
+    return (s!"case[{",".intercalate parts}/{ms}]", m'')
 
 partial def normElimKey (e : Elim) (depth : Nat) (m : NormMap)
     : TCM (String × NormMap) := do
@@ -515,15 +515,15 @@ where
     | .hVar _ => return (h, mapping)
     | .hConst _ _ => return (h, mapping)
     | .hErrored => return (h, mapping)
-    | .hCase scrutinees arms resultTy =>
+    | .hCase scrutinees motive arms =>
       let mut currentMapping := mapping
       let mut refreshed : Array Value := #[]
       for s in scrutinees do
         let (s', m') ← refreshStaleMetas s currentMapping
         currentMapping := m'
         refreshed := refreshed.push s'
-      let (resultTy', finalMapping) ← refreshStaleMetas resultTy currentMapping
-      return (.hCase refreshed arms resultTy', finalMapping)
+      let (motive', finalMapping) ← refreshStaleMetas motive currentMapping
+      return (.hCase refreshed motive' arms, finalMapping)
 
   refreshStaleMetasElim (e : Elim) (mapping : Std.HashMap Nat MetaId)
       : TCM (Elim × Std.HashMap Nat MetaId) := do
