@@ -337,7 +337,7 @@ def rebuildGlobals (s : IncrementalState) : Globals := Id.run do
             | .function => .function
             | .dataType => .typeDecl
             | .constructor _ => .constructor
-            | .typeClass => .typeDecl
+            | .typeClass => .class_
             | .instance_ _ => .generated
             | .method _ => .traitMethod
         }

@@ -150,6 +150,7 @@ def globalInfoToSymbolKind (info : GlobalInfo) : Lsp.SymbolKind :=
   if info.isConstructor then .constructor
   else match info.origin with
     | .typeDecl => .type
+    | .class_ => .trait
     | .constructor => .constructor
     | .projection => .field
     | .traitMethod => .method

@@ -110,6 +110,7 @@ inductive DeclarationOrigin where
   | user
   | function
   | typeDecl
+  | class_
   | constructor
   | projection
   | traitMethod

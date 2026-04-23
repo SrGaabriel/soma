@@ -585,7 +585,7 @@ private def registerTypeClassHead
     type := classHeadTy
     value := none
     isConstructor := false
-    origin := .typeDecl
+    origin := .class_
   }
   g := g.register ns classNameStr classInfo
   return g

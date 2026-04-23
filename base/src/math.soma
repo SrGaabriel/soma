@@ -17,7 +17,6 @@ instance Gt Nat where
         | Nat::Succ _, Nat::Zero => Truth
         | Nat::Succ n, Nat::Succ m => gt n m
 
-
 def adding_one_increases : (n : Nat) -> gt (Nat::Succ n) n
     | Nat::Zero => Truth::Trivial
     | Nat::Succ n => adding_one_increases n
