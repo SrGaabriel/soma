@@ -997,8 +997,8 @@ def extractPublicInstances
   let mut sup := supply
 
   for inst in untypedModule.instances do
-    let className := inst.className
-    let instanceName := s!"{inst.className}$inst{inst.typeArgsSyntax.size}"
+    let className := inst.className.name
+    let instanceName := s!"{className}$inst{inst.typeArgsSyntax.size}"
     let (unique, sup') := sup.fresh instanceName
     sup := sup'
     let sym : Symbol := {

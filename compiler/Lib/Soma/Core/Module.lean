@@ -65,7 +65,7 @@ end TypeDef
 
 /-- An instance declaration (before type checking) -/
 structure InstanceDecl where
-  className : String
+  className : Syntax.QualName
   typeArgsSyntax : Array Syntax.Expr
   binders : Array Syntax.InstanceBinder
   methods : Array UntypedFunction

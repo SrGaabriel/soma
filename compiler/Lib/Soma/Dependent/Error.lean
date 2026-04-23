@@ -387,6 +387,16 @@ inductive TCError where
       (resolvedType : Value)
       (span : Span)
 
+  /-- Type-class name is used but not in scope -/
+  | classNotInScope
+      (name : String)
+      (span : Span)
+
+  /-- Name used as a type class does not refer to any known class -/
+  | unknownClass
+      (name : String)
+      (span : Span)
+
   deriving Inhabited
 
 namespace TCError
@@ -422,6 +432,8 @@ def span : TCError → Span
   | .impossiblePattern _ _ _ s => s
   | .nonExhaustiveMatch _ _ s => s
   | .bodilessNotDerivable _ _ s => s
+  | .classNotInScope _ s => s
+  | .unknownClass _ s => s
 
 /-- Build secondary labels from constraint chain -/
 private def chainToLabels (chain : Array ConstraintInfo) : Array Label :=
@@ -765,6 +777,27 @@ def toDiagnostic : TCError → Diagnostic
         "a bodiless def is a proof-by-absurdity: it requires at least one explicit parameter whose type has no constructors (e.g. `Never`), so the body is vacuously unreachable"
       ]
     , help := some "if you meant to prove that the declared type is unprovable, rewrite as `T -> Never`; otherwise provide a body (`:=` or `|` clauses) or mark as @[intrinsic]/@[extern]"
+    }
+
+  | .classNotInScope name span =>
+    { severity := .error
+    , code := some "E1033"
+    , message := s!"type class `{name}` is not in scope"
+    , primaryLabel := Label.primary span s!"`{name}` not imported"
+    , secondaryLabels := #[]
+    , notes := #[s!"the class exists in a loaded module but isn't visible here"]
+    , help := some ("add a `use` clause that imports `" ++ name ++
+        "`, e.g. `use <module>::{" ++ name ++ "}`")
+    }
+
+  | .unknownClass name span =>
+    { severity := .error
+    , code := some "E1034"
+    , message := s!"unknown type class `{name}`"
+    , primaryLabel := Label.primary span s!"`{name}` is not a class"
+    , secondaryLabels := #[]
+    , notes := #[s!"no class named `{name}` is defined in this module or any of its dependencies"]
+    , help := some "check for typos, or declare the class with `class ... where ...`"
     }
 
 instance : ToString TCError where

@@ -220,7 +220,7 @@ private def lowerFunctionDeclCore
             closureInfo := none
             attrs := fnAttrs
           }, #[])
-        if let some sigTy := sig then
+        if sig.isSome then
           let headerExplicitNames := (headerParams.filter (!·.isImplicit)).map (·.name.name)
           return (some {
             name := globalName
@@ -383,7 +383,7 @@ private def lowerInstanceDecl
         | _ => pure ()
       (fns, ds, sup)
     (some {
-      className := traitName.name
+      className := traitName
       typeArgsSyntax := args
       binders := binders
       methods := methodFns

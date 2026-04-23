@@ -99,9 +99,9 @@ pub fn execute(path: &Path) {
                 output_ok(&format!("Module '{module_name}': Check passed"));
             } else {
                 output_err(&format!("Module '{module_name}': Check failed"));
-                if let Some(diagnostics) = &module_output.diagnostics {
-                    println!("{diagnostics}");
-                }
+            }
+            if let Some(diagnostics) = &module_output.diagnostics {
+                println!("{diagnostics}");
             }
         }
     }
