@@ -1,9 +1,11 @@
 // expect: success
-// Test: partial functions are allowed by default (no termination check)
+// Test: `@[partial]` opts a function out of termination checking
 
+@[partial]
 def loop : Int32 -> Int32
     | x => loop x
 
+@[partial]
 def collatz : Int32 -> Int32
     | 1 => 1
     | n => collatz n

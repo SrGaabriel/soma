@@ -366,7 +366,7 @@ def registerTypedFnValue (globals : Globals) (fn : Soma.Core.TypedFunction)
   match globals.defs.get? fn.name with
   | none => globals
   | some info =>
-    let isOpaque := fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome
+    let isOpaque := fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome || fn.attrs.partial_
     let value := if isOpaque then info.value
                  else some (buildTypedFnValue fn globals instanceEnv metas)
     let info' := { info with type := fn.fnType, value := value }
@@ -753,6 +753,20 @@ def typeCheckModule
     mergedTypedFns := mergedTypedFns.insert instFn.name.id.mangle instFn
   for instFn in pendingTypedFns do
     mergedTypedFns := mergedTypedFns.insert instFn.name.id.mangle instFn
+
+  let typedFnsArr : Array Soma.Core.TypedFunction :=
+    mergedTypedFns.fold (init := #[]) fun acc _ fn => acc.push fn
+  let fnSpans : Std.HashMap String Soma.Syntax.Span :=
+    untypedModule.functions.foldl (init := {}) fun acc fn =>
+      acc.insert fn.name.display fn.span
+  let totalityCtx := { ctx with globals := finalGlobals }
+  let totalityErrors : Array Soma.Dependent.TCError :=
+    match (Soma.Dependent.Totality.runTotalityChecks typedFnsArr fnSpans).run
+            totalityCtx fnResult.finalState with
+    | .error e => #[e]
+    | .ok (r, _) => r.errors
+
+  let allErrors := allErrors ++ totalityErrors
 
   -- Dictionary specialization: replace class method calls with direct field access
   -- or inline the implementation when the dictionary is a known record literal.

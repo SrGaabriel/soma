@@ -114,7 +114,18 @@ where
     | .bvar _ => pure ()
     | .fvar _ _ => pure ()
     | .mvar _ => pure ()
-    | .const _ _ => pure ()
+    | .const name _ =>
+      let fnInfo? ← TermM.getCurrentFn
+      match fnInfo? with
+      | some fnInfo =>
+        if name.display == fnInfo.name.display then
+          TermM.recordRecursiveCall {
+            callSpan := Span.uninhabited
+            callee := fnInfo.name
+            argNames := #[]
+            decrease := .notFound "self-reference has no arguments to decrease on"
+          }
+      | none => pure ()
     | .lit _ => pure ()
     | .sort _ => pure ()
     | .primTy _ => pure ()
@@ -144,8 +155,7 @@ where
               decrease := witness
             }
         | none => pure ()
-      | _ => pure ()
-      checkTerm head
+      | _ => checkTerm head
       for arg in args do
         checkTerm arg
 

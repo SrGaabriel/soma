@@ -359,6 +359,15 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     let (allParams, resultType) ← TCM.recoverWith
       (extractSignaturePrefix declaredType fn.params.size)
       (#[], declaredType)
+    let explicitInSig := allParams.filter (fun (_, _, binder, _) => !binder.isImplicit) |>.size
+    if explicitInSig ≥ 1 ∧ explicitInSig < fn.params.size then
+      let resolvedResult ← TCM.recoverWith (zonkValue resultType >>= expandAbbrevValue) resultType
+      TCM.addError
+        (.patternArityMismatch fn.name.display explicitInSig fn.params.size resolvedResult span)
+      let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
+      let declaredType' ← zonkValue declaredType
+      let declaredType'' ← expandAbbrevValue declaredType'
+      return (declaredType'', placeholderBody, #[])
     -- Bodiless ex-falso: synthesise a body now that we can see the signature's full Pi chain
     let effectiveBody : Option Soma.Syntax.Expr ←
       if fn.isBodilessExFalso then

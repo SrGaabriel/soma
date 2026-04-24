@@ -1,0 +1,17 @@
+// expect: success
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+def double : Nat -> Nat
+    | Nat::Zero => Nat::Zero
+    | Nat::Succ n => Nat::Succ (Nat::Succ (double n))
+
+def is_even : Nat -> Int32
+    | Nat::Zero => 1
+    | Nat::Succ n => is_odd n
+
+def is_odd : Nat -> Int32
+    | Nat::Zero => 0
+    | Nat::Succ n => is_even n

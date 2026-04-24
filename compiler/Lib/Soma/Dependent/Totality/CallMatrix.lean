@@ -464,6 +464,17 @@ private partial def collectAppSpine (e : Soma.Core.Expr) : Soma.Core.Expr × Lis
     (head, args ++ [arg])
   | _ => (e, [])
 
+/-- Recover if the scrutinee is a plain reference to one of the function's explicit parameters -/
+private def scrutineeParam (scrut : Soma.Core.Expr) (params : Array String)
+    : Option (Nat × String) :=
+  let nameOpt : Option String :=
+    match scrut with
+    | .fvar id _ => some id.original
+    | .const n _ => some n.display
+    | _ => none
+  nameOpt.bind fun name =>
+    params.findIdx? (· == name) |>.map (·, name)
+
 /-- Build a call matrix row from a recursive call -/
 def buildRow (caller callee : String) (args : List Soma.Core.Expr) (ctx : TerminationContext)
     (span : Span) : CallMatrixRow :=
@@ -484,6 +495,13 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
     (t : Soma.Core.Expr) (ctx : TerminationContext) (acc : Array CallMatrixRow)
     : Array CallMatrixRow :=
   match t with
+  | .const name _ =>
+    let callee := name.display
+    if targets.contains callee then
+      let row : CallMatrixRow :=
+        { caller := caller, callee := callee, changes := #[], span := Span.uninhabited }
+      acc.push row
+    else acc
   | e@(.app _ _) =>
     let (head, args) := collectAppSpine e
     match head with
@@ -511,7 +529,25 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
     let acc' := match scruts[0]? with
       | some s => collectCallsGo caller targets s ctx acc
       | none => acc
-    arms.toList.foldl (fun a arm => collectCallsGo caller targets arm.body ctx a) acc'
+    let paramInfo := scruts[0]?.bind fun s => scrutineeParam s ctx.params
+    arms.toList.foldl (fun a arm =>
+      let ctx' :=
+        match paramInfo with
+        | some (pIdx, pName) =>
+          let usedVars := collectExprVars arm.body
+          let newVars := usedVars.filter fun v => !ctx.params.contains v
+          let patName := match arm.patterns[0]? with
+            | some (Soma.Core.Pattern.ctor name _ _) => name.display
+            | _ => "_"
+          let bs : Array BindingInfo := newVars.toArray.map fun name =>
+            { name := name
+              paramIdx := pIdx
+              paramName := pName
+              path := .ctorArg .root patName 0
+              depth := 1 }
+          ctx.addBindings bs
+        | none => ctx
+      collectCallsGo caller targets arm.body ctx' a) acc'
   | .record fields =>
     fields.toList.foldl (fun a (_, v) => collectCallsGo caller targets v ctx a) acc
   | .fieldAccess e _ _ => collectCallsGo caller targets e ctx acc

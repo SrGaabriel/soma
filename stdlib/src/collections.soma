@@ -23,6 +23,7 @@ def length {a : Type} : [a] -> Int32
 def singleton {a : Type} : a -> [a]
     | x => [x]
 
+@[partial]
 def replicate {a : Type} : Int32 -> a -> [a]
     | n, x =>
         if n <= 0 then [] else List::Cons x (replicate (n - 1) x)

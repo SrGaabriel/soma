@@ -21,6 +21,10 @@ def adding_one_increases : (n : Nat) -> gt (Nat::Succ n) n
     | Nat::Zero => Truth::Trivial
     | Nat::Succ n => adding_one_increases n
 
+def adding_one_does_not_decrease : (n : Nat) -> gt n (Nat::Succ n) -> Never
+    | Nat::Zero, gt => gt
+    | Nat::Succ n, gt => adding_one_does_not_decrease n gt
+
 def succ_greater_than_zero : gt (Nat::Succ Nat::Zero) Nat::Zero :=
     Truth::Trivial
 

@@ -39,6 +39,9 @@ def tokenKindToTokenType? : TokenKind → Option SemanticTokenTypes
   | .equals | .pipe | .colon | .doubleColon => some .operator
   | .lambda | .forallSymbol | .dollar => some .operator
   | .times | .omega => some .operator
+  | .leftParen | .rightParen | .leftBrace | .rightBrace
+  | .leftBracket | .rightBracket | .leftAngle | .rightAngle
+  | .comma | .dot | .at => some .operator
   | k => if k.isKeyword then some .keyword else none
 
 /-- Check if a token is at a definition site by looking at parent nodes -/
@@ -57,13 +60,14 @@ def isDefinitionSite (tree : RedTree) (node : RedNode) : Bool :=
     | some .traitMethod => true
     | _ => false
 
-/-- Check if a token is inside an import path (use base/core) -/
+/-- Check if a token is inside an import path (the `base::op` part of a `use`) -/
 partial def isInImportPath (tree : RedTree) (node : RedNode) : Bool :=
   match tree.parent? node with
   | none => false
   | some parent =>
     match parent.syntaxKind? with
     | some .importPath => true
+    | some .importItems => false
     | some .declUse => true
     | some .sourceFile => false
     | _ => isInImportPath tree parent
@@ -102,14 +106,42 @@ private partial def semanticParent? (tree : RedTree) (node : RedNode) : Option R
     if p.syntaxKind? == some .triviaToken then semanticParent? tree p
     else some p
 
-/-- Is `node` an ident-like token sitting before a `::` -/
-private def isQualifiedPathSegment (tree : RedTree) (parent : RedNode) (node : RedNode) : Bool :=
-  let tokens := getTokens tree parent
-  let idents := tokens.filter fun t =>
+/-- Identifier tokens under `parent`, in source order -/
+private def collectPathIdents (tree : RedTree) (parent : RedNode) : Array RedNode :=
+  (getTokens tree parent).filter fun t =>
     t.tokenKind? == some .lowerIdent || t.tokenKind? == some .upperIdent
-  if h : idents.size > 0 then
-    idents[idents.size - 1].id != node.id
-  else false
+
+/-- Kinds that wrap a `::`-separated qualified name -/
+private def isQualifiedPathWrapper : SyntaxKind → Bool
+  | .exprVar | .typeCon | .name => true
+  | _ => false
+
+/-- Map a `GlobalInfo` to an LSP `SymbolKind` so imported symbols classify correctly -/
+private def globalInfoToSymbolKind (info : GlobalInfo) : SymbolKind :=
+  if info.isConstructor then .constructor
+  else match info.origin with
+    | .typeDecl => .type
+    | .class_ => .trait
+    | .constructor => .constructor
+    | .projection => .field
+    | .traitMethod => .method
+    | .intrinsic | .extern => .function
+    | _ => .function
+
+/-- Resolve the prefix of a qualified path up to and including `node` in globals -/
+private def classifyPathSegment (tree : RedTree) (parent node : RedNode)
+    (globals : Option Globals) (moduleName : String) : SemanticTokenTypes := Id.run do
+  let idents := collectPathIdents tree parent
+  let idx := (idents.findIdx? (·.id == node.id)).getD 0
+  let segs := (idents.extract 0 (idx + 1)).filterMap (·.text?)
+  if segs.size == 0 then return .namespace
+  let some g := globals | return .namespace
+  let name := segs[segs.size - 1]!
+  let path := segs.extract 0 (segs.size - 1)
+  let currentNs := moduleName.splitOn "::" |>.toArray
+  match (g.resolve currentNs path name).bind g.getDef with
+  | none => return .namespace
+  | some info => return symbolKindToTokenType (globalInfoToSymbolKind info)
 
 /-- Classify an identifier based on the CST kind of its enclosing node -/
 def classifyByContext (tree : RedTree) (node : RedNode) (kind : TokenKind)
@@ -126,32 +158,18 @@ def classifyByContext (tree : RedTree) (node : RedNode) (kind : TokenKind)
     if kind == .lowerIdent then return some .property
   | some .exprVariant | some .patVariant =>
     return some .enumMember
-  | some .exprVar | some .typeCon =>
-    if isQualifiedPathSegment tree parent node then return some .namespace
   | some .attribute =>
     if kind == .lowerIdent then return some .decorator
   | some .name =>
-    -- `.name` wraps constructor names in patterns and declaration names
-    if isQualifiedPathSegment tree parent node then return some .namespace
-    match tree.parent? parent with
-    | some gp =>
-      if gp.syntaxKind? == some .patCon && kind == .upperIdent then
-        return some .enumMember
-    | none => pure ()
+    let idents := collectPathIdents tree parent
+    if idents.size == 1 then
+      match tree.parent? parent with
+      | some gp =>
+        if gp.syntaxKind? == some .patCon && kind == .upperIdent then
+          return some .enumMember
+      | none => pure ()
   | _ => pure ()
   return none
-
-/-- Map a `GlobalInfo` to an LSP `SymbolKind` so imported symbols classify correctly -/
-private def globalInfoToSymbolKind (info : GlobalInfo) : SymbolKind :=
-  if info.isConstructor then .constructor
-  else match info.origin with
-    | .typeDecl => .type
-    | .class_ => .trait
-    | .constructor => .constructor
-    | .projection => .field
-    | .traitMethod => .method
-    | .intrinsic | .extern => .function
-    | _ => .function
 
 /-- Determine the semantic token type for an identifier based on context and symbols -/
 def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
@@ -175,6 +193,13 @@ def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
 
   if let some ctxType := classifyByContext tree node kind then
     return (ctxType, modifiers)
+
+  if let some parent := semanticParent? tree node then
+    if let some pk := parent.syntaxKind? then
+      if isQualifiedPathWrapper pk then
+        let idents := collectPathIdents tree parent
+        if idents.size > 1 then
+          return (classifyPathSegment tree parent node globals moduleName, modifiers)
 
   -- Check if in function position (head of application)
   let isFnPos := isInFunctionPosition tree node

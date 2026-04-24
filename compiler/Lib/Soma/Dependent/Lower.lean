@@ -41,6 +41,19 @@ private partial def explicitArityOfType : Syntax.Expr → Option Nat
   | .app _ _ _ => none
   | _ => some 0
 
+/-- Collect the user-written binder names for each explicit Π -/
+private partial def explicitBinderNames : Syntax.Expr → List String
+  | .arrow _ to _ => "_" :: explicitBinderNames to
+  | .pi _ binder name _ cod _ =>
+      if binder == .explicit then
+        name.name :: explicitBinderNames cod
+      else
+        explicitBinderNames cod
+  | .forall_ _ body _ => explicitBinderNames body
+  | .parens inner _ => explicitBinderNames inner
+  | .typeAnnot ty _ _ => explicitBinderNames ty
+  | _ => []
+
 private def functionAttrsFromSyntax
     (attrs : Array Syntax.Attribute)
     (defaultExternName : Option String := none)
@@ -70,6 +83,7 @@ private def functionAttrsFromSyntax
     inline := attrs.any fun a => a.name.name == "inline"
     noInline := attrs.any fun a => a.name.name == "noinline"
     total := attrs.any fun a => a.name.name == "total"
+    partial_ := attrs.any fun a => a.name.name == "partial"
     irreducible := attrs.any fun a => a.name.name == "irreducible"
     deprecated := none
     extern := externName
@@ -190,8 +204,21 @@ private def lowerFunctionDeclCore
             attrs := fnAttrs
           }, #[])
 
+        let sigBinderNames : List String :=
+          match sig with
+          | some s =>
+            let all := explicitBinderNames s
+            all.drop headerParamNames.size
+          | none => []
+        let sigBinderArr : Array String := sigBinderNames.toArray
         let numClauseParams := clause.patterns.size
-        let clauseParams := (List.range numClauseParams).toArray.map fun i => s!"_arg{i}"
+        let clauseParams := (List.range numClauseParams).toArray.map fun i =>
+          if h : i < sigBinderArr.size then
+            let n := sigBinderArr[i]
+            -- TODO: review
+            if n == "_" then s!"_arg{i}" else n
+          else
+            s!"_arg{i}"
         let params := headerParamNames ++ clauseParams
         let scrutineeSyntax : Array Syntax.Expr := clauseParams.map fun paramName =>
           Syntax.Expr.var ⟨#[], paramName, span⟩

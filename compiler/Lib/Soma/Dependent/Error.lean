@@ -361,6 +361,11 @@ inductive TCError where
       (fnName : Soma.Core.QualifiedName)
       (span : Span)
 
+  /-- A @[partial] function's declared return type is provably uninhabited -/
+  | partialInhabitsUninhabited
+      (fnName : Soma.Core.QualifiedName)
+      (span : Span)
+
   /-- Positivity check failed for data type -/
   | positivityViolation
       (typeName : String)
@@ -385,6 +390,14 @@ inductive TCError where
   | bodilessNotDerivable
       (defName : String)
       (resolvedType : Value)
+      (span : Span)
+
+  /-- Pattern clauses declare more parameters than the signature allows -/
+  | patternArityMismatch
+      (defName : String)
+      (sigArity : Nat)
+      (clauseArity : Nat)
+      (resolvedResultType : Value)
       (span : Span)
 
   /-- Type-class name is used but not in scope -/
@@ -428,10 +441,12 @@ def span : TCError → Span
   | .instanceDepthExceeded _ s _ => s
   | .terminationCheckFailed _ _ s _ _ => s
   | .partialInTypeIndex _ s => s
+  | .partialInhabitsUninhabited _ s => s
   | .positivityViolation _ _ s _ => s
   | .impossiblePattern _ _ _ s => s
   | .nonExhaustiveMatch _ _ s => s
   | .bodilessNotDerivable _ _ s => s
+  | .patternArityMismatch _ _ _ _ s => s
   | .classNotInScope _ s => s
   | .unknownClass _ s => s
 
@@ -707,13 +722,18 @@ def toDiagnostic : TCError → Diagnostic
         let items := triedArguments.map fun (idx, reason) =>
           s!"  • argument {idx + 1}: {reason}"
         #[s!"Termination analysis:\n{String.intercalate "\n" items.toList}"]
+    let baseNote :=
+      "every definition is checked for termination"
     { severity := .error
     , code := some "E1026"
     , message := s!"termination check failed for `{fnName.display}`"
     , primaryLabel := Label.primary span reason
     , secondaryLabels := callLabels
-    , notes := #["functions marked @[total] must be proven to terminate"] ++ triedNote
-    , help := some "ensure recursive calls are on structurally smaller arguments"
+    , notes := #[baseNote] ++ triedNote
+    , help := some
+        "ensure recursive calls are on structurally smaller arguments, \
+         or mark the definition `@[partial]` (note: partial functions are \
+         opaque and may not inhabit uninhabited types)"
     }
 
   | .partialInTypeIndex fnName span =>
@@ -722,6 +742,16 @@ def toDiagnostic : TCError → Diagnostic
       |>.withCode "E1027"
       |>.withNote "type indices must be computable to keep type checking decidable"
       |>.withHelp s!"mark `{fnName.display}` as @[total] or use a different function"
+
+  | .partialInhabitsUninhabited fnName span =>
+    Diagnostic.error
+        s!"`@[partial]` definition `{fnName.display}` cannot inhabit an uninhabited type" span
+        "partial functions never produce a concrete value"
+      |>.withCode "E1029"
+      |>.withNote
+        "`@[partial]` is only valid when the return type has at least one constructor"
+      |>.withHelp
+        "make the definition total (its recursion must be provably well-founded)"
 
   | .positivityViolation typeName reason span violatingPosition =>
     let secondaryLabels := match violatingPosition with
@@ -778,6 +808,20 @@ def toDiagnostic : TCError → Diagnostic
       ]
     , help := some "if you meant to prove that the declared type is unprovable, rewrite as `T -> Never`; otherwise provide a body (`:=` or `|` clauses) or mark as @[intrinsic]/@[extern]"
     }
+
+  | .patternArityMismatch name sigArity clauseArity resultTy span =>
+    let patWord := if clauseArity == 1 then "pattern" else "patterns"
+    let paramWord := if sigArity == 1 then "parameter" else "parameters"
+    Diagnostic.error s!"arity mismatch in `{name}`" span
+        s!"each clause has {clauseArity} {patWord}, but the signature exposes only {sigArity} explicit {paramWord}"
+      |>.withCode "E1035"
+      |>.withNote s!"after the {sigArity} explicit {paramWord}, the result type is not a function: `{resultTy}`"
+      |>.withHelp (
+        if clauseArity > sigArity then
+          s!"remove {clauseArity - sigArity} pattern column(s), or extend the signature with more `->`"
+        else
+          "add patterns for the missing parameter(s), or adjust the signature"
+      )
 
   | .classNotInScope name span =>
     { severity := .error

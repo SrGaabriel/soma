@@ -15,8 +15,10 @@ structure FunctionAttrs where
   intrinsic : Option String := none
   /-- Wired-in role from @[wired_in "role"] -/
   wiredIn : Option String := none
-  /-- Whether this function is marked as total (must terminate) -/
+  /-- Whether this function is marked as total (todo: remove) -/
   total : Bool := false
+  /-- Whether this function is explicitly opted out of termination checking -/
+  partial_ : Bool := false
   /-- Whether this function is irreducible (opaque to the interaction net reducer) -/
   irreducible : Bool := false
   deriving BEq, Inhabited

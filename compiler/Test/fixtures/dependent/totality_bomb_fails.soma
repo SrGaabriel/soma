@@ -1,0 +1,5 @@
+// expect: error termination check
+
+inductive Never : Type
+
+def bomb : Never := bomb

@@ -1,0 +1,9 @@
+// expect: error termination check
+
+inductive Never : Type
+
+def ping : Int32 -> Never
+    | x => pong x
+
+def pong : Int32 -> Never
+    | x => ping x
