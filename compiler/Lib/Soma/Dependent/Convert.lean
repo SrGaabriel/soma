@@ -332,6 +332,54 @@ private partial def normalizeWiredPrimitiveValue (v : Value) : TCM Value := do
     | none => pure v
   | _ => pure v
 
+/-- Does a value live in the `Prop` universe -/
+partial def valueInPropUniverse (v : Value) : TCM Bool := do
+  let v' ← force v
+  match v' with
+  | .vType .prop => return true
+  | .vDataType uid _ =>
+    let ctx ← TCM.getCtx
+    let qn : Soma.Core.QualifiedName := ⟨uid⟩
+    match ctx.globals.lookupInductive qn with
+    | some info => return info.headSort.isProp
+    | none => return false
+  | .vPi _ _ name _ cod =>
+    let lvl ← TCM.currentLevel
+    let dummy := Value.vNeutral (.vType .zero) (.nVar ⟨name, lvl⟩)
+    let codVal ← applyClosure cod dummy
+    valueInPropUniverse codVal
+  | .vNeutral ty _ =>
+    -- A stuck term lives in Prop exactly when its type is Prop
+    match (← force ty) with
+    | .vType .prop => return true
+    | _ => return false
+  | _ => return false
+
+/-- Auto-erasure predicate for Pi / lambda binders -/
+partial def shouldAutoEraseBinder (domVal : Value) : TCM Bool := do
+  match (← force domVal) with
+  | .vType _ => return true
+  | _ => valueInPropUniverse domVal
+
+/-- Walk a constructor's Pi chain and check every explicit field's type lives in `Prop` -/
+partial def allCtorFieldsInProp (ctorType : Value) : TCM Bool := do
+  match (← force ctorType) with
+  | .vPi _ _ name dom cod =>
+    if !(← valueInPropUniverse dom) then return false
+    let lvl ← TCM.currentLevel
+    let dummy := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+    let codVal ← applyClosure cod dummy
+    allCtorFieldsInProp codVal
+  | _ => return true
+
+/-- Is a Prop-kinded inductive small -/
+partial def isInductiveSmall (info : InductiveMeta) : TCM Bool := do
+  if !info.headSort.isProp then return false
+  match info.ctors.size with
+  | 0 => return true
+  | 1 => allCtorFieldsInProp info.ctors[0]!.type
+  | _ => return false
+
 /-- Check if two values are convertible (definitionally equal) -/
 partial def convert (v1 v2 : Value) : TCM Bool := do
   -- Force both values to resolve metavariables
@@ -339,6 +387,17 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
   let v2f ← force v2
   let v1' ← normalizeWiredPrimitiveValue v1f
   let v2' ← normalizeWiredPrimitiveValue v2f
+
+  -- Proof-irrelevance short-circuit
+  let irrelevanceTy? : Option Value ←
+    match v1', v2' with
+    | .vNeutral t _, _ => pure (some t)
+    | _, .vNeutral t _ => pure (some t)
+    | _, _            => pure none
+  match irrelevanceTy? with
+  | some t =>
+    if (← valueInPropUniverse t) then return true
+  | none => pure ()
 
   match v1', v2' with
   -- Type universes

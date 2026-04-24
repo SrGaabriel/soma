@@ -1,0 +1,8 @@
+// expect: success
+
+inductive Never : Prop
+
+theorem absurd_id : Never -> Never
+    | x => x
+
+def use_theorem : Never -> Never := absurd_id

@@ -879,6 +879,90 @@ private def desugarCompose (stmts : Array Soma.Syntax.ComposeStmt)
       let cont := Soma.Syntax.Expr.lambda #[(name, none)] result stmtSpan
       .app cont value stmtSpan
 
+/-- Extract a scrutinee's stored type from the local context without running full inference -/
+private def peekScrutineeType (scrut : Soma.Syntax.Expr) : TCM (Option Value) := do
+  match scrut with
+  | .var name =>
+    match ← TCM.lookupLocal name.name with
+    | some entry => return some entry.type
+    | none => return none
+  | .parens inner _ => peekScrutineeType inner
+  | .typeAnnot e _ _ => peekScrutineeType e
+  | _ => return none
+
+/-- Does every scrutinee of a prospective case expression have a type that permits the small-elim rule? -/
+private def allScrutineesSmallElimAble (scruts : List Soma.Syntax.Expr) : TCM Bool := do
+  if scruts.isEmpty then return false
+  scruts.allM fun scrut => do
+    let some ty ← peekScrutineeType scrut | return false
+    match ← force ty with
+    | .vDataType uid _ =>
+      let ctx ← TCM.getCtx
+      match ctx.globals.lookupInductive ⟨uid⟩ with
+      | some info => isInductiveSmall info
+      | none => return false
+    | _ => return false
+
+/-- A pattern is trivial when it performs no observation on its scrutinee, only name-binding -/
+private partial def patternIsTrivial : Soma.Syntax.Pattern → Bool
+  | .var _ => true
+  | .wildcard _ => true
+  | .parens inner _ => patternIsTrivial inner
+  | .typed inner _ _ => patternIsTrivial inner
+  | _ => false
+
+/-- Does the scrutinee at position `idx` receive only trivial patterns across every arm? -/
+private def scrutineeTriviallyMatched
+    (arms : List Soma.Syntax.MatchArm) (idx : Nat) : Bool :=
+  arms.all fun arm =>
+    match arm.patterns[idx]? with
+    | some pat => patternIsTrivial pat
+    | none => true
+
+/-- Is it safe to elaborate this scrutinee in erased context? -/
+private def scrutineeCanBeErased
+    (scrut : Soma.Syntax.Expr) (idx : Nat)
+    (arms : List Soma.Syntax.MatchArm) : TCM Bool := do
+  if scrutineeTriviallyMatched arms idx then return true
+  let some ty ← peekScrutineeType scrut | return false
+  match ← force ty with
+  | .vDataType uid _ =>
+    let ctx ← TCM.getCtx
+    match ctx.globals.lookupInductive ⟨uid⟩ with
+    | some info => isInductiveSmall info
+    | none => return false
+  | _ => return false
+
+/-- Detect attempted non-small Prop → Type elimination and raise a dedicated `propElimToType` diagnostic -/
+private def checkPropElimSoundness
+    (scruts : List Soma.Syntax.Expr)
+    (arms : List Soma.Syntax.MatchArm)
+    (motiveTy? : Option Value) : TCM Unit := do
+  let motiveIsProp ← match motiveTy? with
+    | some m => valueInPropUniverse m
+    | none => pure false
+  if motiveIsProp then return
+  for h : i in [:scruts.length] do
+    have : i < scruts.length := h.upper
+    let scrut := scruts[i]
+    if scrutineeTriviallyMatched arms i then continue
+    let some ty ← peekScrutineeType scrut | continue
+    let forced ← force ty
+    match forced with
+    | .vDataType uid _ =>
+      let ctx ← TCM.getCtx
+      match ctx.globals.lookupInductive ⟨uid⟩ with
+      | some info =>
+        if info.headSort.isProp then
+          let small ← isInductiveSmall info
+          if !small then
+            let motiveDisplay ← match motiveTy? with
+              | some m => pure m
+              | none => pure (Value.vType Level.zero)
+            TCM.throw (.propElimToType forced motiveDisplay scrut.span)
+      | none => continue
+    | _ => continue
+
 mutual
 
 /-- Infer the type of a Syntax.Expr, returning (type, Core.Expr) -/
@@ -931,6 +1015,7 @@ where
           match name.name with
           | "Type" | "Type0" => return (.vType .one, .sort .zero)
           | "Type1" => return (.vType .one, .sort .one)
+          | "Prop" => return (.vType .zero, .sort .prop)
           | "Row" => return (.vType .zero, .rowSort)
           | "Label" => return (.vType .zero, .labelSort)
           | _ =>
@@ -994,7 +1079,11 @@ where
 
     -- Case expressions
     | .case scruts arms caseSpan => do
-      let (scrutTys, scrutsExpr) ← inferSyntaxList scruts.toList
+      checkPropElimSoundness scruts.toList arms.toList none
+      let erasedFlags ← scruts.toList.mapIdxM fun i scrut =>
+        scrutineeCanBeErased scrut i arms.toList
+      let (scrutTys, scrutsExpr) ←
+        inferSyntaxListErased (scruts.toList.zip erasedFlags)
       let level ← TCM.freshLevel "caseU"
       let resultTy ← TCM.freshMetaVal (.vType level)
       let motive := buildConstantMotive scrutTys resultTy
@@ -1115,19 +1204,36 @@ where
     | .arrow from_ to _ => do
       let fromExpr ← inferTypeExpr from_
       let toExpr ← inferTypeExpr to
-      return (.vType Level.zero,
-        .pi .omega .explicit "_" fromExpr toExpr)
+      let fromVal ← TCM.evalExpr fromExpr
+      let qty : Soma.Core.Quantity :=
+        if (← shouldAutoEraseBinder fromVal) then .zero else .omega
+      let toVal ← TCM.evalExpr toExpr
+      let piUniv : Soma.Core.Level :=
+        if (← valueInPropUniverse toVal) then .prop else .zero
+      return (.vType piUniv,
+        .pi qty .explicit "_" fromExpr toExpr)
 
     -- Dependent function type `(x : A) -> B`, `{x : A} -> B`, `{{x : A}} -> B`
     | .pi qty binder name domain codomain _ => do
       let domExpr ← inferTypeExpr domain
       let domVal ← TCM.evalExpr domExpr
+      -- Auto-erasure: a binder whose type is a universe or a proposition is always at quantity 0 (erased)
+      let autoErase ← shouldAutoEraseBinder domVal
+      let effectiveQty ←
+        if qty == .omega ∧ autoErase then
+          pure .zero
+        else
+          pure qty
       let bindingId ← TCM.freshLocalId name.name
       TCM.recordLocalBindingType name.span domVal
-      let codExpr ← TCM.withBinding name.name bindingId domVal qty binder name.span do
+      let codExpr ← TCM.withBinding name.name bindingId domVal effectiveQty binder name.span do
         inferTypeExpr codomain
-      return (.vType Level.zero,
-        .pi qty binder name.name domExpr codExpr)
+      -- Impredicativity: (x : A) -> B lives in Prop if B does, even when A : Type n with n > 0
+      let codVal ← TCM.evalExpr codExpr
+      let piUniv : Soma.Core.Level :=
+        if (← valueInPropUniverse codVal) then .prop else .zero
+      return (.vType piUniv,
+        .pi effectiveQty binder name.name domExpr codExpr)
 
     -- Dependent pair type `(x : A) × B`
     | .sigma qty name fst snd _ => do
@@ -1180,14 +1286,15 @@ partial def inferForallChain
       .pi .omega .implicit v.name.name kindExpr restExpr)
 
 /-- Elaborate a sub-expression appearing in type position -/
-partial def inferTypeExpr (e : Soma.Syntax.Expr) : TCM Soma.Core.Expr := do
-  match e with
-  | .tuple _ _ =>
-    checkSyntax e (.vType Level.zero)
-  | .parens inner _ => inferTypeExpr inner
-  | _ =>
-    let (_, expr) ← inferSyntax e
-    pure expr
+partial def inferTypeExpr (e : Soma.Syntax.Expr) : TCM Soma.Core.Expr :=
+  TCM.inErasedContext do
+    match e with
+    | .tuple _ _ =>
+      checkSyntax e (.vType Level.zero)
+    | .parens inner _ => inferTypeExpr inner
+    | _ =>
+      let (_, expr) ← inferSyntax e
+      pure expr
 
 /-- Elaborate an explicit type application argument -/
 partial def elaborateTypeArg (typeArg : Soma.Syntax.TypeAppArg) : TCM Value := do
@@ -1316,8 +1423,9 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
   | _ =>
     -- Regular value application: insert implicits, then check arg against domain
     let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
-    let (_, _, _, dom, cod) ← ensurePi fnTy'' span
-    let argExpr ← checkSyntax arg dom
+    let (qty, _, _, dom, cod) ← ensurePi fnTy'' span
+    let checkArg : TCM Soma.Core.Expr := checkSyntax arg dom
+    let argExpr ← if qty == .zero then TCM.inErasedContext checkArg else checkArg
     let argVal ← TCM.evalExpr argExpr
     let resultTy ← applyClosure cod argVal
     let appExpr := Soma.Core.Expr.app fnExpr' argExpr
@@ -1400,6 +1508,19 @@ partial def inferSyntaxList (es : List Soma.Syntax.Expr)
   | e :: rest => do
     let (ty, expr) ← inferSyntax e
     let (restTys, restExprs) ← inferSyntaxList rest
+    return (ty :: restTys, #[expr] ++ restExprs)
+
+/-- Infer a list of Syntax.Exprs with a per-element erased-context flag-/
+partial def inferSyntaxListErased
+    (es : List (Soma.Syntax.Expr × Bool))
+    : TCM (List Value × Array Soma.Core.Expr) := do
+  match es with
+  | [] => return ([], #[])
+  | (e, erased) :: rest => do
+    let (ty, expr) ←
+      if erased then TCM.inErasedContext (inferSyntax e)
+      else inferSyntax e
+    let (restTys, restExprs) ← inferSyntaxListErased rest
     return (ty :: restTys, #[expr] ++ restExprs)
 
 /-- Check a list of Syntax.Exprs against an expected type -/
@@ -1553,32 +1674,6 @@ partial def inferSyntaxTuple (elems : List Soma.Syntax.Expr) (span : Span)
     let sigmaTy := Value.vSigma .omega "_" fstTy (Closure.const "_" sndTy)
     return (sigmaTy, .pair fstExpr sndExpr)
 
-/-- Infer constructor application from Syntax -/
-partial def inferSyntaxConstructorApp
-    (ctorTy : Value) (args : List Soma.Syntax.Expr) (span : Span)
-    : TCM (Value × Array Soma.Core.Expr) := do
-  let rec go (ty : Value) (remainingArgs : List Soma.Syntax.Expr)
-      (checkedArgs : Array Soma.Core.Expr)
-      : TCM (Value × Array Soma.Core.Expr) := do
-    let ty' ← force ty
-    match ty', remainingArgs with
-    | _, [] => return (ty', checkedArgs)
-    | .vPi _qty binder _name dom cod, _ =>
-      if binder.isImplicit then
-        let metaVal ← TCM.freshMetaVal dom
-        let resultTy ← applyClosure cod metaVal
-        go resultTy remainingArgs checkedArgs
-      else
-        match remainingArgs with
-        | [] => return (ty', checkedArgs)
-        | arg :: restArgs =>
-          let argExpr ← checkSyntax arg dom
-          let argVal ← TCM.evalExpr argExpr
-          let resultTy ← applyClosure cod argVal
-          go resultTy restArgs (checkedArgs.push argExpr)
-    | _, _ :: _ => TCM.throw (.expectedFunction ty' span none)
-  go ctorTy args #[]
-
 /-- Check an expression against an expected type (Syntax.Expr version) -/
 partial def checkSyntax (e : Soma.Syntax.Expr) (expected : Value)
     : TCM Soma.Core.Expr := do
@@ -1630,7 +1725,12 @@ where
 
     -- Case expression in check mode synthesizes a dependent motive from the expected type by abstracting scrutinee values
     | .case scruts arms caseSpan, _ => do
-      let (scrutTys, scrutsExpr) ← inferSyntaxList scruts.toList
+      -- Per-scrutinee erased-context decision
+      checkPropElimSoundness scruts.toList arms.toList (some expected')
+      let erasedFlags ← scruts.toList.mapIdxM fun i scrut =>
+        scrutineeCanBeErased scrut i arms.toList
+      let (scrutTys, scrutsExpr) ←
+        inferSyntaxListErased (scruts.toList.zip erasedFlags)
       let scrutVals ← scrutsExpr.mapM TCM.evalExpr
       let motive ← synthesizeMotive scrutVals scrutTys expected' caseSpan
       let armsExpr ← checkSyntaxArms arms.toList scrutTys scrutsExpr motive caseSpan

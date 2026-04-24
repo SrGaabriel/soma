@@ -1390,7 +1390,13 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
   match green with
   | .node kind _children _ =>
       match kind with
-      | .declDef =>
+      | .declDef | .declTheorem =>
+          -- `def` and `theorem` share their entire syntactic shape
+          let mkDecl : Array Attribute → QualName → Array DefParam →
+              Option Expr → Array DefClause → Span → Decl :=
+            match kind with
+            | .declTheorem => Decl.theorem_
+            | _            => Decl.def_
           let allKids := childrenWithOffsets green offset
           let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
           let attrs ← lowerAttributes attrNodes
@@ -1431,26 +1437,29 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               let (plist, plistOffset) := paramListNodes[0]!
               let varNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
                 c.syntaxKind? == some .patVar || c.syntaxKind? == some .field
-              varNodes.mapM fun (v, vo) => do
+              let paramGroups ← varNodes.mapM fun (v, vo) => do
                 let vspan ← spanFor v vo
                 match v.syntaxKind? with
                 | some .patVar =>
                     match firstGreenChild v with
                     | some child =>
                         let text ← getGreenTokenText child vo
-                        pure { name := ⟨#[], text, vspan⟩, type? := none, span := vspan }
+                        pure #[({ name := ⟨#[], text, vspan⟩, type? := none, span := vspan } : DefParam)]
                     | none =>
                         lowerError "patVar missing name" vspan
-                        pure { name := ⟨#[], "_error", vspan⟩, type? := none, span := vspan }
+                        pure #[({ name := ⟨#[], "_error", vspan⟩, type? := none, span := vspan } : DefParam)]
                 | some .field =>
                     let kids := childrenWithOffsets v vo |>.filter fun (c, _) => isSemanticNode c
-                    let nameNode? := kids.find? fun (c, _) => isTokenKind c .lowerIdent
+                    let nameNodes := kids.filter fun (c, _) => isTokenKind c .lowerIdent
                     let typeNode? := kids.find? fun (c, _) =>
                       match c.syntaxKind? with
                       | some .typeQuantity => false
                       | some sk => sk.isType
                       | none => false
-                    let isImplicit := v.children.any fun c => isTokenKind c .leftBrace
+                    let lbraceCount := v.children.foldl (init := 0) fun n c =>
+                      if isTokenKind c .leftBrace then n + 1 else n
+                    let isInstance := lbraceCount == 2
+                    let isImplicit := lbraceCount >= 1
                     let quantityOpt? := kids.find? fun (c, _) => c.syntaxKind? == some .typeQuantity
                     let quantity? ← match quantityOpt? with
                       | some (qNode, qOffset) =>
@@ -1460,19 +1469,28 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                           | "1" => Soma.Core.Quantity.one
                           | _ => Soma.Core.Quantity.omega))
                       | none => pure none
-                    match nameNode? with
-                    | some (nameNode, nameOffset) =>
-                        let nameText ← getGreenTokenText nameNode nameOffset
-                        let tyOpt ← match typeNode? with
-                          | some (tyNode, tyOffset) => some <$> lowerTypeExpr tyNode tyOffset
-                          | none => pure none
-                        pure { name := ⟨#[], nameText, vspan⟩, type? := tyOpt, isImplicit, quantity? := quantity?, span := vspan }
-                    | none =>
+                    let tyOpt ← match typeNode? with
+                      | some (tyNode, tyOffset) => some <$> lowerTypeExpr tyNode tyOffset
+                      | none => pure none
+                    if nameNodes.isEmpty then
+                      if isInstance then
+                        pure #[({ name := ⟨#[], s!"_inst_{vspan.start}", vspan⟩
+                                 , type? := tyOpt, isImplicit := true
+                                 , isInstance := true
+                                 , quantity? := quantity?, span := vspan } : DefParam)]
+                      else
                         lowerError "field missing name" vspan
-                        pure { name := ⟨#[], "_error", vspan⟩, type? := none, span := vspan }
+                        pure #[({ name := ⟨#[], "_error", vspan⟩, type? := none, span := vspan } : DefParam)]
+                    else
+                      nameNodes.mapM fun (nameNode, nameOffset) => do
+                        let nameText ← getGreenTokenText nameNode nameOffset
+                        pure ({ name := ⟨#[], nameText, vspan⟩
+                              , type? := tyOpt, isImplicit, isInstance
+                              , quantity? := quantity?, span := vspan } : DefParam)
                 | _ =>
                     lowerError "unexpected node in param list" vspan
-                    pure { name := ⟨#[], "_error", vspan⟩, type? := none, span := vspan }
+                    pure #[({ name := ⟨#[], "_error", vspan⟩, type? := none, span := vspan } : DefParam)]
+              pure (paramGroups.flatten)
 
           -- Extract signature base from either `::` or `->` notation
           let sigNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .signature
@@ -1488,8 +1506,6 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             | some .doubleColon => if explicitSig.isNone then explicitSig := some sigTy
             | _ => if explicitSig.isNone then explicitSig := some sigTy
 
-          -- Build the full function signature, respecting implicit vs explicit binders.
-          -- Implicit `{a : Type}` params become `forall` binders; explicit `(x : T)` become arrows.
           let typedParams := headerParams.filter (·.type?.isSome)
           let sigBase := explicitSig.orElse (fun _ => returnTypeSig)
           let sig ← match sigBase with
@@ -1498,13 +1514,13 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               if typedParams.isEmpty then
                 pure (some retTy)
               else
-                -- Always emit explicit typed params with a named `.pi` binder
                 let fullSig := typedParams.foldr (init := retTy) fun param accTy =>
-                  if param.isImplicit then
-                    Expr.forall_ #[TypeVarBinder.mk param.name param.type?] accTy span
-                  else
-                    let qty := param.quantity?.getD .omega
-                    Expr.pi qty .explicit param.name (param.type?.getD accTy) accTy span
+                  let binder : Soma.Core.BinderInfo :=
+                    if param.isInstance then .instance_
+                    else if param.isImplicit then .implicit
+                    else .explicit
+                  let qty := param.quantity?.getD .omega
+                  Expr.pi qty binder param.name (param.type?.getD accTy) accTy span
                 pure (some fullSig)
 
           let clauseNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .defClause
@@ -1516,13 +1532,13 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               c.syntaxKind? != some .signature && c.syntaxKind? != some .attribute &&
               c.syntaxKind? != some .paramList && isSemanticNode c
             if bodyNodes.isEmpty then
-              pure (.def_ attrs name headerParams sig #[] span)
+              pure (mkDecl attrs name headerParams sig #[] span)
             else
               let body ← lowerExpr bodyNodes[0]!.1 bodyNodes[0]!.2
               let clause : DefClause := ⟨#[], none, body, body.span⟩
-              pure (.def_ attrs name headerParams sig #[clause] span)
+              pure (mkDecl attrs name headerParams sig #[clause] span)
           else
-            pure (.def_ attrs name headerParams sig clauses span)
+            pure (mkDecl attrs name headerParams sig clauses span)
 
       | .declInductive =>
           let nameNodes := green.children.filter fun c =>

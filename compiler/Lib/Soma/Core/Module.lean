@@ -24,7 +24,7 @@ end Constructor
 inductive TypeDef where
   | algebraic (attrs : Array Syntax.Attribute) (name : QualifiedName)
       (typeVarBinders : Array Syntax.TypeVarBinder) (ctors : Array Constructor)
-      (span : Soma.Syntax.Span)
+      (headSort : Level) (span : Soma.Syntax.Span)
   | record (attrs : Array Syntax.Attribute) (name : QualifiedName)
       (typeVarBinders : Array Syntax.TypeVarBinder) (ctorName : QualifiedName)
       (fields : Array (Option String × Syntax.Expr)) (span : Soma.Syntax.Span)
@@ -32,33 +32,41 @@ inductive TypeDef where
 namespace TypeDef
 
 def name : TypeDef → QualifiedName
-  | .algebraic _ n _ _ _ => n
+  | .algebraic _ n _ _ _ _ => n
   | .record _ n _ _ _ _ => n
 
 def qualifiedName (td : TypeDef) : QualifiedName :=
   td.name
 
 def typeVarBinders : TypeDef → Array Syntax.TypeVarBinder
-  | .algebraic _ _ vs _ _ => vs
+  | .algebraic _ _ vs _ _ _ => vs
   | .record _ _ vs _ _ _ => vs
 
 def typeVarNames (td : TypeDef) : Array String :=
   td.typeVarBinders.map (·.name.name)
 
 def typeVarCount : TypeDef → Nat
-  | .algebraic _ _ vs _ _ => vs.size
+  | .algebraic _ _ vs _ _ _ => vs.size
   | .record _ _ vs _ _ _ => vs.size
 
 def attrs : TypeDef → Array Syntax.Attribute
-  | .algebraic attrs _ _ _ _ => attrs
+  | .algebraic attrs _ _ _ _ _ => attrs
   | .record attrs _ _ _ _ _ => attrs
 
 def constructors : TypeDef → Array Constructor
-  | .algebraic _ _ _ cs _ => cs
+  | .algebraic _ _ _ cs _ _ => cs
   | .record _ _ _ cn fields _ => #[{ name := cn, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
 
+/-- The universe the type itself lives in -/
+def headSort : TypeDef → Level
+  | .algebraic _ _ _ _ s _ => s
+  | .record _ _ _ _ _ _ => .lit 0
+
+/-- Is this an `inductive … : Prop` declaration? -/
+def isProp (td : TypeDef) : Bool := td.headSort.isProp
+
 def span : TypeDef → Soma.Syntax.Span
-  | .algebraic _ _ _ _ s => s
+  | .algebraic _ _ _ _ _ s => s
   | .record _ _ _ _ _ s => s
 
 end TypeDef
@@ -90,6 +98,7 @@ structure TypeAbbrev where
 structure Module where
   name : String
   functions : Array UntypedFunction
+  theorems : Array UntypedFunction := #[]
   types : Array TypeDef
   instances : Array InstanceDecl
   typeClasses : Array TypeClassMeta
@@ -98,13 +107,22 @@ structure Module where
 namespace Module
 
 def empty (name : String) : Module :=
-  { name, functions := #[], types := #[], instances := #[], typeClasses := #[], abbreviations := #[] }
+  { name, functions := #[], theorems := #[],
+    types := #[], instances := #[], typeClasses := #[], abbreviations := #[] }
 
 def findFunction (m : Module) (name : QualifiedName) : Option UntypedFunction :=
   m.functions.find? (·.name == name)
 
 def findFunctionByQualifiedName (m : Module) (name : QualifiedName) : Option UntypedFunction :=
   m.functions.find? (fun fn => fn.name == name)
+
+/-- Look up a theorem declaration by name -/
+def findTheorem (m : Module) (name : QualifiedName) : Option UntypedFunction :=
+  m.theorems.find? (·.name == name)
+
+/-- Every top-level `def`/`theorem` in the module, regardless of kind -/
+def allDeclarations (m : Module) : Array UntypedFunction :=
+  m.functions ++ m.theorems
 
 def findType (m : Module) (name : QualifiedName) : Option TypeDef :=
   m.types.find? (·.name == name)

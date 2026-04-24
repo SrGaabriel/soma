@@ -20,6 +20,8 @@ end LevelVarId
 
 /-- Universe levels -/
 inductive Level where
+  /-- Proposition universe: `Prop` -/
+  | prop
   /-- Concrete level: Type₀, Type₁, etc. -/
   | lit (n : Nat)
   /-- Level variable for polymorphism -/
@@ -34,6 +36,9 @@ namespace Level
 
 /-! ## Common Levels -/
 
+/-- The `Prop` universe. -/
+def propL : Level := .prop
+
 /-- Type₀ (the base universe) -/
 def zero : Level := .lit 0
 
@@ -42,6 +47,11 @@ def one : Level := .lit 1
 
 /-- Type₂ -/
 def two : Level := .lit 2
+
+/-- Is this level the `Prop` universe? -/
+def isProp : Level → Bool
+  | .prop => true
+  | _ => false
 
 /-- Add n to a level -/
 def addLit (l : Level) (n : Nat) : Level :=
@@ -54,6 +64,8 @@ instance : HAdd Level Nat Level := ⟨addLit⟩
 /-- Maximum of two levels with simplification -/
 def mkMax (l1 l2 : Level) : Level :=
   match l1, l2 with
+  | .prop, l => l
+  | l, .prop => l
   | .lit n1, .lit n2 => .lit (Nat.max n1 n2)
   | l, .lit 0 => l
   | .lit 0, l => l
@@ -62,19 +74,24 @@ def mkMax (l1 l2 : Level) : Level :=
 /-- Successor with simplification -/
 def mkSucc (l : Level) : Level :=
   match l with
+  | .prop => .lit 0
   | .lit n => .lit (n + 1)
   | l => .succ l
 
 /-- Simplify a level expression -/
 partial def simplify : Level → Level
+  | .prop => .prop
   | .lit n => .lit n
   | .var id => .var id
   | .succ l =>
     match simplify l with
+    | .prop => .lit 0
     | .lit n => .lit (n + 1)
     | l' => .succ l'
   | .max l1 l2 =>
     match simplify l1, simplify l2 with
+    | .prop, l' => l'
+    | l', .prop => l'
     | .lit n1, .lit n2 => .lit (Nat.max n1 n2)
     | l1', .lit 0 => l1'
     | .lit 0, l2' => l2'
@@ -83,6 +100,7 @@ partial def simplify : Level → Level
 /-- Substitute a level variable with a level -/
 def subst (l : Level) (id : LevelVarId) (replacement : Level) : Level :=
   match l with
+  | .prop => .prop
   | .lit n => .lit n
   | .var v => if v == id then replacement else .var v
   | .max l1 l2 => mkMax (subst l1 id replacement) (subst l2 id replacement)
@@ -91,6 +109,7 @@ def subst (l : Level) (id : LevelVarId) (replacement : Level) : Level :=
 /-- Substitute multiple level variables -/
 def substMap (l : Level) (σ : Std.HashMap LevelVarId Level) : Level :=
   match l with
+  | .prop => .prop
   | .lit n => .lit n
   | .var v =>
     match σ.get? v with
@@ -111,6 +130,7 @@ def toLit? : Level → Option Nat
 
 /-- Check if level contains variables -/
 def hasVars : Level → Bool
+  | .prop => false
   | .lit _ => false
   | .var _ => true
   | .max l1 l2 => hasVars l1 || hasVars l2
@@ -118,6 +138,7 @@ def hasVars : Level → Bool
 
 /-- Get all level variables -/
 def freeVars : Level → List LevelVarId
+  | .prop => []
   | .lit _ => []
   | .var v => [v]
   | .max l1 l2 => freeVars l1 ++ freeVars l2
@@ -131,6 +152,9 @@ def freeVarsUnique (l : Level) : List LevelVarId :=
 /-- Compare two concrete levels -/
 def leLit? (l1 l2 : Level) : Option Bool :=
   match l1.simplify, l2.simplify with
+  | .prop, .prop => some true
+  | .prop, .lit _ => some true
+  | .lit _, .prop => some false
   | .lit n1, .lit n2 => some (n1 ≤ n2)
   | _, _ => none
 
@@ -148,6 +172,7 @@ def toSubscript (l : Level) : String :=
     else
       natToSubscript (n / 10) ++ natToSubscript (n % 10)
   match l with
+  | .prop => "ₚ"
   | .lit n => natToSubscript n
   | .var v => s!"_{v}"
   | .max l1 l2 => s!"max({toSubscript l1},{toSubscript l2})"
@@ -155,6 +180,7 @@ def toSubscript (l : Level) : String :=
 
 /-- Convert level to string -/
 partial def toStringAux : Level → String
+  | .prop => "Prop"
   | .lit 0 => "0"
   | .lit n => toString n
   | .var v => toString v

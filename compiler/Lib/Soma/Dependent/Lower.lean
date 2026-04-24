@@ -127,7 +127,7 @@ private def registerGlobalNames
 
     for decl in ast.decls do
       match decl with
-      | .def_ attrs name _ _ _ _ =>
+      | .def_ attrs name _ _ _ _ | .theorem_ attrs name _ _ _ _ =>
         if topLevel.get? name.name |>.isNone then
           let fnAttrs := functionAttrsFromSyntax attrs (some name.name)
           let (n, s') := mkGlobalName name.name fnAttrs supply
@@ -173,7 +173,8 @@ private def lowerFunctionDeclCore
   : Option Soma.Core.UntypedFunction × Diagnostics :=
   Id.run do
     match decl with
-    | .def_ attrs name headerParams sig clauses span =>
+    | .def_ attrs name headerParams sig clauses span
+    | .theorem_ attrs name headerParams sig clauses span =>
       let fnAttrs := functionAttrsFromSyntax attrs (some name.name)
       match clauses[0]? with
       | some clause =>
@@ -271,7 +272,7 @@ private def lowerFunctionDecl
     (registry : GlobalNameRegistry)
   : Option Soma.Core.UntypedFunction × Diagnostics :=
   match decl with
-  | .def_ _ name .. =>
+  | .def_ _ name .. | .theorem_ _ name .. =>
     let globalName := registry.requireTopLevel name.name
     lowerFunctionDeclCore decl globalName
   | _ => (none, #[])
@@ -293,6 +294,16 @@ private partial def unfoldKindTelescope (e : Syntax.Expr) (defaultSpan : Span)
     #[head] ++ unfoldKindTelescope cod defaultSpan
   | .parens inner _ => unfoldKindTelescope inner defaultSpan
   | _ => #[]
+
+/-- Recognise the final sort at the tail of a kind annotation -/
+private partial def headSortOfKind : Option Syntax.Expr → Soma.Core.Level
+  | none => .lit 0
+  | some (.con ⟨_, "Prop", _⟩) => .prop
+  | some (.var ⟨_, "Prop", _⟩) => .prop
+  | some (.parens inner _) => headSortOfKind (some inner)
+  | some (.arrow _ to _) => headSortOfKind (some to)
+  | some (.pi _ _ _ _ cod _) => headSortOfKind (some cod)
+  | _ => .lit 0
 
 private def lowerTypeDecl
     (decl : Syntax.Decl)
@@ -326,7 +337,8 @@ private def lowerTypeDecl
               { name := ctorName, tag := i, fieldTypeSyntax := fieldTypes, sigSyntax := none, attrs := ctor.attrs }
           acc := acc.push lowered
       acc
-    (some (.algebraic attrs typeName fullParams ctors span), diags, supply)
+    let headSort := headSortOfKind kindAnnot
+    (some (.algebraic attrs typeName fullParams ctors headSort span), diags, supply)
   | .record attrs name params _ctorName fields span =>
     let typeName := registry.requireTopLevel name.name
     let (ctorUnique, supply'') := supply.fresh "New"
@@ -435,6 +447,7 @@ def lowerModule (ast : Syntax.Module) : Result :=
     let (registry, supply0) := registerGlobalNames ast
     let mut supply := supply0
     let mut functions : Array Soma.Core.UntypedFunction := #[]
+    let mut theorems : Array Soma.Core.UntypedFunction := #[]
     let mut types : Array Soma.Core.UntypedTypeDef := #[]
     let mut instances : Array Soma.Core.UntypedInstance := #[]
     let mut typeClasses : Array Soma.Core.TypeClassMeta := #[]
@@ -445,7 +458,16 @@ def lowerModule (ast : Syntax.Module) : Result :=
       let (fn?, fnDiags) := lowerFunctionDecl decl registry
       diagnostics := diagnostics ++ fnDiags
       if let some fn := fn? then
-        functions := functions.push fn
+        -- Route to the right bucket based on the original declaration kind
+        match decl with
+        | .theorem_ _ name _ _ _ span =>
+          if fn.attrs.partial_ then
+            diagnostics := diagnostics.push (Diagnostic.error
+              s!"theorem '{name.name}' cannot be marked @[partial]" span
+              |>.withHelp "drop @[partial], or make this a `def` if it's runtime code")
+          else
+            theorems := theorems.push fn
+        | _ => functions := functions.push fn
 
       let (td?, tdDiags, supply') := lowerTypeDecl decl registry supply
       diagnostics := diagnostics ++ tdDiags
@@ -471,6 +493,7 @@ def lowerModule (ast : Syntax.Module) : Result :=
       module := {
         name := ast.name
         functions := functions
+        theorems := theorems
         types := types
         instances := instances
         typeClasses := typeClasses

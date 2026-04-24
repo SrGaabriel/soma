@@ -1,7 +1,7 @@
-inductive Truth where
+inductive Truth : Prop where
     | Trivial
 
-inductive Never : Type
+inductive Never : Prop
 
-// Ex falso quodlibet: from falsehood, anything follows
-def ex_falso (a : Type) : Never -> a
+// Ex falso quodlibet: from a proof of falsehood, anything follows
+theorem ex_falso (a : Type) : Never -> a

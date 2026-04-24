@@ -12,7 +12,7 @@ inductive TokenKind where
   | lowerIdent
   | upperIdent
   | varSymbol
-  | kw_def | kw_let | kw_in | kw_case | kw_if | kw_then | kw_else
+  | kw_def | kw_theorem | kw_let | kw_in | kw_case | kw_if | kw_then | kw_else
   | kw_inductive | kw_struct | kw_trait | kw_instance | kw_where | kw_with
   | kw_use | kw_pub | kw_forall | kw_bind | kw_compose
   | kw_abbrev
@@ -38,6 +38,7 @@ def describe : TokenKind → String
   | .upperIdent => "type name"
   | .varSymbol => "operator"
   | .kw_def => "'def'"
+  | .kw_theorem => "'theorem'"
   | .kw_let => "'let'"
   | .kw_in => "'in'"
   | .kw_case => "'case'"
@@ -94,7 +95,7 @@ def describe : TokenKind → String
 instance : ToString TokenKind := ⟨describe⟩
 
 def isKeyword : TokenKind → Bool
-  | .kw_def | .kw_let | .kw_in | .kw_case | .kw_if | .kw_then | .kw_else
+  | .kw_def | .kw_theorem | .kw_let | .kw_in | .kw_case | .kw_if | .kw_then | .kw_else
   | .kw_inductive | .kw_struct | .kw_trait | .kw_instance | .kw_where | .kw_with
   | .kw_use | .kw_pub | .kw_forall | .kw_bind | .kw_compose
   | .kw_abbrev | .true_ | .false_ => true
@@ -113,7 +114,7 @@ end TokenKind
 
 /-- Keyword lookup table -/
 def keywordMap : List (String × TokenKind) :=
-  [ ("def", .kw_def), ("let", .kw_let), ("in", .kw_in), ("match", .kw_case)
+  [ ("def", .kw_def), ("theorem", .kw_theorem), ("let", .kw_let), ("in", .kw_in), ("match", .kw_case)
   , ("if", .kw_if), ("then", .kw_then), ("else", .kw_else)
   , ("inductive", .kw_inductive), ("record", .kw_struct), ("class", .kw_trait)
   , ("instance", .kw_instance), ("where", .kw_where), ("with", .kw_with)

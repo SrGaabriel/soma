@@ -6,6 +6,7 @@ inductive SyntaxKind where
   | sourceFile        -- Root node containing all declarations
   -- Declarations
   | declDef           -- Function/value definition (may have no body if @[intrinsic] or @[extern])
+  | declTheorem       -- Proof declaration
   | declInductive     -- Inductive type definition (may have no constructors if @[intrinsic])
   | declStruct        -- Struct definition
   | declTrait         -- Trait definition
@@ -112,6 +113,7 @@ inductive SyntaxKind where
 def SyntaxKind.describe : SyntaxKind → String
   | .sourceFile => "source file"
   | .declDef => "definition"
+  | .declTheorem => "theorem"
   | .declInductive => "inductive type"
   | .declStruct => "struct"
   | .declTrait => "class"
@@ -206,7 +208,7 @@ instance : ToString SyntaxKind where
 
 /-- Check if a syntax kind represents a declaration -/
 def SyntaxKind.isDecl : SyntaxKind → Bool
-  | .declDef | .declInductive | .declStruct | .declTrait
+  | .declDef | .declTheorem | .declInductive | .declStruct | .declTrait
   | .declInstance | .declUse | .declAbbrev => true
   | _ => false
 

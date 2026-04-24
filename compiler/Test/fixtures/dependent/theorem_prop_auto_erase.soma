@@ -1,0 +1,11 @@
+// expect: error erased variable
+
+inductive Never : Prop
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+// `h` is auto-erased (Prop-typed)
+def misuse : Never -> Nat
+    | h => Nat::Succ h

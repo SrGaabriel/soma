@@ -114,74 +114,139 @@ partial def parseDefClause : ParserM (Option GreenNode) := do
         return some (GreenNode.mkError "missing '=>'" children)
   | none => return none
 
+/-- Parse one or more whitespace-separated lowerIdent tokens as the names of a shared-type binder -/
+private partial def parseBinderNames : ParserM (Array GreenNode) := do
+  let rec loop (acc : Array GreenNode) : ParserM (Array GreenNode) := do
+    match ← parseLowerIdent with
+    | some n => loop (acc.push n)
+    | none => return acc
+  loop #[]
+
 def parseDefBinder : ParserM (Option GreenNode) := do
-  if (← check .leftParen) then
+  if (← checkDoubleBrace) then
+    let lbrace1 ← consumeAny
+    let lbrace2 ← consumeAny
+    let tok ← current
+    let next ← peekNext
+    if tok.kind == some .lowerIdent && next.kind == some .colon then
+      let nameTok ← consumeAny
+      let colonTok ← consumeAny
+      match ← parseType with
+      | some ty =>
+        match ← tryConsume .rightBrace with
+        | some rbrace1 =>
+          match ← tryConsume .rightBrace with
+          | some rbrace2 =>
+            return some (GreenNode.mkNode .field
+              #[lbrace1, lbrace2, nameTok, colonTok, ty, rbrace1, rbrace2])
+          | none =>
+            recordError "expected '}}' after instance dict binder"
+            return some (GreenNode.mkError "unclosed instance binder"
+              #[lbrace1, lbrace2, nameTok, colonTok, ty, rbrace1])
+        | none =>
+          recordError "expected '}}' after instance dict binder"
+          return some (GreenNode.mkError "unclosed instance binder"
+            #[lbrace1, lbrace2, nameTok, colonTok, ty])
+      | none =>
+        recordError "expected type in instance dict binder"
+        return some (GreenNode.mkError "missing instance binder type"
+          #[lbrace1, lbrace2, nameTok, colonTok])
+    else
+      match ← parseType with
+      | some ty =>
+        match ← tryConsume .rightBrace with
+        | some rbrace1 =>
+          match ← tryConsume .rightBrace with
+          | some rbrace2 =>
+            return some (GreenNode.mkNode .field
+              #[lbrace1, lbrace2, ty, rbrace1, rbrace2])
+          | none =>
+            recordError "expected '}}' after instance dict binder"
+            return some (GreenNode.mkError "unclosed instance binder"
+              #[lbrace1, lbrace2, ty, rbrace1])
+        | none =>
+          recordError "expected '}}' after instance dict binder"
+          return some (GreenNode.mkError "unclosed instance binder"
+            #[lbrace1, lbrace2, ty])
+      | none =>
+        recordError "expected constraint in instance dict binder"
+        return some (GreenNode.mkError "missing instance binder constraint"
+          #[lbrace1, lbrace2])
+  else if (← check .leftParen) then
     let lparen ← consumeAny
     let quantityOpt ← Soma.Syntax.Parse.parseQuantity
-    match ← parseLowerIdent with
-    | some nameTok =>
-      if (← check .colon) then
-        let colonTok ← consumeAny
-        match ← parseType with
-        | some ty =>
-          match ← tryConsume .rightParen with
-          | some rparen =>
-            let children := #[lparen] ++
-              (match quantityOpt with | some q => #[q] | none => #[]) ++
-              #[nameTok, colonTok, ty, rparen]
-            return some (GreenNode.mkNode .field children)
-          | none =>
-            recordError "expected ')' after function binder"
-            return some (GreenNode.mkError "unclosed function binder" #[lparen, nameTok, colonTok, ty])
-        | none =>
-          recordError "expected type after ':' in function binder"
-          return some (GreenNode.mkError "missing function binder type" #[lparen, nameTok, colonTok])
-      else
-        recordError "expected ':' in function binder"
-        return some (GreenNode.mkError "missing ':' in function binder" #[lparen, nameTok])
-    | none =>
+    let nameToks ← parseBinderNames
+    if nameToks.isEmpty then
       recordError "expected binder name after '('"
       return some (GreenNode.mkError "missing function binder name" #[lparen])
+    if (← check .colon) then
+      let colonTok ← consumeAny
+      match ← parseType with
+      | some ty =>
+        match ← tryConsume .rightParen with
+        | some rparen =>
+          let children := #[lparen] ++
+            (match quantityOpt with | some q => #[q] | none => #[]) ++
+            nameToks ++ #[colonTok, ty, rparen]
+          return some (GreenNode.mkNode .field children)
+        | none =>
+          recordError "expected ')' after function binder"
+          return some (GreenNode.mkError "unclosed function binder"
+            (#[lparen] ++ nameToks ++ #[colonTok, ty]))
+      | none =>
+        recordError "expected type after ':' in function binder"
+        return some (GreenNode.mkError "missing function binder type"
+          (#[lparen] ++ nameToks ++ #[colonTok]))
+    else
+      recordError "expected ':' in function binder"
+      return some (GreenNode.mkError "missing ':' in function binder"
+        (#[lparen] ++ nameToks))
   else if (← check .leftBrace) then
     let lbrace ← consumeAny
-    match ← parseLowerIdent with
-    | some nameTok =>
-      if (← check .colon) then
-        let colonTok ← consumeAny
-        match ← parseType with
-        | some ty =>
-          match ← tryConsume .rightBrace with
-          | some rbrace =>
-            return some (GreenNode.mkNode .field #[lbrace, nameTok, colonTok, ty, rbrace])
-          | none =>
-            recordError "expected '}' after function binder"
-            return some (GreenNode.mkError "unclosed function binder" #[lbrace, nameTok, colonTok, ty])
-        | none =>
-          recordError "expected type after ':' in function binder"
-          return some (GreenNode.mkError "missing function binder type" #[lbrace, nameTok, colonTok])
-      else
-        recordError "expected ':' in function binder"
-        return some (GreenNode.mkError "missing ':' in function binder" #[lbrace, nameTok])
-    | none =>
+    let nameToks ← parseBinderNames
+    if nameToks.isEmpty then
       recordError "expected binder name after '{'"
       return some (GreenNode.mkError "missing function binder name" #[lbrace])
+    if (← check .colon) then
+      let colonTok ← consumeAny
+      match ← parseType with
+      | some ty =>
+        match ← tryConsume .rightBrace with
+        | some rbrace =>
+          let children := #[lbrace] ++ nameToks ++ #[colonTok, ty, rbrace]
+          return some (GreenNode.mkNode .field children)
+        | none =>
+          recordError "expected '}' after function binder"
+          return some (GreenNode.mkError "unclosed function binder"
+            (#[lbrace] ++ nameToks ++ #[colonTok, ty]))
+      | none =>
+        recordError "expected type after ':' in function binder"
+        return some (GreenNode.mkError "missing function binder type"
+          (#[lbrace] ++ nameToks ++ #[colonTok]))
+    else
+      recordError "expected ':' in function binder"
+      return some (GreenNode.mkError "missing ':' in function binder"
+        (#[lbrace] ++ nameToks))
   else
     return none
 
-partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
-  match ← tryConsume .kw_def with
-  | some defTok =>
+/-- Parse a `def` or `theorem` declaration -/
+private partial def parseDefOrTheoremDecl
+    (kw : TokenKind) (kwLabel : String) (resultKind : SyntaxKind)
+    (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
+  match ← tryConsume kw with
+  | some kwTok =>
       let nameNode ← if (← check .leftBrace) then do
         match ← parseOperatorName with
         | some op => pure op
         | none =>
             recordError "expected operator name"
-            pure (GreenNode.mkError "missing name" #[defTok])
+            pure (GreenNode.mkError "missing name" #[kwTok])
       else
         match ← parseIdent with
         | some nameTok => pure (GreenNode.mkNode .name #[nameTok])
         | none =>
-            recordError "expected function name after 'def'"
+            recordError s!"expected {kwLabel} name after '{kwLabel}'"
             pure (.missing .name)
 
       let binders ← many parseDefBinder
@@ -198,37 +263,43 @@ partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) 
         let eqTok ← consumeAny
         match ← inLayout parseExpr with
         | some body =>
-            let children := attrs ++ #[defTok, nameNode] ++
+            let children := attrs ++ #[kwTok, nameNode] ++
               (match params with | some p => #[p] | none => #[]) ++
               (match signature with | some s => #[s] | none => #[]) ++
               #[eqTok, body]
-            return some (GreenNode.mkNode .declDef children)
+            return some (GreenNode.mkNode resultKind children)
         | none =>
-            recordError "expected expression after ':='"
-            return some (GreenNode.mkError "missing definition body" (attrs ++ #[defTok, nameNode]))
+            recordError s!"expected expression after ':='"
+            return some (GreenNode.mkError s!"missing {kwLabel} body" (attrs ++ #[kwTok, nameNode]))
 
       else if (← checkNextRelevant .pipe) then
         let clauses ← layoutSepBy parseDefClause
 
         if clauses.isEmpty then
-          recordError "expected definition clauses"
+          recordError s!"expected {kwLabel} clauses"
 
-        let children := attrs ++ #[defTok, nameNode] ++
+        let children := attrs ++ #[kwTok, nameNode] ++
           (match params with | some p => #[p] | none => #[]) ++
           (match signature with | some s => #[s] | none => #[]) ++
           clauses
-        return some (GreenNode.mkNode .declDef children)
+        return some (GreenNode.mkNode resultKind children)
 
       else
         if signature.isSome then
-          let children := attrs ++ #[defTok, nameNode] ++
+          let children := attrs ++ #[kwTok, nameNode] ++
             (match params with | some p => #[p] | none => #[]) ++
             #[signature.get!]
-          return some (GreenNode.mkNode .declDef children)
+          return some (GreenNode.mkNode resultKind children)
         else
-          recordError "expected ':=', '|', or ':' after function declaration"
-          return some (GreenNode.mkError "incomplete definition" (attrs ++ #[defTok, nameNode]))
+          recordError s!"expected ':=', '|', or ':' after {kwLabel} declaration"
+          return some (GreenNode.mkError s!"incomplete {kwLabel}" (attrs ++ #[kwTok, nameNode]))
   | none => return none
+
+partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) :=
+  parseDefOrTheoremDecl .kw_def "def" .declDef attrs
+
+partial def parseTheoremDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) :=
+  parseDefOrTheoremDecl .kw_theorem "theorem" .declTheorem attrs
 
 def parseConstructorField : ParserM (Option GreenNode) := do
   match ← parseLowerIdent with
@@ -789,6 +860,7 @@ partial def parseDecl : ParserM (Option GreenNode) := do
   let attrs ← parseAttributes
 
   if (← check .kw_def) then parseDefDecl attrs
+  else if (← check .kw_theorem) then parseTheoremDecl attrs
   else if (← check .kw_inductive) then parseInductiveDecl attrs
   else if (← check .kw_struct) then parseStructDecl attrs
   else if (← check .kw_trait) then parseTraitDecl attrs

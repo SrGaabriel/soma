@@ -11,21 +11,21 @@ instance Add Nat where
         | Nat::Succ n, m => Nat::Succ (add n m)
 
 instance Gt Nat where
-    def gt : Nat -> Nat -> Type
+    def gt : Nat -> Nat -> Prop
         | Nat::Zero, Nat::Zero => Truth
         | Nat::Zero, Nat::Succ _ => Never
         | Nat::Succ _, Nat::Zero => Truth
         | Nat::Succ n, Nat::Succ m => gt n m
 
-def adding_one_increases : (n : Nat) -> gt (Nat::Succ n) n
+theorem adding_one_increases : (n : Nat) -> gt (Nat::Succ n) n
     | Nat::Zero => Truth::Trivial
     | Nat::Succ n => adding_one_increases n
 
-def adding_one_does_not_decrease : (n : Nat) -> gt n (Nat::Succ n) -> Never
+theorem adding_one_does_not_decrease : (n : Nat) -> gt n (Nat::Succ n) -> Never
     | Nat::Zero, gt => gt
     | Nat::Succ n, gt => adding_one_does_not_decrease n gt
 
-def succ_greater_than_zero : gt (Nat::Succ Nat::Zero) Nat::Zero :=
+theorem succ_greater_than_zero : gt (Nat::Succ Nat::Zero) Nat::Zero :=
     Truth::Trivial
 
-def not_greater_than_zero : gt Nat::Zero (Nat::Succ Nat::Zero) -> Never
+theorem not_greater_than_zero : gt Nat::Zero (Nat::Succ Nat::Zero) -> Never

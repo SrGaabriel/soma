@@ -27,7 +27,8 @@ def elabTypeStandalone (ty : Soma.Syntax.Expr) : TCM Value := do
 
 /-- Sort names that `inferSyntax` resolves without needing an explicit binding -/
 def isBuiltinTypeName (n : String) : Bool :=
-  n == "Type" || n == "Type0" || n == "Type1" || n == "Row" || n == "Label"
+  n == "Type" || n == "Type0" || n == "Type1" || n == "Prop"
+  || n == "Row" || n == "Label"
 
 /-- Collect every free identifier in `sigSyntax` -/
 def implicitForallNames (sigSyntax : Soma.Syntax.Expr) : TCM (List String) := do
@@ -385,8 +386,11 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
       return (resolved', placeholderBody, #[])
     | some body =>
-      let (generatedParams, typedBody) ← withSignaturePrefixBindings allParams fn.params span do
+      let bodyIsProof ← Soma.Dependent.valueInPropUniverse resultType
+      let runBodyCheck : TCM Soma.Core.Expr :=
         TCM.infallible (Soma.Dependent.checkSyntax body resultType) default
+      let (generatedParams, typedBody) ← withSignaturePrefixBindings allParams fn.params span do
+        if bodyIsProof then TCM.inErasedContext runBodyCheck else runBodyCheck
       Soma.Dependent.solvePendingInstancesOrFail
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
@@ -523,7 +527,7 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
   let mut g := globals
   for typeDef in module.types do
     match typeDef with
-    | .algebraic attrs typeName _ ctors _ =>
+    | .algebraic attrs typeName _ ctors _ _ =>
       if let some typeInfo := g.getDef typeName then
         g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {typeName.display}"
       for ctor in ctors do
@@ -592,7 +596,7 @@ private def registerTypeClassHead
   let classInfo : GlobalInfo := {
     name := classQN
     type := classHeadTy
-    value := none
+    value := some (Value.vDataType classQN.id [])
     isConstructor := false
     origin := .class_
   }
@@ -632,16 +636,19 @@ where
 
 /-- Elaborate a type constructor's head kind from its parameter binders -/
 def elaborateTypeHeadKind
-    (binders : Array Syntax.TypeVarBinder) : TCM Value := do
-  let mut paramKinds : Array (String × Value) := #[]
+    (binders : Array Syntax.TypeVarBinder)
+    (resultSort : Soma.Core.Level := Level.zero) : TCM Value := do
+  let mut paramKinds : Array (String × Value × Soma.Core.Quantity) := #[]
   for binder in binders do
     let kind ← match binder.kind with
       | some k => elabTypeStandalone k
       | none => pure (Value.vType Level.zero)
-    paramKinds := paramKinds.push (binder.name.name, kind)
-  let mut headKind : Value := Value.vType Level.zero
-  for (paramName, paramKind) in paramKinds.reverse do
-    headKind := Value.vPi .omega .explicit paramName paramKind
+    -- A data-type parameter whose kind is an universe or Prop-valued gets quantity 0
+    let qty ← if (← Soma.Dependent.shouldAutoEraseBinder kind) then pure .zero else pure .omega
+    paramKinds := paramKinds.push (binder.name.name, kind, qty)
+  let mut headKind : Value := Value.vType resultSort
+  for (paramName, paramKind, qty) in paramKinds.reverse do
+    headKind := Value.vPi qty .explicit paramName paramKind
       (Soma.Core.Closure.const paramName headKind)
   return headKind
 
@@ -652,11 +659,11 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
   let mut globals := ctx.globals
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName binders _ _ =>
+    | .algebraic _ typeName binders _ headSort _ =>
       let typeQN := typeName
-      let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders)
+      let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders headSort)
       globals := globals.registerInductive typeQN .algebraic
-        (binders.map (·.name.name))
+        (binders.map (·.name.name)) #[] headSort
       let dataTypeInfo : GlobalInfo := {
         name := typeQN
         type := headKind
@@ -689,11 +696,11 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
   -- First pass: Register all data types
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName binders _ _ =>
+    | .algebraic _ typeName binders _ headSort _ =>
       let typeQN := typeName
-      let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders)
+      let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders headSort)
       globals := globals.registerInductive typeQN .algebraic
-        (binders.map (·.name.name))
+        (binders.map (·.name.name)) #[] headSort
       let dataTypeInfo : GlobalInfo := {
         name := typeQN
         type := headKind
@@ -720,7 +727,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
   -- Second pass: Register constructors under their parent type namespace
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName binders constructors _ =>
+    | .algebraic _ typeName binders constructors _ _ =>
       let typeNs := ns.push typeName.display
       let typeVarNames := binders.map (·.name.name)
       for ctor in constructors do
@@ -786,7 +793,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
 
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName _ _ typeSpan =>
+    | .algebraic _ typeName _ _ _ typeSpan =>
       match globals.lookupInductive typeName with
       | some indMeta =>
         let ctorTypes := indMeta.ctors.map (·.type)
@@ -884,6 +891,21 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
     }
     globals := globals.register ns fn.name.display info
 
+  for thm in module.theorems do
+    let fnType ← TCM.recoverWithM
+      (match thm.declaredTypeSyntax with
+        | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
+        | none => TCM.freshMetaVal (.vType .zero))
+      (TCM.typePlaceholder thm.span)
+    let info : GlobalInfo := {
+      name := thm.name
+      type := fnType
+      value := none
+      isConstructor := false
+      origin := .theorem_
+    }
+    globals := globals.register ns thm.name.display info
+
   globals ← indexWiredRoles module globals
 
   return globals
@@ -894,7 +916,7 @@ def resolveAndZonkSignatures (module : Soma.Core.UntypedModule) : TCM Globals :=
   let ns := ctx.currentNamespace
   Soma.Dependent.solvePendingInstancesOrFail
   let mut globals := ctx.globals
-  for fn in module.functions do
+  for fn in module.functions ++ module.theorems do
     if fn.declaredTypeSyntax.isNone then continue
     match globals.getDef fn.name with
     | none => pure ()
@@ -989,6 +1011,7 @@ private def registerDataType
     (kind : InductiveKind)
     (binders : Array Syntax.TypeVarBinder := #[])
     (fieldNames : Array String := #[])
+    (headSort : Soma.Core.Level := Soma.Core.Level.zero)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
@@ -1004,8 +1027,8 @@ private def registerDataType
 
   let typeUnique ← TCM.freshUnique nameStr
   let typeQN : Soma.Core.QualifiedName := ⟨typeUnique⟩
-  let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders)
-  let mut g := globals.registerInductive typeQN kind typeVarNames fieldNames
+  let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders headSort)
+  let mut g := globals.registerInductive typeQN kind typeVarNames fieldNames headSort
   let dataTypeInfo : GlobalInfo := {
     name := typeQN
     type := headKind
@@ -1219,19 +1242,19 @@ def buildGlobalsIncremental
   -- First pass: Register all data types
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName binders _ _ =>
+    | .algebraic _ typeName binders _ headSort _ =>
       let nameStr := typeName.display
       let isDirty := dirtyNames.contains nameStr
-      globals ← registerDataType globals nameStr .algebraic binders #[] (some prevGlobals) isDirty
+      globals ← registerDataType globals nameStr .algebraic binders #[] headSort (some prevGlobals) isDirty
     | .record _ recordName binders _ fields _ =>
       let nameStr := recordName.display
       let isDirty := dirtyNames.contains nameStr
-      globals ← registerDataType globals nameStr .record binders (fields.filterMap (·.1)) (some prevGlobals) isDirty
+      globals ← registerDataType globals nameStr .record binders (fields.filterMap (·.1)) Level.zero (some prevGlobals) isDirty
 
   -- Second pass: Register constructors
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName binders constructors _ =>
+    | .algebraic _ typeName binders constructors _ _ =>
       let isDirty := dirtyNames.contains typeName.display
       for ctor in constructors do
         globals ← registerConstructor globals typeName binders ctor (some prevGlobals) isDirty
@@ -1274,6 +1297,9 @@ def buildGlobalsIncremental
   for fn in module.functions do
     let isDirty := dirtyNames.contains fn.name.display
     globals ← registerFunction globals fn (some prevGlobals) isDirty
+  for thm in module.theorems do
+    let isDirty := dirtyNames.contains thm.name.display
+    globals ← registerFunction globals thm (some prevGlobals) isDirty
 
   globals ← indexWiredRoles module globals
 

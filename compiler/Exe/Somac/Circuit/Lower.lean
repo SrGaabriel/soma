@@ -668,7 +668,9 @@ def lowerGlobal (name : QualifiedName) (ty : Value) : LowerM PortId := do
       else
         panic! s!"lowerGlobal: partial constructor application should have been desugared: {name.display}"
     | none =>
-      panic! s!"lowerGlobal: unknown global '{name.display}' (not in globals, not a constructor)"
+      -- Theorem erasure
+      let era ← LowerM.addNode .era ty
+      pure (PortId.principal era)
 
 /-- Lower a first-class projection function -/
 def lowerFirstClassProj (fieldIdx : Nat) (ty : Value) : LowerM PortId := do
@@ -1496,7 +1498,7 @@ def registerTypes (types : Array Soma.Core.TypeDef)
     (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
   for typeDef in types do
     match typeDef with
-    | .algebraic _attrs typeName _tvars ctors _ =>
+    | .algebraic _attrs typeName _tvars ctors _ _ =>
       let mut usedMetadata := false
       if let some g := globals then
         if let some typeQN := g.resolve #[] #[] typeName.display then

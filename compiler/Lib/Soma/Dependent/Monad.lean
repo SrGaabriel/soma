@@ -109,6 +109,7 @@ end TrackedConstraint
 inductive DeclarationOrigin where
   | user
   | function
+  | theorem_
   | typeDecl
   | class_
   | constructor
@@ -181,6 +182,10 @@ structure InductiveMeta where
   ctors : Array ConstructorMeta := #[]
   /-- Ordered field names for record declarations -/
   fieldNames : Array String := #[]
+  /-- Universe the declaration head lives in -/
+  headSort : Soma.Core.Level := .lit 0
+  /-- For `Prop`-kinded inductives only: is this a small proposition? -/
+  isSmall : Bool := false
   deriving Inhabited, Serialize, Deserialize
 
 namespace InductiveMeta
@@ -560,17 +565,20 @@ def lookupIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
 /-- Register or refresh top-level inductive metadata for a type name -/
 def registerInductive (g : Globals) (qn : Soma.Core.QualifiedName)
     (kind : InductiveKind) (typeVarNames : Array String := #[])
-    (fieldNames : Array String := #[]) : Globals :=
+    (fieldNames : Array String := #[])
+    (headSort : Soma.Core.Level := .lit 0) : Globals :=
   let metaInfo : InductiveMeta := match g.inductives.get? qn with
     | some existing =>
       { existing with
         kind := kind
         typeVarNames := typeVarNames
-        fieldNames := fieldNames }
+        fieldNames := fieldNames
+        headSort := headSort }
     | none =>
       { kind := kind
         typeVarNames := typeVarNames
-        fieldNames := fieldNames }
+        fieldNames := fieldNames
+        headSort := headSort }
   { g with
     recordFields := if fieldNames.isEmpty then g.recordFields else g.recordFields.insert qn fieldNames
     inductives := g.inductives.insert qn metaInfo }

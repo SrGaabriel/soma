@@ -1,0 +1,23 @@
+// expect: success
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+inductive Truth : Prop where
+    | Trivial
+
+inductive Never : Prop
+
+def gt : Nat -> Nat -> Prop
+    | Nat::Zero, Nat::Zero => Truth
+    | Nat::Zero, Nat::Succ _ => Never
+    | Nat::Succ _, Nat::Zero => Truth
+    | Nat::Succ n, Nat::Succ m => gt n m
+
+theorem adding_one_increases : (n : Nat) -> gt (Nat::Succ n) n
+    | Nat::Zero => Truth::Trivial
+    | Nat::Succ n => adding_one_increases n
+
+theorem adding_one_increases_for_succ : (n : Nat) -> gt (Nat::Succ (Nat::Succ n)) (Nat::Succ n)
+    | n => adding_one_increases (Nat::Succ n)

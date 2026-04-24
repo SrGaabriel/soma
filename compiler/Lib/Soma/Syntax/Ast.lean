@@ -527,6 +527,7 @@ structure DefParam where
   name : QualName
   type? : Option Expr
   isImplicit : Bool := false
+  isInstance : Bool := false
   quantity? : Option Soma.Core.Quantity := none
   span : Span
   deriving Repr
@@ -536,6 +537,10 @@ inductive Decl where
   /-- Function/value definition -/
   | def_ (attrs : Array Attribute) (name : QualName) (params : Array DefParam)
          (sig : Option Expr) (clauses : Array DefClause) (span : Span)
+
+  /-- Theorem declaration -/
+  | theorem_ (attrs : Array Attribute) (name : QualName) (params : Array DefParam)
+             (sig : Option Expr) (clauses : Array DefClause) (span : Span)
 
   /-- Inductive type definition: inductive Option {a : Type} where ... -/
   | inductive (attrs : Array Attribute) (name : QualName) (params : Array TypeVarBinder)
@@ -567,6 +572,7 @@ namespace Decl
 
 def span : Decl → Span
   | .def_ _ _ _ _ _ s => s
+  | .theorem_ _ _ _ _ _ s => s
   | .inductive _ _ _ _ _ s => s
   | .record _ _ _ _ _ s => s
   | .trait _ _ _ _ _ s => s
@@ -577,6 +583,7 @@ def span : Decl → Span
 /-- Get the name of a declaration (if it has one) -/
 def name? : Decl → Option QualName
   | .def_ _ name _ _ _ _ => some name
+  | .theorem_ _ name _ _ _ _ => some name
   | .inductive _ name _ _ _ _ => some name
   | .record _ name _ _ _ _ => some name
   | .trait _ name _ _ _ _ => some name
@@ -792,6 +799,23 @@ partial def ppDecl : Decl → String
         s!"{attrStr}def {name.name}{paramsStr}{sigStr}"
       else
         s!"{attrStr}def {name.name}{paramsStr}{sigStr}\n{indent 2 clausesStr}"
+
+  | .theorem_ attrs name params sig clauses _ =>
+      let attrStr := if attrs.isEmpty then ""
+        else s!"@[{attrs.toList.map (·.name.name) |> String.intercalate ", "}]\n"
+      let paramsStr := if params.isEmpty then "" else
+        let ppParam (p : DefParam) := match p.type? with
+          | some ty => s!"({p.name.name} : {ppExpr ty})"
+          | none => p.name.name
+        " " ++ (params.toList.map ppParam |> String.intercalate " ")
+      let sigStr := match sig with
+        | some t => s!" :: {ppExpr t}"
+        | none => ""
+      let clausesStr := clauses.toList.map ppDefClause |> String.intercalate "\n"
+      if clauses.isEmpty then
+        s!"{attrStr}theorem {name.name}{paramsStr}{sigStr}"
+      else
+        s!"{attrStr}theorem {name.name}{paramsStr}{sigStr}\n{indent 2 clausesStr}"
 
   | .inductive attrs name params cons kind _ =>
       let attrStr := if attrs.isEmpty then ""

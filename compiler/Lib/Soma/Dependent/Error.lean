@@ -400,6 +400,17 @@ inductive TCError where
       (resolvedResultType : Value)
       (span : Span)
 
+  /-- `@[partial]` is not allowed on a `theorem` -/
+  | partialTheorem
+      (theoremName : String)
+      (span : Span)
+
+  /-- A case expression tries to eliminate a Prop-valued scrutinee into a Type-valued motive -/
+  | propElimToType
+      (scrutineeTy : Value)
+      (motiveTy : Value)
+      (span : Span)
+
   /-- Type-class name is used but not in scope -/
   | classNotInScope
       (name : String)
@@ -447,6 +458,8 @@ def span : TCError → Span
   | .nonExhaustiveMatch _ _ s => s
   | .bodilessNotDerivable _ _ s => s
   | .patternArityMismatch _ _ _ _ s => s
+  | .partialTheorem _ s => s
+  | .propElimToType _ _ s => s
   | .classNotInScope _ s => s
   | .unknownClass _ s => s
 
@@ -822,6 +835,30 @@ def toDiagnostic : TCError → Diagnostic
         else
           "add patterns for the missing parameter(s), or adjust the signature"
       )
+
+  | .partialTheorem name span =>
+    Diagnostic.error
+        s!"theorem `{name}` cannot be marked `@[partial]`" span
+        "a partial proof is not a proof"
+      |>.withCode "E1037"
+      |>.withNote
+        "theorems are required to be total"
+      |>.withHelp
+        "drop `@[partial]`, make the recursion structurally decreasing, \
+         or restate the declaration as a `def` if it's really runtime code"
+
+  | .propElimToType scrutTy motiveTy span =>
+    Diagnostic.error
+        "cannot eliminate this Prop into a Type" span
+        s!"scrutinee of type `{scrutTy}` is a proposition"
+      |>.withCode "E1038"
+      |>.withNote
+        s!"the expected motive `{motiveTy}` lives in `Type`, but \
+           propositions can only be observed from another proposition"
+      |>.withHelp
+        "either change the result type so the match produces a \
+         proposition, or rework the Prop so it becomes small \
+         (drop constructors / lift a field from `Type` to `Prop`)"
 
   | .classNotInScope name span =>
     { severity := .error

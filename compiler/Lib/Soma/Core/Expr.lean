@@ -502,6 +502,50 @@ where
       go b (go ep (go r (go l (go m (go t acc)))))
     | .ann x t => go t (go x acc)
 
+/-- Collect every global (`.const`) reference in an expression, keyed by the callee's `QualifiedName`) -/
+partial def collectConsts (e : Expr) : Std.HashSet QualifiedName :=
+  go e {}
+where
+  go (e : Expr) (acc : Std.HashSet QualifiedName) : Std.HashSet QualifiedName :=
+    match e with
+    | .const name ty => go ty (acc.insert name)
+    | .fvar _ ty => go ty acc
+    | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
+    | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
+    | .lit _ => acc
+    | .app f a => go a (go f acc)
+    | .lam _ _ d b => go b (go d acc)
+    | .let_ _ t v b => go b (go v (go t acc))
+    | .pi _ _ _ d c => go c (go d acc)
+    | .sigma _ _ _ f s => go s (go f acc)
+    | .pair f s => go s (go f acc)
+    | .projFst x => go x acc
+    | .projSnd x => go x acc
+    | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
+    | .«case» scruts motive arms =>
+      let acc := scruts.foldl (fun a e => go e a) acc
+      let acc := go motive acc
+      arms.foldl (fun a arm => go arm.body a) acc
+    | .record fields => fields.foldl (fun a (_, e) => go e a) acc
+    | .recordUpdate b us =>
+      let acc := go b acc
+      us.foldl (fun a (_, e) => go e a) acc
+    | .fieldAccess x _ _ => go x acc
+    | .inject _ args rty => go rty (args.foldl (fun a e => go e a) acc)
+    | .if_ c t el => go el (go t (go c acc))
+    | .closure _ caps => caps.foldl (fun a e => go e a) acc
+    | .array es ety => go ety (es.foldl (fun a e => go e a) acc)
+    | .tuple es => es.foldl (fun a e => go e a) acc
+    | .rowExtend l f t => go t (go f (go l acc))
+    | .recordTy r => go r acc
+    | .variantTy r => go r acc
+    | .dataTy _ ps => ps.foldl (fun a e => go e a) acc
+    | .eqTy _ t l r => go r (go l (go t acc))
+    | .refl t x => go x (go t acc)
+    | .transport _ t m l r ep b =>
+      go b (go ep (go r (go l (go m (go t acc)))))
+    | .ann x t => go t (go x acc)
+
 /-- Check if an expression contains a specific free variable -/
 partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
   match e with

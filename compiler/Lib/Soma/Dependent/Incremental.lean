@@ -442,6 +442,7 @@ private def exprTag : Nat → UInt64
 /-- Hash a level -/
 def hashLevel (l : Soma.Core.Level) : UInt64 :=
   match l with
+  | .prop => 0x5004
   | .lit n => combineHash 0x5000 (hash n)
   | .var v => combineHash 0x5001 (hash v.id)
   | .max l1 l2 => combineHashes #[0x5002, hashLevel l1, hashLevel l2]
@@ -523,7 +524,7 @@ def hashFunction (fn : Soma.Core.UntypedFunction) : UInt64 :=
 /-- Hash a type definition for incremental checking -/
 def hashTypeDef (td : Soma.Core.TypeDef) : UInt64 :=
   match td with
-  | .algebraic attrs name binders ctors _ =>
+  | .algebraic attrs name binders ctors headSort _ =>
     let attrsHash := attrs.foldl (fun acc a => combineHash acc (hashString a.name.name)) 0
     let nameHash := hashString name.display
     let varsHash := binders.foldl
@@ -534,7 +535,8 @@ def hashTypeDef (td : Soma.Core.TypeDef) : UInt64 :=
         combineHash (combineHash acc (hashString v.name.name)) kHash) 0
     let ctorsHash := ctors.foldl (fun acc ctor =>
       combineHash acc (hashString ctor.name.display)) 0
-    combineHashes #[0, attrsHash, nameHash, varsHash, ctorsHash]  -- 0 = algebraic tag
+    let sortHash := hashLevel headSort
+    combineHashes #[0, attrsHash, nameHash, varsHash, ctorsHash, sortHash]
   | .record attrs name binders ctorName fields _ =>
     let attrsHash := attrs.foldl (fun acc a => combineHash acc (hashString a.name.name)) 0
     let nameHash := hashString name.display
@@ -563,7 +565,7 @@ def hashModuleDefinitions (moduleName : String) (module : Soma.Core.UntypedModul
   -- Hash types
   for td in module.types do
     let typeName := match td with
-      | .algebraic _ name _ _ _ => name.display
+      | .algebraic _ name _ _ _ _ => name.display
       | .record _ name _ _ _ _ => name.display
     let defId := DefId.mk moduleName typeName
     let typeHash := hashTypeDef td

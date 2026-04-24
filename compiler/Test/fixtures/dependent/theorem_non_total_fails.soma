@@ -1,0 +1,5 @@
+// expect: error termination
+
+inductive Never : Prop
+
+theorem bomb : Never := bomb

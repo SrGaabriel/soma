@@ -48,6 +48,7 @@ end LevelConstraintInfo
 /-- Apply current solutions to a level -/
 partial def applyLevelSolutions (solutions : Std.HashMap Nat Level) (l : Level) : Level :=
   match l with
+  | .prop => .prop
   | .lit n => .lit n
   | .var v =>
     match solutions.get? v.id with

@@ -336,6 +336,8 @@ structure FunctionCheckResult where
   incrementalState : IncrementalState
   /-- Typed function bodies (function name -> typed fn) -/
   typedFunctions : Std.HashMap String Soma.Core.TypedFunction
+  /-- Typed proof bodies (`theorem`), keyed by display name -/
+  typedTheorems : Std.HashMap String Soma.Core.TypedFunction := {}
   /-- Errors encountered during checking -/
   errors : Array Soma.Dependent.TCError
   /-- All globals referenced across all functions -/
@@ -394,16 +396,18 @@ def checkFunctionsCore
   let mut currentState := initialState
   let mut incrState := prevIncrState
   let mut typedFns : Std.HashMap String Soma.Core.TypedFunction := {}
+  let mut typedThms : Std.HashMap String Soma.Core.TypedFunction := {}
   let mut allUsedGlobals : Std.HashSet Soma.Core.QualifiedName := {}
   let mut currentGlobals := ctx.globals
 
-  for fn in untypedModule.functions do
+  for (fn, isTheorem) in
+      (untypedModule.functions.map (·, false)) ++
+      (untypedModule.theorems.map  (·, true )) do
     let fnName := fn.name.display
     let defId := DefId.mk moduleName fnName
 
-    -- Determine if we should check this function
     let shouldCheck := match dirtyNames with
-      | none => true  -- Check all
+      | none => true
       | some dirty => dirty.contains fnName || !prevIncrState.isCached defId
 
     if shouldCheck then
@@ -421,10 +425,22 @@ def checkFunctionsCore
         let cache := DefCache.failure syntaxHash (Value.vType Level.zero) DefKind.function #[e]
         incrState := incrState.updateCache defId cache
       | .ok ((fnType, typedBody, generatedParams), newState) =>
-        -- Also collect any accumulated errors from error recovery
         errors := errors ++ newState.errors
 
-        -- Store the typed function for downstream passes
+        -- The result type must actually be a proposition (`: Prop`)
+        if isTheorem then
+          let propCheck :=
+            (Soma.Dependent.valueInPropUniverse fnType).run
+              ({ ctx with globals := currentGlobals }) newState
+          match propCheck with
+          | .ok (true, _) => pure ()
+          | .ok (false, _) =>
+            errors := errors.push
+              (.cannotInfer
+                s!"theorem `{fnName}` result type must be a proposition (Prop-valued), but the signature lives in Type"
+                fn.span none)
+          | .error e => errors := errors.push e
+
         let typedFn : Soma.Core.TypedFunction := {
           name := fn.name
           params := generatedParams
@@ -433,9 +449,12 @@ def checkFunctionsCore
           closureInfo := fn.closureInfo
           attrs := fn.attrs
         }
-        typedFns := typedFns.insert fnName typedFn
+        if isTheorem then
+          typedThms := typedThms.insert fnName typedFn
+        else
+          typedFns := typedFns.insert fnName typedFn
 
-        -- Publish this function's unfoldable value for subsequent iterations
+        -- Both defs and theorems get their unfoldable value published
         currentGlobals := registerTypedFnValue currentGlobals typedFn
           ctx.instanceEnv newState.metas
 
@@ -444,7 +463,7 @@ def checkFunctionsCore
         let deps := newState.globalDeps
         allUsedGlobals := deps.fold (init := allUsedGlobals) fun acc qn => acc.insert qn
         for depQN in deps do
-          if (ctx.globals.getDef depQN).isSome then
+          if (currentGlobals.getDef depQN).isSome then
             let depId := DefId.mk moduleName depQN.display
             incrState := incrState.addDependency defId depId
 
@@ -460,7 +479,7 @@ def checkFunctionsCore
               type := fnType
               value := none
               isConstructor := false
-              origin := .function
+              origin := if isTheorem then .theorem_ else .function
             }
             DefCache.success syntaxHash fnType DefKind.function info
         else
@@ -470,7 +489,14 @@ def checkFunctionsCore
         currentState := newState
     -- else: not dirty, keep cached result (already in incrState)
 
-  return { finalState := currentState, incrementalState := incrState, typedFunctions := typedFns, errors := errors, allUsedGlobals := allUsedGlobals, updatedGlobals := currentGlobals }
+  return {
+    finalState := currentState
+    incrementalState := incrState
+    typedFunctions := typedFns
+    typedTheorems := typedThms
+    errors := errors
+    allUsedGlobals := allUsedGlobals
+    updatedGlobals := currentGlobals }
 
 /-- Result of building globals and instance environment -/
 structure GlobalsAndInstancesResult where
@@ -632,6 +658,8 @@ structure TypeCheckResult where
   usages : Std.HashMap Soma.Unique Nat
   /-- Typed function bodies (function name -> typed fn) -/
   typedFunctions : Std.HashMap String Soma.Core.TypedFunction
+  /-- Typed `theorem` bodies -/
+  typedTheorems : Std.HashMap String Soma.Core.TypedFunction := {}
   errors : Array Soma.Dependent.TCError
   /-- All globals referenced during type checking -/
   allUsedGlobals : Std.HashSet Soma.Core.QualifiedName := {}
@@ -754,10 +782,12 @@ def typeCheckModule
   for instFn in pendingTypedFns do
     mergedTypedFns := mergedTypedFns.insert instFn.name.id.mangle instFn
 
+  let totalityInput : Std.HashMap String Soma.Core.TypedFunction :=
+    fnResult.typedTheorems.fold (init := mergedTypedFns) fun acc k v => acc.insert k v
   let typedFnsArr : Array Soma.Core.TypedFunction :=
-    mergedTypedFns.fold (init := #[]) fun acc _ fn => acc.push fn
+    totalityInput.fold (init := #[]) fun acc _ fn => acc.push fn
   let fnSpans : Std.HashMap String Soma.Syntax.Span :=
-    untypedModule.functions.foldl (init := {}) fun acc fn =>
+    (untypedModule.functions ++ untypedModule.theorems).foldl (init := {}) fun acc fn =>
       acc.insert fn.name.display fn.span
   let totalityCtx := { ctx with globals := finalGlobals }
   let totalityErrors : Array Soma.Dependent.TCError :=
@@ -789,6 +819,7 @@ def typeCheckModule
     incrementalState := finalIncrState
     usages := usages
     typedFunctions := mergedTypedFns
+    typedTheorems := fnResult.typedTheorems
     errors := allErrors
     allUsedGlobals := globalsResult.finalState.globalDeps.fold
       (init := fnResult.allUsedGlobals) fun acc qn => acc.insert qn
@@ -844,7 +875,7 @@ def extractPublicSymbols
   -- Extract type definitions and constructors
   for typeDef in untypedModule.types do
     match typeDef with
-    | .algebraic _ typeName _binders constructors typeSpan =>
+    | .algebraic _ typeName _binders constructors _headSort typeSpan =>
       let typeNameStr := typeName.display
       if shouldExport typeNameStr then
         let typeSym : Symbol := {
