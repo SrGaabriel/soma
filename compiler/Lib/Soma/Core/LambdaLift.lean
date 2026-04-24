@@ -397,7 +397,6 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     pure (.construct n t (← args.mapM (liftCoreExpr ·)) (← liftCoreExpr rty))
   | .«case» scruts motive arms => do
     let scruts' ← scruts.mapM (liftCoreExpr ·)
-    let motive' ← liftCoreExpr motive
     let arms' ← arms.mapM fun arm => do
       let bindingIds := arm.patterns.foldl
         (fun acc p => acc ++ p.collectBindingIds) #[]
@@ -411,7 +410,7 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
       let closedBody := freshIds.reverse.foldl
         (fun body u => body.abstractFVar u) liftedBody
       pure (Soma.Core.Arm.mk arm.patterns closedBody)
-    pure (.«case» scruts' motive' arms')
+    pure (.«case» scruts' motive arms')
   | .record fields => do
     let fields' ← fields.mapM fun (n, e') => do pure (n, ← liftCoreExpr e')
     pure (.record fields')
