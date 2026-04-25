@@ -173,7 +173,7 @@ partial def collectMvarIds (e : Expr) (acc : Std.HashSet MetaId := {}) : Std.Has
   match e with
   | .mvar id => acc.insert id
   | .bvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
-  | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ => acc
+  | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ | .tyvar _ _ => acc
   | .fvar _ ty => collectMvarIds ty acc
   | .const _ ty => collectMvarIds ty acc
   | .app fn arg => collectMvarIds arg (collectMvarIds fn acc)
@@ -217,7 +217,7 @@ partial def applyMvarSubst (e : Expr) (subst : Std.HashMap MetaId Expr) (depth :
   match e with
   | .mvar id => subst.getD id e
   | .bvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
-  | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ => e
+  | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ | .tyvar _ _ => e
   | .fvar id ty => .fvar id (applyMvarSubst ty subst depth)
   | .const name ty => .const name (applyMvarSubst ty subst depth)
   | .app fn arg => .app (applyMvarSubst fn subst depth) (applyMvarSubst arg subst depth)

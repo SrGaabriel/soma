@@ -259,7 +259,7 @@ def testSolveLevelConstraintUnequal : Bool :=
     let c := Constraint.levelEq (.lit 0) (.lit 1)
     trySolveConstraint c
   with
-  | .ok (.deferred, _) => true  -- Level constraints are deferred when not equal
+  | .ok (.failed _, _) => true
   | _ => false
 
 /-! ## Zonking Tests -/

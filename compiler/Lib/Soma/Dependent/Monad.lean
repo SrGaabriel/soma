@@ -1692,6 +1692,31 @@ def freshLevel (name : String := "") : TCM Level := do
   let id ← freshLevelVar name
   return .var id
 
+/-- Look up the current solution for a level variable -/
+def lookupLevelVar (id : LevelVarId) : TCM (Option Level) := do
+  let state ← getState
+  return state.levelSolutions.get? id.id
+
+/-- Install a solution for a level variable -/
+def solveLevelVar (id : LevelVarId) (l : Level) : TCM Unit := do
+  modifyState fun s => { s with levelSolutions := s.levelSolutions.insert id.id l }
+
+/-- Apply current level solutions to a level-/
+partial def zonkLevel (l : Level) : TCM Level := do
+  let state ← getState
+  let sols := state.levelSolutions
+  return go sols l
+where
+  go (sols : Std.HashMap Nat Level) : Level → Level
+    | .prop => .prop
+    | .lit n => .lit n
+    | .var v =>
+      match sols.get? v.id with
+      | some l' => go sols l'
+      | none => .var v
+    | .max l1 l2 => Level.mkMax (go sols l1) (go sols l2)
+    | .succ l' => Level.mkSucc (go sols l')
+
 /-- Postpone a constraint for later solving (simple version) -/
 def postpone (c : Constraint) : TCM Unit := do
   modifyState (·.postpone c)

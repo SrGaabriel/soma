@@ -424,7 +424,7 @@ def checkFunctionsCore
         let syntaxHash := hashFunction fn
         let cache := DefCache.failure syntaxHash (Value.vType Level.zero) DefKind.function #[e]
         incrState := incrState.updateCache defId cache
-      | .ok ((fnType, typedBody, generatedParams), newState) =>
+      | .ok ((fnType, typedBody, generatedParams, errored), newState) =>
         errors := errors ++ newState.errors
 
         if isTheorem then
@@ -447,6 +447,7 @@ def checkFunctionsCore
           fnType := fnType
           closureInfo := fn.closureInfo
           attrs := fn.attrs
+          errored := errored ∨ !newState.errors.isEmpty
         }
         if isTheorem then
           typedThms := typedThms.insert fnName typedFn

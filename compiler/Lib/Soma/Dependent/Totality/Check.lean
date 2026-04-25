@@ -114,6 +114,7 @@ where
     | .bvar _ => pure ()
     | .fvar _ _ => pure ()
     | .mvar _ => pure ()
+    | .tyvar _ _ => pure ()
     | .const name _ =>
       let fnInfo? ← TermM.getCurrentFn
       match fnInfo? with

@@ -347,8 +347,8 @@ def testInferTypeUniverse : IO TestResult := do
   match typeInfer expr with
   | .ok (ty, _, _) =>
     match ty with
-    | .vType (.lit 1) => return .passed
-    | .vType l => return .failed s!"Expected Type₁, got Type with level {l}"
+    | .vType (.succ _) => return .passed
+    | .vType l => return .failed s!"Expected Type with successor level, got Type with level {l}"
     | _ => return .failed s!"Expected Type, got {ty}"
   | .error e => return .failed s!"Inference failed: {e}"
 

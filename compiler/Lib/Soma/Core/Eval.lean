@@ -200,10 +200,6 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     | none => .vNeutral .type0 (.nVar ⟨s!"bvar{idx}", ctx.env.level⟩)
 
   | .fvar id _ =>
-    -- Sentinel type variable fvar created by quoteNeutralExpr for out-of-scope neutral variables
-    if id.module == "__tyvar" then
-      .vNeutral .type0 (.nVar ⟨id.original, ⟨id.id⟩⟩)
-    else
     -- Free variables: look up by display name in environment
     match ctx.env.lookupByName id.original with
     | some v => v
@@ -211,6 +207,9 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
       match ctx.globals.lookup ⟨id⟩ with
       | some v => v
       | none => .vNeutral .type0 (.nVar ⟨id.original, ctx.env.level⟩)
+
+  | .tyvar lvl name =>
+    .vNeutral .type0 (.nVar ⟨name, lvl⟩)
 
   | .mvar id =>
     match ctx.metas.lookup id with
@@ -389,6 +388,18 @@ end
     For Closure.term: evaluates the body with the closure's captured env extended by the argument. -/
 def Closure.applyPure (clos : Closure) (arg : Value) : Value :=
   applyClosure clos arg EvalCtx.empty
+
+/-- Evaluate an expression with no globals and no meta state, only a local environment -/
+def evalExprPure (env : Env) (e : Soma.Core.Expr) : Value :=
+  evalCoreExpr { env, globals := .empty, metas := .empty } e
+
+/-- Apply a value to an argument with no global/meta context -/
+def vAppPure (fn arg : Value) : Value :=
+  vApp fn arg EvalCtx.empty
+
+/-- Apply a value to a spine of arguments left-to-right with no context -/
+def vAppSpinePure (fn : Value) (args : Array Value) : Value :=
+  args.foldl vAppPure fn
 
 /-- Apply a Pi type to an argument, computing the codomain type.
     Works for both non-dependent (Closure.const) and dependent (Closure.term) Pi types. -/
@@ -614,7 +625,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
-  | .proj _ _ _ => .vType .zero
+  | .proj _ _ _ | .tyvar _ _ => .vType .zero
 
   | .mvar _ | .recordUpdate _ _ | .panic _ => .vType .zero
 

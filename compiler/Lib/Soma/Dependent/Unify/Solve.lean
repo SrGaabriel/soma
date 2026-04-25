@@ -29,6 +29,50 @@ private partial def normalizeWiredPrimitiveValue (v : Value) : TCM Value := do
     | none => pure v
   | _ => pure v
 
+/-- Cumulative value subtyping -/
+partial def subtypeUnify (v1 v2 : Value) : TCM Unit := do
+  let v1f ← force v1
+  let v2f ← force v2
+  let v1' ← normalizeWiredPrimitiveValue v1f
+  let v2' ← normalizeWiredPrimitiveValue v2f
+
+  if valueEq v1' v2' then return
+
+  match v1', v2' with
+  | .vNeutral _ ⟨.hErrored, _⟩, _ => return
+  | _, .vNeutral _ ⟨.hErrored, _⟩ => return
+  | _, _ => pure ()
+
+  match v1', v2' with
+  | .vType l1, .vType l2 =>
+    let ok ← subtypeLevel l1 l2
+    if !ok then throwUnifyError v1' v2' "level mismatch"
+
+  | .vPi q1 b1 n1 d1 c1, .vPi q2 b2 _ d2 c2 =>
+    if q1 != q2 then throwUnifyError v1' v2' "quantity mismatch"
+    if b1 != b2 then throwUnifyError v1' v2' "binder mismatch"
+    subtypeUnify d2 d1
+    let lvl ← TCM.currentLevel
+    let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
+    let cod1 ← applyClosure c1 x
+    let cod2 ← applyClosure c2 x
+    let bindingId ← TCM.freshLocalId n1
+    TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
+      subtypeUnify cod1 cod2
+
+  | .vSigma q1 n1 f1 s1, .vSigma q2 _ f2 s2 =>
+    if q1 != q2 then throwUnifyError v1' v2' "quantity mismatch"
+    subtypeUnify f1 f2
+    let lvl ← TCM.currentLevel
+    let x := Value.vNeutral f1 (.nVar ⟨n1, lvl⟩)
+    let snd1 ← applyClosure s1 x
+    let snd2 ← applyClosure s2 x
+    let bindingId ← TCM.freshLocalId n1
+    TCM.withBinding n1 bindingId f1 q1 .explicit defaultSpan do
+      subtypeUnify snd1 snd2
+
+  | _, _ => unify v1' v2'
+
 /-- Unify two values. May solve metavariables or postpone constraints -/
 partial def unify (v1 v2 : Value) : TCM Unit := do
   -- Force both values first
@@ -390,13 +434,66 @@ partial def unifyList (vs1 vs2 : List Value) : TCM Unit := do
   for (v1, v2) in vs1.zip vs2 do
     unify v1 v2
 
-/-- Unify two levels -/
+/-- Cumulative level subtyping -/
+partial def subtypeLevel (l1 l2 : Level) : TCM Bool := do
+  let l1' := (← TCM.zonkLevel l1).simplify
+  let l2' := (← TCM.zonkLevel l2).simplify
+  if l1' == l2' then return true
+  match l1', l2' with
+  | .lit n1, .lit n2 => return n1 ≤ n2
+  | .prop, _ => return true
+  | _, .prop => return false
+  | .lit 0, _ => return true
+  | _, _ =>
+    try unifyLevel l1' l2'; return true
+    catch _ => return false
+
+/-- Strict structural level unification -/
 partial def unifyLevel (l1 l2 : Level) : TCM Unit := do
-  let l1' := l1.simplify
-  let l2' := l2.simplify
-  if l1' != l2' then
-    -- For now, just postpone level constraints
-    TCM.postpone (.levelEq l1' l2')
+  let l1' ← TCM.zonkLevel l1
+  let l2' ← TCM.zonkLevel l2
+  let l1n := l1'.simplify
+  let l2n := l2'.simplify
+  if l1n == l2n then return
+
+  match l1n, l2n with
+  | .var v, rhs =>
+    if rhs.freeVars.any (·.id == v.id) then
+      throwUnifyError (.vType l1n) (.vType l2n) s!"occurs check: level {v} occurs in {rhs}"
+    else
+      TCM.solveLevelVar v rhs
+  | lhs, .var v =>
+    if lhs.freeVars.any (·.id == v.id) then
+      throwUnifyError (.vType l1n) (.vType l2n) s!"occurs check: level {v} occurs in {lhs}"
+    else
+      TCM.solveLevelVar v lhs
+
+  | .lit n1, .lit n2 =>
+    throwUnifyError (.vType (.lit n1)) (.vType (.lit n2)) s!"level mismatch: {n1} ≠ {n2}"
+
+  | .succ a, .succ b => unifyLevel a b
+  | .succ a, .lit (n+1) => unifyLevel a (.lit n)
+  | .lit (n+1), .succ a => unifyLevel a (.lit n)
+  | .succ _, .lit 0 | .lit 0, .succ _ =>
+    throwUnifyError (.vType l1n) (.vType l2n) "level mismatch: successor cannot equal 0"
+
+  | .prop, _ | _, .prop =>
+    throwUnifyError (.vType l1n) (.vType l2n) "level mismatch: Prop is distinct from Type universes (use a coercion or subtype check if cumulativity is intended)"
+
+  | .max a b, .max c d =>
+    if (a == c && b == d) || (a == d && b == c) then
+      return
+    else
+      TCM.postpone (.levelEq l1n l2n)
+
+  | .max a b, rhs =>
+    if a == rhs then unifyLevel b rhs
+    else if b == rhs then unifyLevel a rhs
+    else TCM.postpone (.levelEq l1n l2n)
+  | lhs, .max a b =>
+    if a == lhs then unifyLevel b lhs
+    else if b == lhs then unifyLevel a lhs
+    else TCM.postpone (.levelEq l1n l2n)
 
 /-- Try to solve a metavariable application: ?m spine = rhs -/
 partial def solveMeta (m : MetaId) (spine : List Value) (rhs : Value) : TCM Unit := do
@@ -640,45 +737,52 @@ def trySolveConstraint (c : Constraint) : TCM SolveResult := do
       let v1' ← force v1
       let v2' ← force v2
       let blockedMetas ← collectUnsolvedMetas v1' v2'
-      if !blockedMetas.isEmpty then
-        try
-          unify v1' v2'
-          return .solved
-        catch e =>
-          if blockedMetas.size > 0 then
-            return .blocked blockedMetas
-          else
-            return .failed e
-      else
-        try
-          unify v1' v2'
-          return .solved
-        catch e =>
+      try
+        subtypeUnify v1' v2'
+        return .solved
+      catch e =>
+        if !blockedMetas.isEmpty then
+          return .blocked blockedMetas
+        else
           return .failed e
 
   | .levelEq l1 l2 =>
-    let l1' := l1.simplify
-    let l2' := l2.simplify
-    if l1' == l2' then
+    let l1' ← TCM.zonkLevel l1
+    let l2' ← TCM.zonkLevel l2
+    let l1n := l1'.simplify
+    let l2n := l2'.simplify
+    if l1n == l2n then return .solved
+    try
+      unifyLevel l1n l2n
       return .solved
-    else
-      -- Check for level variables
-      match l1', l2' with
-      | .var _, _ => return .deferred
-      | _, .var _ => return .deferred
-      | _, _ => return .deferred  -- Level solving is complex, defer for now
+    catch e =>
+      return .failed e
 
   | .levelLe l1 l2 =>
-    let l1' := l1.simplify
-    let l2' := l2.simplify
-    match l1', l2' with
+    let l1' ← TCM.zonkLevel l1
+    let l2' ← TCM.zonkLevel l2
+    let l1n := l1'.simplify
+    let l2n := l2'.simplify
+    match l1n, l2n with
     | .lit n1, .lit n2 =>
       if n1 ≤ n2 then return .solved
       else
         let span ← TCM.getSpan
-        return .failed (.internalError s!"level constraint failed: {l1'} ≤ {l2'}" span)
-    | .var _, _ => return .deferred
-    | _, .var _ => return .deferred
+        return .failed (.internalError s!"level constraint failed: {l1n} ≤ {l2n}" span)
+    | .prop, _ => return .solved -- Prop fits below every Type universe.
+    | .lit 0, _ => return .solved -- 0 ≤ anything.
+    | .var v, .lit n =>
+      let _ := n
+      TCM.solveLevelVar v (.lit 0)
+      return .solved
+    | .lit n, .var v =>
+      TCM.solveLevelVar v (.lit n)
+      return .solved
+    | .var v1, .var v2 =>
+      if v1.id == v2.id then return .solved
+      else
+        TCM.solveLevelVar v1 (.var v2)
+        return .solved
     | _, _ => return .deferred
 
   | .resolveInstance _ _ _ _ =>

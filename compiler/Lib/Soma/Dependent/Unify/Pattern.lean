@@ -68,20 +68,20 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
   | .vPi qty binder name dom cod => do
     let domE ← rename ren dom
     let argVal := Value.vNeutral dom (.nVar ⟨name, ⟨ren.dom⟩⟩)
-    let codVal := applyClosurePure cod argVal
+    let codVal := Closure.applyPure cod argVal
     let codE ← rename ren.lift codVal
     .ok (.pi qty binder name domE codE)
 
   | .vLam name body => do
     let argVal := Value.vNeutral .type0 (.nVar ⟨name, ⟨ren.dom⟩⟩)
-    let bodyVal := applyClosurePure body argVal
+    let bodyVal := Closure.applyPure body argVal
     let bodyE ← rename ren.lift bodyVal
     .ok (.lam .explicit name (.sort Level.zero) bodyE)
 
   | .vSigma qty name fst snd => do
     let fstE ← rename ren fst
     let argVal := Value.vNeutral fst (.nVar ⟨name, ⟨ren.dom⟩⟩)
-    let sndVal := applyClosurePure snd argVal
+    let sndVal := Closure.applyPure snd argVal
     let sndE ← rename ren.lift sndVal
     .ok (.sigma qty .explicit name fstE sndE)
 
@@ -166,7 +166,7 @@ partial def renameHead (ren : PartialRenaming) : Head → RenameResult
     let motiveE ← rename ren motive
     let armExprs ← arms.mapM fun arm => do
       let argVal := Value.vNeutral .type0 (.nVar ⟨arm.pattern, ⟨ren.dom⟩⟩)
-      let bodyVal := applyClosurePure arm.closure argVal
+      let bodyVal := Closure.applyPure arm.closure argVal
       let bodyE ← rename ren.lift bodyVal
       pure (Soma.Core.Arm.mk #[Soma.Core.Pattern.wildcard] bodyE)
     .ok (.«case» scrutExprs motiveE armExprs.toArray)

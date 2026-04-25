@@ -69,6 +69,7 @@ structure TypedFunction where
   fnType : Value
   closureInfo : Option ClosureInfo
   attrs : FunctionAttrs
+  errored : Bool := false
 
 namespace TypedFunction
 
@@ -78,6 +79,14 @@ def qualifiedName (f : TypedFunction) : QualifiedName :=
 def arity (f : TypedFunction) : Nat := f.params.size
 
 def isClosure (f : TypedFunction) : Bool := f.closureInfo.isSome
+
+/-- Build the structured "errored body" sentinel for a function whose elaboration failed -/
+def erroredBody (name : QualifiedName) : Expr :=
+  .panic s!"errored definition `{name.display}` reached runtime"
+
+/-- Build the body sentinel for `@[extern]` / `@[intrinsic]` declarations -/
+def externBody (name : QualifiedName) : Expr :=
+  .panic s!"extern/intrinsic body for `{name.display}` reached evaluator"
 
 end TypedFunction
 

@@ -460,7 +460,7 @@ partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
   | .primTy _ | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
-  | .mvar _ | .bvar _ | .proj _ _ _ => {}
+  | .mvar _ | .bvar _ | .proj _ _ _ | .tyvar _ _ => {}
 
 namespace LowerM
 
@@ -866,7 +866,7 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
   | .rowExtend _ _ _ | .recordTy _ | .variantTy _
   | .labelLit _ | .dataTy _ _ | .eqTy _ _ _ _
   | .refl _ _ | .transport _ _ _ _ _ _ _
-  | .mvar _ | .bvar _ =>
+  | .mvar _ | .bvar _ | .tyvar _ _ =>
     pure none
 
 /-- Lower a Core.Expr function application -/

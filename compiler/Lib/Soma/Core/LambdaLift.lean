@@ -256,7 +256,7 @@ where
     | .const _ ty => go ty acc
     | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-    | .lit _ => acc
+    | .lit _ | .tyvar _ _ => acc
     | .app f a => go a (go f acc)
     | .lam _ _ d b => go b (go d acc)
     | .let_ _ t v b => go b (go v (go t acc))
@@ -295,7 +295,8 @@ mutual
 partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   match e with
   | .fvar _ _ | .bvar _ | .mvar _ | .const _ _ | .sort _ | .primTy _ | .rowSort
-  | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ =>
+  | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _
+  | .tyvar _ _ =>
     pure e
 
   | .lam info name domain body => do

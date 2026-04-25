@@ -1041,8 +1041,11 @@ where
             return (info.type, .const qn tyExpr)
         | none =>
           match name.name with
-          | "Type" | "Type0" => return (.vType .one, .sort .zero)
-          | "Type1" => return (.vType .one, .sort .one)
+          | "Type" =>
+            let u ← TCM.freshLevel "u"
+            return (.vType (.succ u), .sort u)
+          | "Type0" => return (.vType .one, .sort .zero)
+          | "Type1" => return (.vType (.lit 2), .sort .one)
           | "Prop" => return (.vType .zero, .sort .prop)
           | "Row" => return (.vType .zero, .rowSort)
           | "Label" => return (.vType .zero, .labelSort)
@@ -1605,10 +1608,7 @@ partial def synthesizeMotive (scrutVals : Array Value) (scrutTys : List Value)
         if neu.isBareHead then
           match neu.head with
           | .hVar bv =>
-            -- Sentinel fvar produced by `quoteHeadExpr` for this level
-            let sentinel : Soma.Unique :=
-              { id := bv.level.lvl, module := "__tyvar", original := bv.name }
-            body.abstractFVar sentinel
+            body.abstractTyvar bv.level
           | _ =>
             -- Not a bound variable: motive is constant in this arg
             body.shiftUp
@@ -1738,7 +1738,7 @@ where
       else
         let (inferred, expr) ← inferSyntax e
         let (inferred', expr') ← insertImplicits inferred expr e.span
-        unify inferred' expected'
+        subtypeUnify inferred' expected'
         solveImplicitsGreedy
         return expr'
 
@@ -1778,7 +1778,7 @@ where
       let (fnTy', fnExpr') ← insertImplicitsWithExpected fnTy fnExpr (some expected') 1 span
       let (resultTy, appExpr) ← inferSyntaxApp fnTy' fnExpr' arg span
       solveImplicitsGreedy
-      unify resultTy expected'
+      subtypeUnify resultTy expected'
       return appExpr
 
     -- List literal against List type
@@ -1792,15 +1792,15 @@ where
       else
         let (inferred, expr) ← inferSyntax e
         let (inferred', expr') ← insertImplicits inferred expr e.span
-        unify inferred' expected'
+        subtypeUnify inferred' expected'
         solveImplicitsGreedy
         return expr'
 
-    -- Default: infer and unify
+    -- Default: infer against expected
     | _, _ => do
       let (inferred, expr) ← inferSyntax e
       let (inferred', expr') ← insertImplicits inferred expr e.span
-      unify inferred' expected'
+      subtypeUnify inferred' expected'
       solveImplicitsGreedy
       return expr'
 

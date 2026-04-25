@@ -111,7 +111,9 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
   let pairCtorTag := pairCtorInfo?.map (·.ctorTag) |>.getD 0
   let worldUnique? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id)
   let pairUnique? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id)
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name
+  let liveTypedFunctions := cm.typedFunctions.fold (init := {}) fun acc name fn =>
+    if fn.errored then acc else acc.insert name fn
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll liveTypedFunctions cm.name
     cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv)
     (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv) cm.metas ioBindName? pureIOName?
     worldUnique? pairCtorName? pairCtorTag pairUnique?

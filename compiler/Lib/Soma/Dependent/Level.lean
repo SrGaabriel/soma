@@ -361,7 +361,9 @@ def assertType (v : Value) : TCM Level := do
 
 /-- Create the type of a Pi type given domain and codomain levels -/
 def piTypeLevel (domLevel codLevel : Level) : Level :=
-  Level.mkMax domLevel codLevel
+  match codLevel with
+  | .prop => .prop
+  | _ => Level.mkMax domLevel codLevel
 
 /-- Create the type of a Sigma type given first and second component levels -/
 def sigmaTypeLevel (fstLevel sndLevel : Level) : Level :=

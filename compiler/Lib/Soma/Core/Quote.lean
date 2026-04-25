@@ -2,6 +2,7 @@ import Soma.Core.Value
 import Soma.Core.Expr
 import Soma.Core.Quantity
 import Soma.Core.Level
+import Soma.Core.Eval
 
 namespace Soma.Core
 
@@ -208,253 +209,6 @@ end
 
 mutual
 
-/-- Pure counterpart of `Eval.matchPattern` -/
-partial def matchPatternPure (pat : Pattern) (val : Value) : PatMatchResult :=
-  match pat with
-  | .wildcard => .matched #[]
-  | .var none => .matched #[]
-  | .var (some _) => .matched #[val]
-  | .ctor _ tag fields =>
-    match val with
-    | .vConstructor _ vTag vArgs _ =>
-      if tag != vTag then .mismatch
-      else
-        let vArgsArr := vArgs.toArray
-        if fields.size != vArgsArr.size then .mismatch
-        else matchPatternArraysPure fields vArgsArr
-    | .vNeutral _ _ => .stuck
-    | _ => .mismatch
-  | .lit l =>
-    match val with
-    | .vIntLit n =>
-      match l with
-      | .int m => if n == m then .matched #[] else .mismatch
-      | _ => .mismatch
-    | .vStringLit s =>
-      match l with
-      | .string t => if s == t then .matched #[] else .mismatch
-      | _ => .mismatch
-    | .vFloatLit f =>
-      match l with
-      | .float g => if f == g then .matched #[] else .mismatch
-      | _ => .mismatch
-    | .vConstructor _ tag _ _ =>
-      match l with
-      | .bool true => if tag == 0 then .matched #[] else .mismatch
-      | .bool false => if tag == 1 then .matched #[] else .mismatch
-      | _ => .mismatch
-    | .vNeutral _ _ => .stuck
-    | _ => .mismatch
-  | .inject label argPat =>
-    match val with
-    | .vConstructor name _ vArgs _ =>
-      if name.display != label then .mismatch
-      else match argPat with
-        | none => if vArgs.isEmpty then .matched #[] else .mismatch
-        | some inner =>
-          match vArgs with
-          | arg :: _ => matchPatternPure inner arg
-          | [] => .mismatch
-    | .vNeutral _ _ => .stuck
-    | _ => .mismatch
-
-partial def matchPatternArraysPure (pats : Array Pattern) (vals : Array Value)
-    : PatMatchResult :=
-  if pats.size != vals.size then .mismatch
-  else matchPatternArraysPureGo pats vals 0 #[] false
-
-partial def matchPatternArraysPureGo
-    (pats : Array Pattern) (vals : Array Value)
-    (i : Nat) (acc : Array Value) (stuck : Bool) : PatMatchResult :=
-  if i >= pats.size then
-    if stuck then .stuck else .matched acc
-  else
-    let pat := pats[i]!
-    let val := vals[i]!
-    match matchPatternPure pat val with
-    | .matched bs => matchPatternArraysPureGo pats vals (i + 1) (acc ++ bs) stuck
-    | .mismatch => .mismatch
-    | .stuck => matchPatternArraysPureGo pats vals (i + 1) acc true
-
-end
-
-partial def selectArmPure (scrutVals : Array Value) (arms : Array Arm)
-    : Option (Array Value × Expr) :=
-  let rec go (i : Nat) : Option (Array Value × Expr) :=
-    if i >= arms.size then none
-    else
-      let arm := arms[i]!
-      match matchPatternArraysPure arm.patterns scrutVals with
-      | .matched bs => some (bs, arm.body)
-      | .mismatch => go (i + 1)
-      | .stuck => none
-  go 0
-
-mutual
-
-/-- Pure closure application for quoting (no TCM, no metas) -/
-partial def applyClosurePure (clos : Closure) (arg : Value) : Value :=
-  match clos with
-  | .const _ v => v
-  | .term name env body =>
-    let env' := env.extend name arg
-    evalExprPure env' body
-
-/-- Pure value application for quoting -/
-partial def vAppPure (fn : Value) (arg : Value) : Value :=
-  match fn with
-  | .vLam _ body => applyClosurePure body arg
-  | .vNeutral ty neu => .vNeutral ty (.nApp neu arg)
-  | .vDataType id params => .vDataType id (params ++ [arg])
-  | _ => fn
-
-/-- Apply a spine of arguments to a value left to right -/
-partial def vAppSpinePure (fn : Value) (args : Array Value) : Value :=
-  args.foldl (fun f a => vAppPure f a) fn
-
-/-- Pure Expr evaluation for quoting (no TCM, no metas) -/
-partial def evalExprPure (env : Env) (e : Expr) : Value :=
-  match e with
-  | .bvar idx =>
-    let lvl := env.size - idx - 1
-    match env.lookup ⟨lvl⟩ with
-    | some v => v
-    | none => .vNeutral .type0 (.nVar ⟨s!"bvar{idx}", ⟨env.size⟩⟩)
-  | .fvar id _ =>
-    match env.lookupByName id.original with
-    | some v => v
-    | none => .vNeutral .type0 (.nVar ⟨id.original, ⟨env.size⟩⟩)
-  | .mvar id => .vNeutral .type0 (.nMeta id)
-  | .const name tyExpr =>
-    let tyVal := evalExprPure env tyExpr
-    .vNeutral tyVal (.nConst name tyVal)
-  | .lit l =>
-    match l with
-    | .int n => .vIntLit n
-    | .float f => .vFloatLit f
-    | .string s => .vStringLit s
-    | .bool true => .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
-    | .bool false => .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 [] (.vPrimTy .bool)
-  | .sort level => .vType level
-  | .primTy p => .vPrimTy p
-  | .rowSort => .vRowSort
-  | .labelSort => .vLabelSort
-  | .rowEmpty => .vRowEmpty
-  | .labelLit name => .vLabelLit name
-  | .recordTy row => .vRecord (evalExprPure env row)
-  | .variantTy row => .vVariant (evalExprPure env row)
-  | .rowExtend label fieldTy tail =>
-    .vRowExtend (evalExprPure env label) (evalExprPure env fieldTy) (evalExprPure env tail)
-  | .pi qty _info name domain codomain =>
-    let domVal := evalExprPure env domain
-    .vPi qty _info name domVal (Closure.mkWithBody name env codomain)
-  | .sigma qty _info name fst snd =>
-    let fstVal := evalExprPure env fst
-    .vSigma qty name fstVal (Closure.mkWithBody name env snd)
-  | .pair fst snd => .vPair (evalExprPure env fst) (evalExprPure env snd)
-  | .projFst e =>
-    match evalExprPure env e with
-    | .vPair f _ => f
-    | _ => .vNeutral .type0 (.nVar ⟨"fst", ⟨env.size⟩⟩)
-  | .projSnd e =>
-    match evalExprPure env e with
-    | .vPair _ s => s
-    | _ => .vNeutral .type0 (.nVar ⟨"snd", ⟨env.size⟩⟩)
-  | .app fn arg =>
-    let fnVal := evalExprPure env fn
-    let argVal := evalExprPure env arg
-    vAppPure fnVal argVal
-  | .lam _info name _domain body =>
-    .vLam name (Closure.mkWithBody name env body)
-  | .let_ name _ty val body =>
-    let valV := evalExprPure env val
-    evalExprPure (env.extend name valV) body
-  | .if_ cond then_ else_ =>
-    match evalExprPure env cond with
-    | .vConstructor _ 0 _ _ => evalExprPure env then_
-    | .vConstructor _ 1 _ _ => evalExprPure env else_
-    | _ => .vNeutral .type0 (.nVar ⟨"if", ⟨env.size⟩⟩)
-  | .record fields =>
-    .vRecordVal (fields.toList.map fun (n, e) => (n, evalExprPure env e))
-  | .recordUpdate base updates =>
-    let baseVal := evalExprPure env base
-    match baseVal with
-    | .vRecordVal fields =>
-      let updates' := updates.toList.map fun (n, e) => (n, evalExprPure env e)
-      let merged := fields.map fun (n, v) =>
-        match updates'.find? (·.1 == n) with
-        | some (_, newV) => (n, newV)
-        | none => (n, v)
-      .vRecordVal merged
-    | _ => baseVal
-  | .fieldAccess e field _idx =>
-    match evalExprPure env e with
-    | .vRecordVal fields =>
-      match fields.find? (·.1 == field) with
-      | some (_, v) => v
-      | none => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ⟨env.size⟩⟩) field)
-    | _ => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ⟨env.size⟩⟩) field)
-  | .construct name tag args rty =>
-    .vConstructor name tag (args.toList.map (evalExprPure env)) (evalExprPure env rty)
-  | .«case» scruts motiveExpr arms =>
-    let scrutVals := scruts.map (evalExprPure env)
-    match selectArmPure scrutVals arms with
-    | some (bindings, body) =>
-      let env' := bindings.foldl (fun e v => e.extend "_" v) env
-      evalExprPure env' body
-    | none =>
-      let motiveVal := evalExprPure env motiveExpr
-      let resultTy := vAppSpinePure motiveVal scrutVals
-      let hasNeutral := scrutVals.any fun
-        | .vNeutral _ _ => true
-        | _ => false
-      if !hasNeutral then
-        .vNeutral resultTy (.mk .hErrored #[])
-      else
-        let armClosures := arms.toList.map fun arm =>
-          let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
-          let patName := match arm.patterns[0]? with
-            | some (Pattern.ctor qn _ _) => qn.id.original
-            | some (Pattern.var (some uid)) => uid.original
-            | _ => s!"pat{binds}"
-          if binds == 0 then
-            ArmClosure.mk patName (.const patName (evalExprPure env arm.body)) arm.patterns
-          else
-            ArmClosure.mk patName (Closure.mkWithBody patName env arm.body) arm.patterns
-        .vNeutral resultTy (.nCase scrutVals motiveVal armClosures)
-  | .inject _label _args _ =>
-    .vNeutral .type0 (.nVar ⟨s!"inject:{_label}", ⟨env.size⟩⟩)
-  | .dataTy id params => .vDataType id (params.toList.map (evalExprPure env))
-  | .eqTy tyLevel ty lhs rhs =>
-    .vEq tyLevel (evalExprPure env ty) (evalExprPure env lhs) (evalExprPure env rhs)
-  | .refl ty x => .vRefl (evalExprPure env ty) (evalExprPure env x)
-  | .transport tyLevel ty motive lhs rhs eq body =>
-    let eqVal := evalExprPure env eq
-    match eqVal with
-    | .vRefl _ _ => evalExprPure env body
-    | _ => .vTransport tyLevel (evalExprPure env ty) (evalExprPure env motive)
-                       (evalExprPure env lhs) (evalExprPure env rhs)
-                       eqVal (evalExprPure env body)
-  | .panic _msg => .vNeutral .type0 (.mk .hErrored #[])
-  | .closure name _captures =>
-    .vNeutral .type0 (.nConst name .type0)
-  | .array _elements _ => .vNeutral .type0 (.nVar ⟨"array", ⟨env.size⟩⟩)
-  | .tuple elements =>
-    let vals := elements.toList.map (evalExprPure env)
-    match vals with
-    | [a, b] => .vPair a b
-    | _ =>
-      let indexed := vals.foldl (fun (acc : List (String × Value)) v =>
-        acc ++ [(s!"_{acc.length}", v)]) []
-      .vRecordVal indexed
-  | .proj _typeName _field _idx =>
-    .vNeutral .type0 (.nVar ⟨s!"proj:{_field}", ⟨env.size⟩⟩)
-  | .ann expr _ty => evalExprPure env expr
-
-end
-
-mutual
-
 /-- Quote a value to an Expr at a given De Bruijn depth.
     The depth tracks how many binders we've entered during quoting,
     which converts De Bruijn levels to indices. -/
@@ -465,20 +219,20 @@ partial def quoteExpr (depth : DeBruijnLvl) (v : Value) : Expr :=
   | .vPi qty binder name domain codomain =>
     let domainExpr := quoteExpr depth domain
     let argVal := Value.vNeutral domain (Neutral.nVar ⟨name, depth⟩)
-    let codomainVal := applyClosurePure codomain argVal
+    let codomainVal := codomain.applyPure argVal
     let codomainExpr := quoteExpr depth.succ codomainVal
     .pi qty binder name domainExpr codomainExpr
 
   | .vLam name body =>
     let argVal := Value.vNeutral Value.type0 (Neutral.nVar ⟨name, depth⟩)
-    let bodyVal := applyClosurePure body argVal
+    let bodyVal := body.applyPure argVal
     let bodyExpr := quoteExpr depth.succ bodyVal
     .lam .explicit name (.sort Level.zero) bodyExpr
 
   | .vSigma qty name fst snd =>
     let fstExpr := quoteExpr depth fst
     let argVal := Value.vNeutral fst (Neutral.nVar ⟨name, depth⟩)
-    let sndVal := applyClosurePure snd argVal
+    let sndVal := snd.applyPure argVal
     let sndExpr := quoteExpr depth.succ sndVal
     .sigma qty .explicit name fstExpr sndExpr
 
@@ -516,7 +270,7 @@ partial def quoteHeadExpr (depth : DeBruijnLvl) : Head → Expr
     if v.level.lvl < depth.lvl then
       .bvar (depth.lvl - v.level.lvl - 1)
     else
-      .fvar ⟨v.level.lvl, "__tyvar", v.name⟩ (.sort .zero)
+      .tyvar v.level v.name
   | .hMeta id => .mvar id
   | .hConst name constTy => .const name (quoteExpr depth constTy)
   | .hCase scrutinees motive arms =>
@@ -526,7 +280,7 @@ partial def quoteHeadExpr (depth : DeBruijnLvl) : Head → Expr
         let binds := ac.patterns.foldl (fun a p => a + p.bindingCount) 0
         let bodyDepth : DeBruijnLvl := ⟨depth.lvl + binds⟩
         if binds == 0 then
-          let bodyVal := applyClosurePure ac.closure
+          let bodyVal := ac.closure.applyPure
             (Value.vNeutral Value.type0 (Neutral.nVar ⟨ac.pattern, depth⟩))
           Arm.mk ac.patterns (quoteExpr depth bodyVal)
         else

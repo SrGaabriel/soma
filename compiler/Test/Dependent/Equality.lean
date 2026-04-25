@@ -243,8 +243,8 @@ def testInferStringLit : IO TestResult := do
 def testInferType : IO TestResult := do
   let expr : Soma.Syntax.Expr := .var (synName "Type")
   match typeInfer expr with
-  | .ok (.vType (.lit 1), _, _) => return .passed
-  | .ok (resTy, _, _) => return .failed s!"Expected Type₁, got {resTy}"
+  | .ok (.vType (.succ _), _, _) => return .passed
+  | .ok (resTy, _, _) => return .failed s!"Expected Type with successor level, got {resTy}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
 def run : IO TestRunner := do

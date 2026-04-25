@@ -106,6 +106,7 @@ inductive Expr where
   | fvar (id : Unique) (ty : Expr)
   | mvar (id : MetaId)
   | const (name : QualifiedName) (ty : Expr)
+  | tyvar (lvl : DeBruijnLvl) (name : String)
 
   -- Core lambda calculus
   | app (fn : Expr) (arg : Expr)
@@ -199,7 +200,41 @@ partial def Expr.replaceMvar (e : Expr) (metaId : MetaId) (replacement : Expr) :
   | .projFst x => .projFst (x.replaceMvar metaId replacement)
   | .projSnd x => .projSnd (x.replaceMvar metaId replacement)
   | .ann x t => .ann (x.replaceMvar metaId replacement) (t.replaceMvar metaId replacement)
-  | _ => e
+  | .construct n t args rty =>
+    .construct n t (args.map (·.replaceMvar metaId replacement)) (rty.replaceMvar metaId replacement)
+  | .«case» scruts motive arms =>
+    .«case» (scruts.map (·.replaceMvar metaId replacement))
+      (motive.replaceMvar metaId replacement)
+      (arms.map fun arm => Arm.mk arm.patterns (arm.body.replaceMvar metaId replacement))
+  | .record fields =>
+    .record (fields.map fun (n, x) => (n, x.replaceMvar metaId replacement))
+  | .recordUpdate base updates =>
+    .recordUpdate (base.replaceMvar metaId replacement)
+      (updates.map fun (n, x) => (n, x.replaceMvar metaId replacement))
+  | .fieldAccess x f i => .fieldAccess (x.replaceMvar metaId replacement) f i
+  | .inject l args rty =>
+    .inject l (args.map (·.replaceMvar metaId replacement)) (rty.replaceMvar metaId replacement)
+  | .if_ c t el =>
+    .if_ (c.replaceMvar metaId replacement) (t.replaceMvar metaId replacement) (el.replaceMvar metaId replacement)
+  | .closure n caps => .closure n (caps.map (·.replaceMvar metaId replacement))
+  | .array es ety => .array (es.map (·.replaceMvar metaId replacement)) (ety.replaceMvar metaId replacement)
+  | .tuple es => .tuple (es.map (·.replaceMvar metaId replacement))
+  | .rowExtend l f t =>
+    .rowExtend (l.replaceMvar metaId replacement) (f.replaceMvar metaId replacement) (t.replaceMvar metaId replacement)
+  | .recordTy r => .recordTy (r.replaceMvar metaId replacement)
+  | .variantTy r => .variantTy (r.replaceMvar metaId replacement)
+  | .dataTy id ps => .dataTy id (ps.map (·.replaceMvar metaId replacement))
+  | .eqTy lv t l r =>
+    .eqTy lv (t.replaceMvar metaId replacement) (l.replaceMvar metaId replacement) (r.replaceMvar metaId replacement)
+  | .refl t x => .refl (t.replaceMvar metaId replacement) (x.replaceMvar metaId replacement)
+  | .transport lv t m l r ep b =>
+    .transport lv (t.replaceMvar metaId replacement) (m.replaceMvar metaId replacement)
+      (l.replaceMvar metaId replacement) (r.replaceMvar metaId replacement)
+      (ep.replaceMvar metaId replacement) (b.replaceMvar metaId replacement)
+  | .fvar id ty => .fvar id (ty.replaceMvar metaId replacement)
+  | .const n ty => .const n (ty.replaceMvar metaId replacement)
+  | .bvar _ | .sort _ | .lit _ | .primTy _ | .rowSort | .labelSort
+  | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .tyvar _ _ => e
 
 partial def Expr.containsPairExpr : Expr → Bool
   | .pair _ _ => true
@@ -214,6 +249,7 @@ partial def Expr.containsPairExpr : Expr → Bool
 /-- Short constructor name for diagnostic messages -/
 def Expr.ctorName : Expr → String
   | .bvar _ => "bvar" | .fvar _ _ => "fvar" | .mvar _ => "mvar" | .const _ _ => "const"
+  | .tyvar _ _ => "tyvar"
   | .app _ _ => "app" | .lam _ _ _ _ => "lam" | .let_ _ _ _ _ => "let" | .lit _ => "lit"
   | .sort _ => "sort" | .pi _ _ _ _ _ => "pi" | .sigma _ _ _ _ _ => "sigma"
   | .pair _ _ => "pair" | .projFst _ => "projFst" | .projSnd _ => "projSnd"
@@ -258,7 +294,7 @@ partial def shift (e : Expr) (amount : Int) (cutoff : Nat) : Expr :=
   | .const name ty => .const name (ty.shift amount cutoff)
   | .mvar _ | .sort _ | .primTy _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-  | .lit _ => e
+  | .lit _ | .tyvar _ _ => e
   | .app f a => .app (f.shift amount cutoff) (a.shift amount cutoff)
   | .lam info n d b =>
     .lam info n (d.shift amount cutoff) (b.shift amount (cutoff + 1))
@@ -306,6 +342,51 @@ partial def shift (e : Expr) (amount : Int) (cutoff : Nat) : Expr :=
 def shiftUp (e : Expr) (n : Nat := 1) : Expr :=
   e.shift (Int.ofNat n) 0
 
+/-- Close over a tyvar (out-of-scope quoted variable) -/
+partial def abstractTyvar (e : Expr) (target : DeBruijnLvl) : Expr :=
+  go e 0
+where
+  go (e : Expr) (depth : Nat) : Expr :=
+    match e with
+    | .tyvar lvl _ => if lvl == target then .bvar depth else e
+    | .bvar i => if i >= depth then .bvar (i + 1) else e
+    | .fvar id ty => .fvar id (go ty depth)
+    | .const name ty => .const name (go ty depth)
+    | .mvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
+    | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ => e
+    | .app f a => .app (go f depth) (go a depth)
+    | .lam info n d b => .lam info n (go d depth) (go b (depth + 1))
+    | .let_ n t v b => .let_ n (go t depth) (go v depth) (go b (depth + 1))
+    | .pi q info n d c => .pi q info n (go d depth) (go c (depth + 1))
+    | .sigma q info n f s => .sigma q info n (go f depth) (go s (depth + 1))
+    | .pair f s => .pair (go f depth) (go s depth)
+    | .projFst x => .projFst (go x depth)
+    | .projSnd x => .projSnd (go x depth)
+    | .construct n t args rty => .construct n t (args.map (go · depth)) (go rty depth)
+    | .«case» scruts motive arms =>
+      .«case» (scruts.map (go · depth))
+        (go motive depth)
+        (mapArmBodies arms (fun b d => go b d) depth)
+    | .record fields => .record (fields.map fun (n, e) => (n, go e depth))
+    | .recordUpdate b us =>
+      .recordUpdate (go b depth) (us.map fun (n, e) => (n, go e depth))
+    | .fieldAccess x f i => .fieldAccess (go x depth) f i
+    | .inject l args rty => .inject l (args.map (go · depth)) (go rty depth)
+    | .if_ c t el => .if_ (go c depth) (go t depth) (go el depth)
+    | .closure n caps => .closure n (caps.map (go · depth))
+    | .array es ety => .array (es.map (go · depth)) (go ety depth)
+    | .tuple es => .tuple (es.map (go · depth))
+    | .rowExtend l f t => .rowExtend (go l depth) (go f depth) (go t depth)
+    | .recordTy r => .recordTy (go r depth)
+    | .variantTy r => .variantTy (go r depth)
+    | .dataTy id ps => .dataTy id (ps.map (go · depth))
+    | .eqTy lv t l r => .eqTy lv (go t depth) (go l depth) (go r depth)
+    | .refl t x => .refl (go t depth) (go x depth)
+    | .transport lv t m l r ep b =>
+      .transport lv (go t depth) (go m depth) (go l depth)
+                 (go r depth) (go ep depth) (go b depth)
+    | .ann x t => .ann (go x depth) (go t depth)
+
 /-- Close over a free variable: FVar(fvar) → BVar(depth) -/
 partial def abstractFVar (e : Expr) (fvar : Unique) : Expr :=
   go e 0
@@ -316,7 +397,7 @@ where
     | .bvar i => if i >= depth then .bvar (i + 1) else e
     | .const name ty => .const name (go ty depth)
     | .mvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
-    | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ => e
+    | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ | .tyvar _ _ => e
     | .app f a => .app (go f depth) (go a depth)
     | .lam info n d b => .lam info n (go d depth) (go b (depth + 1))
     | .let_ n t v b => .let_ n (go t depth) (go v depth) (go b (depth + 1))
@@ -364,7 +445,7 @@ where
     | .const name ty => .const name (go ty depth)
     | .mvar _ | .sort _ | .primTy _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-    | .lit _ => e
+    | .lit _ | .tyvar _ _ => e
     | .app f a => .app (go f depth) (go a depth)
     | .lam info n d b => .lam info n (go d depth) (go b (depth + 1))
     | .let_ n t v b => .let_ n (go t depth) (go v depth) (go b (depth + 1))
@@ -405,7 +486,7 @@ partial def replaceFVar (e : Expr) (fvar : Unique) (replacement : Expr) : Expr :
   | .const name ty => .const name (ty.replaceFVar fvar replacement)
   | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-  | .lit _ => e
+  | .lit _ | .tyvar _ _ => e
   | .app f a =>
     .app (f.replaceFVar fvar replacement) (a.replaceFVar fvar replacement)
   | .lam info n d b =>
@@ -468,7 +549,7 @@ where
     | .const _ ty => go ty acc
     | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-    | .lit _ => acc
+    | .lit _ | .tyvar _ _ => acc
     | .app f a => go a (go f acc)
     | .lam _ _ d b => go b (go d acc)
     | .let_ _ t v b => go b (go v (go t acc))
@@ -512,7 +593,7 @@ where
     | .fvar _ ty => go ty acc
     | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-    | .lit _ => acc
+    | .lit _ | .tyvar _ _ => acc
     | .app f a => go a (go f acc)
     | .lam _ _ d b => go b (go d acc)
     | .let_ _ t v b => go b (go v (go t acc))
@@ -553,7 +634,7 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
   | .const _ ty => ty.hasFVar fvar
   | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-  | .lit _ => false
+  | .lit _ | .tyvar _ _ => false
   | .app f a => f.hasFVar fvar || a.hasFVar fvar
   | .lam _ _ d b => d.hasFVar fvar || b.hasFVar fvar
   | .let_ _ t v b => t.hasFVar fvar || v.hasFVar fvar || b.hasFVar fvar
@@ -591,7 +672,7 @@ def isTypeLevelExpr : Expr → Bool
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
-  | .mvar _ => true
+  | .mvar _ | .tyvar _ _ => true
   | _ => false
 
 /-- Collect an application spine: `f a b c` → `(f, #[a, b, c])` -/
@@ -690,7 +771,7 @@ partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   | .const _ ty => ty.countFVar fvar
   | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-  | .lit _ => 0
+  | .lit _ | .tyvar _ _ => 0
   | .app f a => f.countFVar fvar + a.countFVar fvar
   | .lam _ _ d b => d.countFVar fvar + b.countFVar fvar
   | .let_ _ t v b => t.countFVar fvar + v.countFVar fvar + b.countFVar fvar

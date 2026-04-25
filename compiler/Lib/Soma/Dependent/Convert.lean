@@ -664,9 +664,21 @@ partial def convertRecordFields (fs1 fs2 : List (String × Value)) : TCM Bool :=
 
 end
 
-/-- Check if v1 is a subtype of v2 (for now, just conversion) -/
-def subtype (v1 v2 : Value) : TCM Bool :=
-  convert v1 v2
+/-- Cumulative subtyping query: returns whether `v1 <: v2` -/
+partial def subtype (v1 v2 : Value) : TCM Bool := do
+  let v1' ← force v1
+  let v2' ← force v2
+  match v1', v2' with
+  | .vType l1, .vType l2 =>
+    let l1' := l1.simplify
+    let l2' := l2.simplify
+    match l1', l2' with
+    | .lit n1, .lit n2 => return n1 ≤ n2
+    | .prop, _ => return true
+    | _, .prop => return false
+    | .lit 0, _ => return true
+    | _, _ => convert v1' v2'
+  | _, _ => convert v1' v2'
 
 /-- Check if two values have structurally incompatible heads -/
 partial def structurallyIncompatible (v1 v2 : Value) : TCM Bool := do

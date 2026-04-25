@@ -271,7 +271,7 @@ def elaborateFunctionType (sigSyntax : Syntax.Expr) : TCM Value := do
     bindingIds := bindingIds.push (uid, varName)
 
   let go : TCM Soma.Core.Expr := do
-    let bodyExpr ← Soma.Dependent.checkSyntax sigSyntax tyTy
+    let bodyExpr ← Soma.Dependent.inferTypeExpr sigSyntax
     let bodyVal ← TCM.evalExpr bodyExpr
     pure (Soma.Core.quoteExpr ⟨N⟩ bodyVal)
   let wrapped ← bindingIds.foldrM (init := go)
@@ -322,10 +322,9 @@ def synthesizeExFalsoBody (k : Nat) (span : Span) : Soma.Syntax.Expr :=
   let emptyMatch := Soma.Syntax.Expr.case #[scrutinee] #[] span
   Soma.Syntax.Expr.lambda lambdaParams emptyMatch span
 
-/-- Type check a single function using dependent types.
-    Returns (fnType, typedBody, generatedParams) where generatedParams contains local ids. -/
+/-- Type check a single function returning the elaborated type, body, param ids, and whether errored -/
 def checkFunction (fn : Soma.Core.UntypedFunction)
-  : TCM (Value × Soma.Core.Expr × Array (Soma.Unique × String)) := do
+  : TCM (Value × Soma.Core.Expr × Array (Soma.Unique × String) × Bool) := do
   let span := fn.span
   let storedType : Option Value ← match ← TCM.lookupGlobalByQN fn.name with
     | some info => pure (some info.type)
@@ -339,13 +338,11 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       Soma.Dependent.solvePendingInstancesOrFail
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
-      let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
       let declaredType'' ← expandAbbrevValue declaredType'
-      return (declaredType'', placeholderBody, #[])
+      return (declaredType'', Soma.Core.TypedFunction.externBody fn.name, #[], false)
     | none =>
       let ty ← TCM.freshMetaVal (.vType .zero)
-      let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
-      return (ty, placeholderBody, #[])
+      return (ty, Soma.Core.TypedFunction.externBody fn.name, #[], false)
   match fn.declaredTypeSyntax with
   | some typeSyntax =>
     let declaredType ← match storedType with
@@ -365,11 +362,9 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       let resolvedResult ← TCM.recoverWith (zonkValue resultType >>= expandAbbrevValue) resultType
       TCM.addError
         (.patternArityMismatch fn.name.display explicitInSig fn.params.size resolvedResult span)
-      let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
       let declaredType' ← zonkValue declaredType
       let declaredType'' ← expandAbbrevValue declaredType'
-      return (declaredType'', placeholderBody, #[])
-    -- Bodiless ex-falso: synthesise a body now that we can see the signature's full Pi chain
+      return (declaredType'', Soma.Core.TypedFunction.erroredBody fn.name, #[], true)
     let effectiveBody : Option Soma.Syntax.Expr ←
       if fn.isBodilessExFalso then
         match ← findFirstUninhabitedExplicit resultType with
@@ -383,8 +378,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       reportUnsolvedMetas declaredType' span
       let resolved' ← expandAbbrevValue declaredType'
       TCM.addError (.bodilessNotDerivable fn.name.display resolved' span)
-      let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
-      return (resolved', placeholderBody, #[])
+      return (resolved', Soma.Core.TypedFunction.erroredBody fn.name, #[], true)
     | some body =>
       let bodyIsProof ← Soma.Dependent.valueInPropUniverse resultType
       let runBodyCheck : TCM Soma.Core.Expr :=
@@ -397,7 +391,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       let typedBody' ← zonkExpr typedBody
       Soma.Dependent.zonkLocalTypesInPlace
       let declaredType'' ← expandAbbrevValue declaredType'
-      return (declaredType'', typedBody', generatedParams)
+      return (declaredType'', typedBody', generatedParams, false)
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
@@ -413,7 +407,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     Soma.Dependent.zonkLocalTypesInPlace
     -- Expand parameterized type abbreviations so downstream passes see real types
     let inferredType'' ← expandAbbrevValue inferredType'
-    return (inferredType'', typedBody', generatedParams)
+    return (inferredType'', typedBody', generatedParams, false)
 
 /-- Elaborate a constructor type -/
 def elaborateCtorType (typeName : Soma.Core.QualifiedName)
