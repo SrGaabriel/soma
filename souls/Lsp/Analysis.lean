@@ -78,9 +78,6 @@ def analyzeSourceFresh (filePath : String) (content : String)
   let cstDefs := collectDefinitions parsedTree.red
   let declNodeIds := buildDeclNodeIds cstDefs
 
-  -- Phase 4b: Build local scope map
-  let scopeMap := buildScopeMap parsedTree.red
-
   -- Phase 5: Lower CST to AST
   let (ast, astLowerDiags) := lower parsedTree moduleName
 
@@ -110,6 +107,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
   let incrState := checkedModule?.map (·.incrementalState)
   let localTypes := (checkedModule?.map (·.localTypes)).getD {}
 
+  let scopeMap := buildScopeMap parsedTree.red localTypes
   let allDiags := frontendDiags ++ astLowerDiags ++ checkDiags
 
   return {
@@ -169,9 +167,6 @@ def analyzeSourceIncremental (filePath : String) (content : String)
 
   let declNodeIds := buildDeclNodeIds cstDefs
 
-  -- Build local scope map
-  let scopeMap := buildScopeMap parsedTree.red
-
   -- Phase 6: Incremental AST lowering
   let (declAsts, astLowerDiags) :=
     if changedDeclIds.isEmpty then
@@ -209,6 +204,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   let incrState := _checkedModule.map (·.incrementalState) |>.orElse fun _ => oldModule.incrementalState
   let localTypes := (_checkedModule.map (·.localTypes)).getD oldModule.localTypes
 
+  let scopeMap := buildScopeMap parsedTree.red localTypes
   let allDiags := frontendDiags ++ astLowerDiags ++ checkDiags
 
   return {

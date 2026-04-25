@@ -277,6 +277,7 @@ def namesInScopeAt (offset : Nat) (tree : RedTree) : Array String :=
 /-- Get a display string for a syntax kind -/
 def kindDisplayName : SyntaxKind → String
   | .declDef => "function"
+  | .declTheorem => "theorem"
   | .declInductive => "inductive type"
   | .declStruct => "struct"
   | .declAbbrev => "type alias"

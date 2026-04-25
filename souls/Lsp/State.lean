@@ -21,6 +21,7 @@ open Soma.Project.Check (CheckedModule)
 /-- Symbol kinds for LSP features -/
 inductive SymbolKind where
   | function
+  | theorem_
   | type
   | constructor
   | field
@@ -36,6 +37,7 @@ inductive SymbolKind where
 instance : ToString SymbolKind where
   toString
     | .function => "function"
+    | .theorem_ => "theorem"
     | .type => "type"
     | .constructor => "constructor"
     | .field => "field"
@@ -64,6 +66,7 @@ def LocalBindingKind.toSymbolKind : LocalBindingKind → SymbolKind
 /-- Convert SyntaxKind to SymbolKind -/
 def syntaxKindToSymbolKind : SyntaxKind → SymbolKind
   | .declDef => .function
+  | .declTheorem => .theorem_
   | .declInductive => .type
   | .declStruct => .type
   | .declAbbrev => .typeAlias

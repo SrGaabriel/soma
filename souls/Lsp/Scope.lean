@@ -1,11 +1,14 @@
 import Std.Data.HashMap
 import Soma.Syntax
+import Soma.Core.Value
+import Soma.Core.Quote
 import Lsp.Cst
 
 namespace Lsp
 
 open Std
 open Soma.Syntax
+open Soma.Core (Value valueToString)
 
 /-- The kind of a local binding -/
 inductive LocalBindingKind where
@@ -632,12 +635,14 @@ private def extractConstructorFieldBindings (tree : RedTree) (consNode : RedNode
   return result
 
 /-- Build a ScopeMap from a RedTree by walking the CST -/
-def buildScopeMap (tree : RedTree) : ScopeMap := Id.run do
+def buildScopeMap (tree : RedTree)
+    (localTypes : Std.HashMap Nat Value := {}) : ScopeMap := Id.run do
   let mut bindings : Array LocalBinding := #[]
 
   for node in tree.nodes do
     match node.syntaxKind? with
     | some .declDef      => bindings := bindings ++ extractDefParamBindings tree node
+    | some .declTheorem  => bindings := bindings ++ extractDefParamBindings tree node
     | some .defClause    => bindings := bindings ++ extractDefClauseBindings tree node
     | some .exprLambda   => bindings := bindings ++ extractLambdaBindings tree node
     | some .exprLet      => bindings := bindings ++ extractLetBindings tree node
@@ -653,6 +658,15 @@ def buildScopeMap (tree : RedTree) : ScopeMap := Id.run do
     | some .constructor    => bindings := bindings ++ extractConstructorFieldBindings tree node
     | some .constructorSig => bindings := bindings ++ extractConstructorFieldBindings tree node
     | _ => pure ()
+
+  -- Backfill type annotations from the elaborator's `localTypes` map
+  bindings := bindings.map fun b =>
+    match b.typeAnnotation with
+    | some _ => b
+    | none =>
+      match localTypes.get? b.nameSpan.start.byteOffset with
+      | some ty => { b with typeAnnotation := some (valueToString ty) }
+      | none => b
 
   -- Sort by scopeStart for deterministic ordering
   let sorted := bindings.qsort (fun a b => a.scopeStart < b.scopeStart)

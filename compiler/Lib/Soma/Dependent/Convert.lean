@@ -380,6 +380,28 @@ partial def isInductiveSmall (info : InductiveMeta) : TCM Bool := do
   | 1 => allCtorFieldsInProp info.ctors[0]!.type
   | _ => return false
 
+/-- Does a value seen at the type level name a small Prop inductive -/
+partial def valueIsSmallProp (v : Value) : TCM Bool := do
+  match (← force v) with
+  | .vDataType uid _ =>
+    let ctx ← TCM.getCtx
+    match ctx.globals.lookupInductive ⟨uid⟩ with
+    | some info => isInductiveSmall info
+    | none => return false
+  | _ => return false
+
+/-- Theorem-result-type predicate -/
+partial def isTheoremType (v : Value) : TCM Bool := do
+  if (← valueInPropUniverse v) then return true
+  match (← force v) with
+  | .vPi _ _ name dom cod =>
+    if (← valueIsSmallProp dom) then return true
+    let lvl ← TCM.currentLevel
+    let dummy := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+    let codVal ← applyClosure cod dummy
+    isTheoremType codVal
+  | _ => return false
+
 /-- Check if two values are convertible (definitionally equal) -/
 partial def convert (v1 v2 : Value) : TCM Bool := do
   -- Force both values to resolve metavariables

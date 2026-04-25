@@ -344,6 +344,33 @@ partial def extractConstructorFieldTypes (ctorTy : Value) (scrutTy : Value)
 
   unify resultTy scrutTy
 
+  let resForced ← force resultTy
+  let scrutForced ← force scrutTy
+  match resForced, scrutForced with
+  | .vDataType id1 ps1, .vDataType id2 ps2 =>
+    if id1 == id2 ∧ ps1.length == ps2.length then
+      for (p1, p2) in ps1.zip ps2 do
+        let p1f ← force p1
+        match p1f with
+        | .vNeutral _ neu =>
+          if neu.spine.isEmpty then
+            match neu.head with
+            | .hMeta mid =>
+              if !(← TCM.isMetaSolved mid) then
+                -- Skip self-reference to avoid creating a meta cycle
+                let p2f ← force p2
+                let p2HasMeta := match p2f with
+                  | .vNeutral _ neu2 =>
+                    match neu2.head with
+                    | .hMeta mid2 => mid == mid2
+                    | _ => false
+                  | _ => false
+                if !p2HasMeta then
+                  TCM.solveMeta mid p2f
+            | _ => pure ()
+        | _ => pure ()
+  | _, _ => pure ()
+
   return fields
 
 /-- Collect available field names from a row -/
@@ -602,6 +629,7 @@ partial def convertPatternWithBindings
   match pat with
   | .var name =>
     let u ← TCM.freshUnique name.name
+    TCM.recordLocalBindingType name.span scrutTy
     match scrutVal? with
     | some scrutVal =>
       -- Top-level var pattern: alias the scrutinee

@@ -524,6 +524,7 @@ def getDefinitionAt (offset : Nat) (mod : CompiledModule) (allModules : Array Co
 /-- LSP completion item kind numbers -/
 def completionKindNumber : Lsp.SymbolKind → Nat
   | .function => 3      -- Function
+  | .theorem_ => 3      -- Function
   | .type => 22         -- Struct
   | .typeAlias => 22    -- Struct
   | .constructor => 4   -- Constructor
@@ -933,6 +934,7 @@ def findReferencesForCursor (originMod : CompiledModule) (offset : Nat) (name : 
 /-- LSP symbol kind numbers -/
 def documentSymbolKindNumber : Lsp.SymbolKind → Nat
   | .function => 12     -- Function
+  | .theorem_ => 12     -- Function
   | .type => 5          -- Class
   | .typeAlias => 5     -- Class (same visual as type)
   | .constructor => 9   -- Constructor
@@ -948,6 +950,7 @@ def documentSymbolKindNumber : Lsp.SymbolKind → Nat
 def getDocumentSymbols (mod : CompiledModule) : Array DefinitionSite :=
   mod.symbols.allDefinitions.filter fun def_ =>
     def_.kind == .function ||
+    def_.kind == .theorem_ ||
     def_.kind == .type ||
     def_.kind == .typeAlias ||
     def_.kind == .trait ||

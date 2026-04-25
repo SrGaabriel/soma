@@ -535,4 +535,23 @@ where
         return (n, v')
       return .term name (Env.mk values' env.size) body
 
+namespace Zonk
+
+/-- Zonk every value in a `localTypes` map (the by-byte-offset binder-type cache feeding LSP hover) -/
+def zonkLocalTypes (m : Std.HashMap Nat Soma.Core.Value)
+    : TCM (Std.HashMap Nat Soma.Core.Value) := do
+  let mut out : Std.HashMap Nat Soma.Core.Value := {}
+  for (k, v) in m.toList do
+    let zv ← zonkValue v
+    out := out.insert k zv
+  return out
+
+end Zonk
+
+/-- Zonk the current TCM state's `localTypes` in place -/
+def zonkLocalTypesInPlace : TCM Unit := do
+  let st ← TCM.getState
+  let zonked ← Zonk.zonkLocalTypes st.localTypes
+  TCM.modifyState fun s => { s with localTypes := zonked }
+
 end Soma.Dependent

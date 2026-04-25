@@ -395,6 +395,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
       let typedBody' ← zonkExpr typedBody
+      Soma.Dependent.zonkLocalTypesInPlace
       let declaredType'' ← expandAbbrevValue declaredType'
       return (declaredType'', typedBody', generatedParams)
   | none =>
@@ -409,6 +410,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     let inferredType' ← zonkValue inferredType
     reportUnsolvedMetas inferredType' span
     let typedBody' ← zonkExpr typedBody
+    Soma.Dependent.zonkLocalTypesInPlace
     -- Expand parameterized type abbreviations so downstream passes see real types
     let inferredType'' ← expandAbbrevValue inferredType'
     return (inferredType'', typedBody', generatedParams)

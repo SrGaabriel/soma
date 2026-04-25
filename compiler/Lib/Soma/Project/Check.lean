@@ -427,10 +427,9 @@ def checkFunctionsCore
       | .ok ((fnType, typedBody, generatedParams), newState) =>
         errors := errors ++ newState.errors
 
-        -- The result type must actually be a proposition (`: Prop`)
         if isTheorem then
           let propCheck :=
-            (Soma.Dependent.valueInPropUniverse fnType).run
+            (Soma.Dependent.isTheoremType fnType).run
               ({ ctx with globals := currentGlobals }) newState
           match propCheck with
           | .ok (true, _) => pure ()
@@ -798,6 +797,12 @@ def typeCheckModule
 
   let allErrors := allErrors ++ totalityErrors
 
+  let zonkedLocalTypes : Std.HashMap Nat Soma.Core.Value :=
+    match (Soma.Dependent.Zonk.zonkLocalTypes fnResult.finalState.localTypes).run
+            totalityCtx fnResult.finalState with
+    | .error _ => fnResult.finalState.localTypes
+    | .ok (r, _) => r
+
   -- Dictionary specialization: replace class method calls with direct field access
   -- or inline the implementation when the dictionary is a known record literal.
   let methodRegistry := Soma.Dependent.Specialize.buildClassMethodRegistry
@@ -825,7 +830,7 @@ def typeCheckModule
       (init := fnResult.allUsedGlobals) fun acc qn => acc.insert qn
     uniqueNextId := fnResult.finalState.uniqueSupply.nextId
     metas := fnResult.finalState.metas
-    localTypes := fnResult.finalState.localTypes
+    localTypes := zonkedLocalTypes
   }
 
 /-- Extract public symbols from a type-checked module -/

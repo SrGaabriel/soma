@@ -17,6 +17,7 @@ open Lapis.Protocol.Generated
 /-- Map SymbolKind to LSP SemanticTokenTypes -/
 def symbolKindToTokenType : SymbolKind → SemanticTokenTypes
   | .function => .function
+  | .theorem_ => .function
   | .type => .type
   | .typeAlias => .type
   | .constructor => .enumMember
@@ -125,6 +126,7 @@ private def globalInfoToSymbolKind (info : GlobalInfo) : SymbolKind :=
     | .constructor => .constructor
     | .projection => .field
     | .traitMethod => .method
+    | .theorem_ => .theorem_
     | .intrinsic | .extern => .function
     | _ => .function
 
@@ -213,15 +215,18 @@ def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
   if let some def_ := symbols.lookupDefinition text then
     let tokenType := symbolKindToTokenType def_.kind
     let tokenType := if isFnPos && tokenType == .variable then .function else tokenType
-    return (tokenType, modifiers)
+    let mods := if def_.kind == .theorem_ then modifiers.push .readonly else modifiers
+    return (tokenType, mods)
 
   if let some g := globals then
     let currentNs := moduleName.splitOn "::" |>.toArray
     if let some qn := g.resolve currentNs #[] text then
       if let some info := g.getDef qn then
-        let tokenType := symbolKindToTokenType (globalInfoToSymbolKind info)
+        let symKind := globalInfoToSymbolKind info
+        let tokenType := symbolKindToTokenType symKind
         let tokenType := if isFnPos && tokenType == .variable then .function else tokenType
-        return (tokenType, modifiers)
+        let mods := if symKind == .theorem_ then modifiers.push .readonly else modifiers
+        return (tokenType, mods)
 
   match kind with
   | .upperIdent =>
