@@ -1,5 +1,4 @@
 // expect: success
-// Test: class constraints with 'with' syntax
 
 class Eq (a : Type) where
     eq : a -> a -> Bool

@@ -637,7 +637,7 @@ partial def parseVariantExpr : ParserM (Option GreenNode) := do
      argTok.kind == some .pipe || argTok.kind == some .fatArrow ||
      argTok.kind == some .kw_in || argTok.kind == some .kw_then ||
      argTok.kind == some .kw_else || argTok.kind == some .kw_where ||
-     argTok.kind == some .kw_with || argTok.kind == some .doubleColon ||
+     argTok.kind == some .doubleColon ||
      argTok.kind == some .layoutStart || argTok.kind == some .layoutSep ||
      argTok.kind == some .layoutEnd || argTok.kind == some .eof then
     -- No argument, just .label
@@ -721,7 +721,7 @@ partial def parseExprApp : ParserM (Option GreenNode) := do
            tok.kind == some .fatArrow || tok.kind == some .equals ||
            tok.kind == some .kw_in || tok.kind == some .kw_then ||
            tok.kind == some .kw_else || tok.kind == some .kw_where ||
-           tok.kind == some .kw_with || tok.kind == some .doubleColon ||
+           tok.kind == some .doubleColon ||
            tok.kind == some .layoutStart || tok.kind == some .layoutSep ||
            tok.kind == some .layoutEnd || tok.kind == some .eof then
           break

@@ -211,7 +211,7 @@ partial def parseTypeAppContinue (first : GreenNode) : ParserM (Option GreenNode
     if tok.kind == some .arrow || tok.kind == some .fatArrow ||
        tok.kind == some .rightParen || tok.kind == some .rightBracket ||
        tok.kind == some .rightBrace || tok.kind == some .comma ||
-       tok.kind == some .kw_with || tok.kind == some .kw_where ||
+       tok.kind == some .kw_where ||
        tok.kind == some .pipe || tok.kind == some .equals ||
        tok.kind == some .colon || tok.kind == some .times ||
        tok.kind == some .layoutStart || tok.kind == some .layoutSep ||
@@ -644,7 +644,7 @@ partial def parseTypeApp : ParserM (Option GreenNode) := do
         if tok.kind == some .arrow || tok.kind == some .fatArrow ||
            tok.kind == some .rightParen || tok.kind == some .rightBracket ||
            tok.kind == some .rightBrace || tok.kind == some .comma ||
-           tok.kind == some .kw_with || tok.kind == some .kw_where ||
+           tok.kind == some .kw_where ||
            tok.kind == some .pipe || tok.kind == some .equals ||
            tok.kind == some .layoutStart || tok.kind == some .layoutSep ||
            tok.kind == some .layoutEnd || tok.kind == some .eof then
@@ -678,7 +678,8 @@ partial def parseConstraint : ParserM (Option GreenNode) := do
       while true do
         let tok ← current
         if tok.kind == some .comma || tok.kind == some .rightParen ||
-           tok.kind == some .kw_where || tok.kind == some .kw_with ||
+           tok.kind == some .rightBrace ||
+           tok.kind == some .kw_where ||
            tok.kind == some .layoutStart || tok.kind == some .layoutSep ||
            tok.kind == some .layoutEnd || tok.kind == some .eof then
           break

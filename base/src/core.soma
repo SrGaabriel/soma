@@ -19,20 +19,20 @@ class Display (a : Type) where
 class Semigroup (a : Type) where
     {<>} : a -> a -> a
 
-class Monoid (a : Type) with (Semigroup a) where
+class Monoid (a : Type) {{Semigroup a}} where
     mempty : a
     mconcat : List a -> a
 
 class Functor (f : Type -> Type) where
     fmap : ∀ a b. (a -> b) -> f a -> f b
 
-class Applicative (f : Type -> Type) with (Functor f) where
+class Applicative (f : Type -> Type) {{Functor f}} where
     pure : ∀ a. a -> f a
     {<*>} : ∀ a b. f (a -> b) -> f a -> f b
     {*>} : ∀ a b. f a -> f b -> f b
     {<*} : ∀ a b. f a -> f b -> f a
 
-class Monad (m : Type -> Type) with (Applicative m) where
+class Monad (m : Type -> Type) {{Applicative m}} where
     {>>=} : ∀ a b. m a -> (a -> m b) -> m b
     {>>} : ∀ a b. m a -> m b -> m b
 
