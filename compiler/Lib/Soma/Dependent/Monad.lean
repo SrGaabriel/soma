@@ -1654,19 +1654,82 @@ def freshMetaVal (ty : Value) (origin : Soma.Core.MetaOrigin := .user) : TCM Val
   let id ← freshMeta ty (origin := origin)
   return .vNeutral ty (.nMeta id)
 
+/-- Force-cycle detection -/
+partial def wouldFormForceCycle (id : MetaId) (v : Value) : TCM Bool := do
+  goVal v {}
+where
+  goVal (v : Value) (visited : Std.HashSet Nat) : TCM Bool := do
+    match v with
+    | .vType _ | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
+    | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => return false
+    | .vPi _ _ _ dom _ => goVal dom visited
+    | .vLam _ _ => return false
+    | .vSigma _ _ fst _ => goVal fst visited
+    | .vPair a b =>
+      if ← goVal a visited then return true
+      goVal b visited
+    | .vRowExtend label ty tail =>
+      if ← goVal label visited then return true
+      if ← goVal ty visited then return true
+      goVal tail visited
+    | .vRecord row | .vVariant row => goVal row visited
+    | .vRecordVal fields => fields.anyM fun (_, v) => goVal v visited
+    | .vDataType _ params => params.anyM fun p => goVal p visited
+    | .vConstructor _ _ args _ => args.anyM fun a => goVal a visited
+    | .vEq _ ty lhs rhs =>
+      if ← goVal ty visited then return true
+      if ← goVal lhs visited then return true
+      goVal rhs visited
+    | .vRefl ty x =>
+      if ← goVal ty visited then return true
+      goVal x visited
+    | .vTransport _ ty motive lhs rhs eq body =>
+      if ← goVal ty visited then return true
+      if ← goVal motive visited then return true
+      if ← goVal lhs visited then return true
+      if ← goVal rhs visited then return true
+      if ← goVal eq visited then return true
+      goVal body visited
+    | .vNeutral _ neu => goNeutral neu visited
+
+  goNeutral (neu : Neutral) (visited : Std.HashSet Nat) : TCM Bool := do
+    if ← goHead neu.head visited then return true
+    neu.spine.anyM fun e =>
+      match e with
+      | .eApp arg => goVal arg visited
+      | .eFst | .eSnd | .eField _ => pure false
+
+  goHead (h : Head) (visited : Std.HashSet Nat) : TCM Bool := do
+    match h with
+    | .hVar _ | .hConst _ _ | .hErrored => return false
+    | .hMeta mid =>
+      if mid == id then return true
+      if visited.contains mid.id then return false
+      let visited' := visited.insert mid.id
+      let state ← getState
+      match state.lookupMeta mid with
+      | none => return false
+      | some info =>
+        match info.solution with
+        | none => return false
+        | some sol => goVal sol visited'
+    | .hCase scruts motive _ =>
+      if ← scruts.anyM fun s => goVal s visited then return true
+      goVal motive visited
+
 /-- Solve a metavariable -/
 def solveMeta (id : MetaId) (v : Value) (callerTag : String := "?") : TCM Unit := do
-  let _ := callerTag  -- reserved for targeted tracing
+  let _ := callerTag
+  if ← wouldFormForceCycle id v then
+    let span ← getSpan
+    throw (.unificationFailed (.occursCheck id v) .general span #[] #[id])
   modifyState (·.solveMeta id v)
 
 /-- Clear a metavariable's solution, making it unsolved again -/
 def unsolvedMeta (id : MetaId) : TCM Unit := do
   modifyState fun s => { s with metas := s.metas.unsolve id }
 
-/-- Update metavariable solution for path compression.
-    This is a lightweight version of solveMeta that just updates the solution
-    without any side effects. Used by `force` to implement union-find style
-    path compression. -/
+/-- Update metavariable solution for path compression -/
 def updateMetaSolution (id : MetaId) (v : Value) : TCM Unit := do
   modifyState (·.solveMeta id v)
 

@@ -286,17 +286,15 @@ def multiply (m1 m2 : TermMatrix) : TermMatrix :=
       changes.foldl bestChange .unknown
   { size := m1.size, arity := m1.arity, entries := entries }
 
-/-- Compute transitive closure (matrix^* ) -/
+/-- Compute transitive closure (matrix^*) -/
 partial def transitiveClosure (m : TermMatrix) : TermMatrix :=
-  go m m 10
+  go m m
 where
-  go (current acc : TermMatrix) (fuel : Nat) : TermMatrix :=
-    if fuel == 0 then acc
-    else
-      let next := multiply current current
-      let acc' := combineMatrices acc next
-      if matrixEqual acc acc' then acc'
-      else go next acc' (fuel - 1)
+  go (current acc : TermMatrix) : TermMatrix :=
+    let next := multiply current current
+    let acc' := combineMatrices acc next
+    if matrixEqual acc acc' then acc'
+    else go next acc'
 
   combineMatrices (m1 m2 : TermMatrix) : TermMatrix :=
     let entries := Array.range m1.size |>.map fun i =>

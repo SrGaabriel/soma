@@ -154,15 +154,6 @@ def solveLevelConstraint (solutions : Std.HashMap Nat Level)
   | .le l1 l2 => solveLe solutions l1 l2
   | .maxEq l1 l2 r => solveMaxEq solutions l1 l2 r
 
-/-- Default maximum iterations for the constraint solver -/
-def defaultMaxIterations : Nat := 100
-
-/-- Configuration for the level constraint solver -/
-structure LevelSolverConfig where
-  /-- Maximum iterations before giving up -/
-  maxIterations : Nat := defaultMaxIterations
-  deriving Inhabited
-
 /-- Solver state passed through iteration -/
 structure SolverState where
   solutions : Std.HashMap Nat Level
@@ -192,18 +183,13 @@ def processAllConstraints (constraints : List LevelConstraintInfo) (st : SolverS
     ({ newSt with constraints := newSt.constraints }, progress || made)
   ) ({ st with constraints := [] }, false)
 
-/-- Run solver iterations until fixpoint or max iterations -/
-partial def solveLoop (fuel : Nat) (st : SolverState) : SolverState :=
-  if fuel == 0 then st
-  else if st.constraints.isEmpty then st
+/-- Run solver iterations to fixpoint -/
+partial def solveLoop (st : SolverState) : SolverState :=
+  if st.constraints.isEmpty then st
   else
     let (newSt, madeProgress) := processAllConstraints st.constraints { st with constraints := [] }
     if !madeProgress then newSt
-    else solveLoop (fuel - 1) newSt
-
-/-- Run solver with configuration -/
-def solveLoopWithConfig (config : LevelSolverConfig) (st : SolverState) : SolverState :=
-  solveLoop config.maxIterations st
+    else solveLoop newSt
 
 /-- Default all remaining level variables to 0 -/
 def defaultUnsolved (constraints : List LevelConstraintInfo) (solutions : Std.HashMap Nat Level)
@@ -221,13 +207,13 @@ def defaultUnsolved (constraints : List LevelConstraintInfo) (solutions : Std.Ha
 
 /-- Solve all level constraints, returning solutions or an error -/
 def solveLevelConstraints (constraints : Array LevelConstraintInfo)
-    (config : LevelSolverConfig := {}) : Except String (Std.HashMap Nat Level) :=
+    : Except String (Std.HashMap Nat Level) :=
   let initialState : SolverState := {
     solutions := {}
     constraints := constraints.toList
     errors := []
   }
-  let finalState := solveLoopWithConfig config initialState
+  let finalState := solveLoop initialState
   if !finalState.errors.isEmpty then
     .error (String.intercalate "\n" finalState.errors.reverse)
   else

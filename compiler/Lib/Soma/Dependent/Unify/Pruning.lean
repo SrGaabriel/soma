@@ -26,10 +26,11 @@ def enumListForPrune {α : Type} (xs : List α) : List (Nat × α) :=
     | x :: rest => (i, x) :: go (i + 1) rest
   go 0 xs
 
-/-- Extract parameter types from a Pi type (non-recursive, uses fuel) -/
+/-- Extract parameter types from a Pi type -/
 partial def extractMetaParamTypes (ty : Value) : TCM (List Value) := do
-  let rec go (fuel : Nat) (ty : Value) (acc : List Value) : TCM (List Value) := do
-    if fuel == 0 then return acc.reverse
+  go ty []
+where
+  go (ty : Value) (acc : List Value) : TCM (List Value) := do
     let ty' ← force ty
     match ty' with
     | .vPi _ _ name dom cod =>
@@ -37,23 +38,19 @@ partial def extractMetaParamTypes (ty : Value) : TCM (List Value) := do
       let lvl ← TCM.currentLevel
       let dummyArg := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
       let codTy ← applyClosure cod dummyArg
-      go (fuel - 1) codTy (dom :: acc)
+      go codTy (dom :: acc)
     | _ => return acc.reverse
-  go maxPiParams ty []
 
 /-- Get the result type of a Pi type (after all parameters) -/
 partial def getMetaResultType (ty : Value) : TCM Value := do
-  let rec go (fuel : Nat) (ty : Value) : TCM Value := do
-    if fuel == 0 then return ty
-    let ty' ← force ty
-    match ty' with
-    | .vPi _ _ name dom cod =>
-      let lvl ← TCM.currentLevel
-      let dummyArg := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
-      let codTy ← applyClosure cod dummyArg
-      go (fuel - 1) codTy
-    | _ => return ty'
-  go maxPiParams ty
+  let ty' ← force ty
+  match ty' with
+  | .vPi _ _ name dom cod =>
+    let lvl ← TCM.currentLevel
+    let dummyArg := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+    let codTy ← applyClosure cod dummyArg
+    getMetaResultType codTy
+  | _ => return ty'
 
 /-- Evaluate a pruning solution Expr to a Value -/
 def evalPruneSolution (e : Soma.Core.Expr) : TCM Value := TCM.evalExpr e
@@ -428,32 +425,10 @@ partial def collectMetaOccurrencesClosure (m : MetaId) (clos : Closure) (depth :
 
 end
 
-/-- Try to recover from occurs check failure by pruning.
-    If the meta occurs but only at positions where some spine variables aren't used,
-    we might be able to prune those variables from the meta's domain.
-    Returns true if pruning was attempted (caller should retry unification). -/
-def tryOccursCheckPruning (m : MetaId) (spine : List Value) (rhs : Value) : TCM Bool := do
-  -- Collect all occurrences of the meta
-  let occurrences := collectMetaOccurrences m rhs 0 #[]
-  if occurrences.isEmpty then
-    return false  -- No occurrences (shouldn't happen if occurs check triggered)
-
-  -- Get spine levels
-  let spineLevels : Array DeBruijnLvl := spine.filterMap asBoundVar |>.toArray
-
-  -- Check if there are any spine variables that are NOT in scope at any occurrence
-  -- These could potentially be pruned
-  let prunableLevels := spineLevels.filter fun lvl =>
-    occurrences.all fun occ => !occ.scopeVars.contains lvl
-
-  if prunableLevels.isEmpty then
-    return false  -- All spine vars are needed at some occurrence
-
-  -- Try pruning these variables
-  let rhsWithoutMeta := rhs  -- We'd need to substitute the meta occurrences
-  let _ ← tryPrune m spine.toArray.toList rhsWithoutMeta
-
-  return true
+/-- Recovery hook for occurs check failures -/
+def tryOccursCheckPruning (_m : MetaId) (_spine : List Value) (_rhs : Value)
+    : TCM Bool := do
+  return false
 
 /-! ## Heterogeneous Constraint Handling
 

@@ -141,7 +141,7 @@ def collectMetasConstraint (c : Constraint) : Array MetaId :=
 
 mutual
 
-/-- Check if a metavariable occurs in a value (for occurs check) -/
+/-- Structural occurs check -/
 partial def occursIn (m : MetaId) (v : Value) : Bool :=
   match v with
   | .vType _ => false
@@ -379,6 +379,16 @@ def getMetaWithSpine (neu : Neutral) : Option (MetaId × List Value) := Id.run d
       | _ => return none
     return some (m, args)
   | _ => return none
+
+def solveMetaProjectionSpine? (neu : Neutral) : Option (MetaId × Array Elim) :=
+  match neu.head with
+  | .hMeta m =>
+    let hasProjection := neu.spine.any fun e =>
+      match e with
+      | .eApp _ => false
+      | _ => true
+    if hasProjection then some (m, neu.spine) else none
+  | _ => none
 
 /-- Build a neutral from a metavariable head and a spine of argument values -/
 def buildMetaSpine (m : MetaId) (spine : List Value) : Neutral :=

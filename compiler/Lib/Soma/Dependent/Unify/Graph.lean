@@ -36,25 +36,16 @@ import Soma.Core.Value
 import Soma.Core.Level
 import Soma.Dependent.Monad
 import Soma.Dependent.Error
+import Soma.Dependent.Unify.Core
 import Std.Data.HashMap
 import Std.Data.HashSet
 
 namespace Soma.Dependent.Unify
 
 open Soma.Core (Value MetaId ConstraintId)
+open Soma.Dependent (collectMetas)
 open Soma.Syntax (Span)
 open Std (HashMap HashSet)
-
-/-! ## Constraint Clustering
-
-Constraint clustering groups related constraints together so they can be solved
-more efficiently. Constraints are in the same cluster if they share metavariables.
-
-Benefits:
-1. Solving a constraint often helps solve related constraints
-2. We can batch process clusters, reducing overhead
-3. Clusters can be solved in parallel (future work)
--/
 
 /-- A cluster of related constraints -/
 structure ConstraintCluster where
@@ -80,18 +71,6 @@ def overlaps (c1 c2 : ConstraintCluster) : Bool :=
     acc || c2.metas.contains mid
 
 end ConstraintCluster
-
-/-! ## Speculative Solving
-
-Speculative solving tries multiple solution strategies and picks the best result.
-This is useful when there are multiple ways to solve a constraint and we want
-to find the one that makes the most progress.
-
-Strategies include:
-1. Solve in priority order (default)
-2. Solve by cluster (related constraints together)
-3. Solve smallest clusters first (more likely to succeed)
--/
 
 /-- A solving strategy -/
 inductive SolveStrategy where
@@ -288,17 +267,93 @@ def getConstraintsFor (g : ConstraintGraph) (mid : MetaId) : Array TrackedConstr
     | none => acc
     | some tc => acc.push tc
 
-/-! ### Constraint Clustering -/
+namespace TarjanSCC
 
-/-- Build clusters of related constraints using union-find algorithm.
-    Returns an array of constraint clusters, where each cluster contains
-    constraints that share metavariables.
+/-- DFS state -/
+private structure State where
+  index : Nat := 0
+  indices : HashMap Nat Nat := {}
+  lowlinks : HashMap Nat Nat := {}
+  onStack : HashSet Nat := {}
+  stack : Array Nat := #[]
+  sccs : Array (Array Nat) := #[]
+  deriving Inhabited
 
-    Algorithm:
-    1. Create a mapping from each meta to the constraints that use it
-    2. Build clusters by grouping constraints that share metas (transitive closure)
-    3. Return the resulting clusters sorted by priority -/
-def buildClusters (g : ConstraintGraph) : Array ConstraintCluster :=
+/-- Pop nodes off the stack until we hit `target` -/
+private partial def popScc (s : State) (target : Nat) (acc : Array Nat) : State × Array Nat :=
+  if h : s.stack.size > 0 then
+    let top := s.stack[s.stack.size - 1]'(by
+      have : s.stack.size - 1 < s.stack.size := Nat.sub_lt h (by decide)
+      exact this)
+    let s' : State := { s with
+      stack := s.stack.pop
+      onStack := s.onStack.erase top }
+    let acc' := acc.push top
+    if top == target then (s', acc')
+    else popScc s' target acc'
+  else (s, acc)
+
+/-- Tarjan's `strongconnect` step -/
+private partial def visit (graph : HashMap Nat (Array Nat)) (v : Nat) (st : State) : State := Id.run do
+  let mut s := st
+  let vIdx := s.index
+  s := { s with
+    indices := s.indices.insert v vIdx
+    lowlinks := s.lowlinks.insert v vIdx
+    index := vIdx + 1
+    stack := s.stack.push v
+    onStack := s.onStack.insert v }
+  for w in graph.getD v #[] do
+    if !s.indices.contains w then
+      s := visit graph w s
+      let lwv := s.lowlinks.getD v 0
+      let lww := s.lowlinks.getD w 0
+      if lww < lwv then
+        s := { s with lowlinks := s.lowlinks.insert v lww }
+    else if s.onStack.contains w then
+      let lwv := s.lowlinks.getD v 0
+      let idxw := s.indices.getD w 0
+      if idxw < lwv then
+        s := { s with lowlinks := s.lowlinks.insert v idxw }
+  if s.lowlinks.getD v 0 == s.indices.getD v 0 then
+    let (s', scc) := popScc s v #[]
+    return { s' with sccs := s'.sccs.push scc }
+  return s
+
+/-- Run Tarjan's SCC over the given adjacency map -/
+def run (graph : HashMap Nat (Array Nat)) (nodes : Array Nat) : Array (Array Nat) := Id.run do
+  let mut s : State := {}
+  for v in nodes do
+    if !s.indices.contains v then
+      s := visit graph v s
+  return s.sccs
+
+end TarjanSCC
+
+/-- Build the meta-to-meta dependency adjacency map from a `MetaState` -/
+def buildMetaDepGraph (metas : Soma.Core.MetaState) : HashMap Nat (Array Nat) :=
+  metas.metas.fold (init := {}) fun acc mid info =>
+    let typeDeps : Array Nat := info.dependsOn.map (·.id)
+    let solDeps : Array Nat :=
+      match info.solution with
+      | some sol => (Soma.Dependent.collectMetas sol).map (·.id)
+      | none => #[]
+    let merged := (typeDeps ++ solDeps).toList.eraseDups.filter (· != mid)
+    acc.insert mid merged.toArray
+
+/-- Make a `metaId → SCC index` map -/
+def metaSCCIndices (metas : Soma.Core.MetaState) : HashMap Nat Nat := Id.run do
+  let graph := buildMetaDepGraph metas
+  let nodes := metas.metas.toArray.map (·.1)
+  let sccs := TarjanSCC.run graph nodes
+  let mut acc : HashMap Nat Nat := {}
+  for h : i in [:sccs.size] do
+    for m in sccs[i]'h.upper do
+      acc := acc.insert m i
+  return acc
+
+/-- Build clusters of related constraints using BFS over the constraint–meta graph -/
+def buildClusters (g : ConstraintGraph) (sccIdx : HashMap Nat Nat := {}) : Array ConstraintCluster :=
   -- Phase 1: Build meta -> constraints mapping
   let emptyM2C : HashMap Nat (Array Nat) := {}
   let metaToConstraints := g.constraints.fold (init := emptyM2C)
@@ -320,14 +375,25 @@ def buildClusters (g : ConstraintGraph) : Array ConstraintCluster :=
           bfsCluster g metaToConstraints startCid visited
         if clusterCids.isEmpty then (clusters, visited')
         else
+          let scc := clusterMetas.fold (init := none) fun (acc : Option Nat) mid =>
+            match sccIdx.get? mid with
+            | some i =>
+              match acc with
+              | some j => some (min i j)
+              | none => some i
+            | none => acc
+          let priority : Nat :=
+            match scc with
+            | some i => i * (g.constraints.size + 1) + clusterCids.size
+            | none   => clusterCids.size
           let cluster : ConstraintCluster := {
             constraintIds := clusterCids
             metas := clusterMetas
-            priority := clusterCids.size  -- Smaller clusters = higher priority
+            priority := priority
           }
           (clusters.push cluster, visited')
 
-  -- Sort by priority (smaller clusters first - they're often easier to solve)
+  -- Sort by priority
   result.qsort fun c1 c2 => c1.priority < c2.priority
 where
   /-- BFS to find all constraints connected to startCid via shared metas.
@@ -370,11 +436,12 @@ where
         (result, metas, visited)
 
 /-- Get or compute clusters -/
-def getClusters (g : ConstraintGraph) : ConstraintGraph × Array ConstraintCluster :=
+def getClusters (g : ConstraintGraph) (sccIdx : HashMap Nat Nat := {})
+    : ConstraintGraph × Array ConstraintCluster :=
   match g.clusters with
   | some clusters => (g, clusters)
   | none =>
-    let clusters := g.buildClusters
+    let clusters := g.buildClusters sccIdx
     ({ g with clusters := some clusters }, clusters)
 
 /-- Invalidate cached clusters (call when constraints change) -/
@@ -660,8 +727,11 @@ def solveConstraintGraphClustered (tryConstraint : Constraint → TCM SolveResul
   let mut remainingFuel := fuel
   let mut solvedCount := 0
 
+  let tcState ← TCM.getState
+  let sccIdx := ConstraintGraph.metaSCCIndices tcState.metas
+
   -- Build initial clusters
-  let (g', initialClusters) := g.getClusters
+  let (g', initialClusters) := g.getClusters sccIdx
   g := g'
 
   -- Sort clusters based on strategy

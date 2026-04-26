@@ -267,29 +267,29 @@ partial def applyMvarSubst (e : Expr) (subst : Std.HashMap MetaId Expr) (depth :
       (applyMvarSubst ep subst depth) (applyMvarSubst b subst depth)
   | .ann x t => .ann (applyMvarSubst x subst depth) (applyMvarSubst t subst depth)
 
-/-- Substitute all solved metavariables in type annotations and terms -/
-partial def zonkExpr (e : Expr) (depth : Nat := 0) : TCM Expr := do
-  let mut result := e
-  let mut seen : Std.HashSet MetaId := {}
-  for _ in List.range 100 do
+/-- Substitute all solved metavariables in an expression -/
+partial def zonkExpr (e : Expr) (depth : Nat := 0) : TCM Expr :=
+  loop e {}
+where
+  loop (result : Expr) (processed : Std.HashSet MetaId) : TCM Expr := do
     let mvarIds := collectMvarIds result
-    let newIds := mvarIds.fold (fun acc id => if seen.contains id then acc else acc.push id) #[]
-    if newIds.isEmpty then
-      return result
+    let mut newIds : Array MetaId := #[]
+    for id in mvarIds do
+      if !processed.contains id then newIds := newIds.push id
+    if newIds.isEmpty then return result
+    let mut processed' := processed
     let mut subst : Std.HashMap MetaId Expr := {}
     for id in newIds do
-      seen := seen.insert id
+      processed' := processed'.insert id
       match ← TCM.lookupMeta id with
+      | none => pure ()
       | some info =>
         match info.solution with
+        | none => pure ()
         | some sol =>
           subst := subst.insert id (Soma.Core.quoteExpr ⟨depth⟩ sol)
-        | none => pure ()
-      | none => pure ()
-    if subst.isEmpty then
-      return result
-    result := applyMvarSubst result subst depth
-  return result
+    if subst.isEmpty then return result
+    loop (applyMvarSubst result subst depth) processed'
 
 mutual
 
