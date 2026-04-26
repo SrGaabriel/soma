@@ -44,6 +44,11 @@ def fromTriple (triple : String) : ClangAbi :=
     | some last => .other last
     | none => .other ""
 
+/-- Whether this ABI corresponds to a Darwin target -/
+def isDarwin : ClangAbi → Bool
+  | .other s => s.startsWith "darwin" || s.startsWith "macos" || s.startsWith "ios"
+  | _ => false
+
 end ClangAbi
 
 /-- File name of the runtime archive inside zig-out-<abi> -/
@@ -119,6 +124,20 @@ def detectClangTriple (tools : ToolPaths) : IO String := do
     pure result.stdout.trimAscii.toString
   else
     pure ""
+
+/-- Discover the macOS SDK path -/
+def detectMacosSdkPath : IO (Option System.FilePath) := do
+  if let some sdkroot ← IO.getEnv "SDKROOT" then
+    if !sdkroot.isEmpty then
+      return some ⟨sdkroot⟩
+  try
+    let result ← runCommand "xcrun" #["--show-sdk-path"]
+    if result.exitCode == 0 then
+      let trimmed := result.stdout.trimAscii.toString
+      if !trimmed.isEmpty then
+        return some ⟨trimmed⟩
+  catch _ => pure ()
+  return none
 
 /-- Detect clang's default ABI. -/
 def detectClangAbi (tools : ToolPaths) : IO ClangAbi := do
@@ -207,7 +226,6 @@ def compileToObject
   let optFlag := s!"-O{min optLevel 3}"
   let mut args := #[
     "-c", optFlag,
-    "-rtlib=compiler-rt",
     "-o", oPath.toString, llPath.toString
   ]
 
@@ -242,7 +260,9 @@ def linkExecutable
   if let some triple := llvmTarget then
     args := #["-target", triple] ++ args
 
-  args := args.push "-rtlib=compiler-rt"
+  if abi.isDarwin then
+    if let some sdk ← detectMacosSdkPath then
+      args := args.push "-isysroot" |>.push sdk.toString
 
   if lto then
     args := args.push "-flto"
@@ -255,7 +275,6 @@ def linkExecutable
     args := args.push rt.toString
 
   match abi with
-  | .gnu => args := args.push "-lgcc"
   | .msvc =>
     args := args.push "-Wl,/subsystem:console"
   | _ => pure ()
