@@ -18,6 +18,50 @@ namespace Soma.Dependent
 open Soma.Core
 open Soma.Dependent.Unify (SolveResult ConstraintGraph)
 
+/-- Mark stuck on the union of unsolved level variables in `l1` and `l2` -/
+private def markStuckOnLevels (l1 l2 : Level) : TCM Unit := do
+  let lvs := (l1.freeVars ++ l2.freeVars).eraseDups.toArray
+  TCM.markStuck #[] lvs
+
+/-- Mark stuck on a meta and the unsolved metas in its spine -/
+private def markStuckOnMetaSpine (m : MetaId) (spine : Array Elim) : TCM Unit := do
+  let mut metas : Array MetaId := #[m]
+  let mut seen : Std.HashSet Nat := { m.id }
+  for e in spine do
+    if let .eApp arg := e then
+      for sm in Value.collectMetas arg do
+        if !seen.contains sm.id then
+          seen := seen.insert sm.id
+          if !(← TCM.isMetaSolved sm) then metas := metas.push sm
+  TCM.markStuck metas #[]
+
+/-- Mark stuck on a meta and the unsolved metas in its spine -/
+private def markStuckOnMetaWithSpineList (m : MetaId) (spine : List Value) : TCM Unit := do
+  let mut metas : Array MetaId := #[m]
+  let mut seen : Std.HashSet Nat := { m.id }
+  for arg in spine do
+    for sm in Value.collectMetas arg do
+      if !seen.contains sm.id then
+        seen := seen.insert sm.id
+        if !(← TCM.isMetaSolved sm) then metas := metas.push sm
+  TCM.markStuck metas #[]
+
+/-- Mark stuck on a meta + Array-spine -/
+private def markStuckOnMetaWithSpine (m : MetaId) (spine : Array Elim) : TCM Unit :=
+  markStuckOnMetaSpine m spine
+
+/-- Mark stuck on two metas of a flex-flex unification -/
+private def markStuckOnFlexFlex (m : MetaId) (spine : List Value) (m2 : MetaId)
+    : TCM Unit := do
+  let mut metas : Array MetaId := #[m, m2]
+  let mut seen : Std.HashSet Nat := { m.id, m2.id }
+  for arg in spine do
+    for sm in Value.collectMetas arg do
+      if !seen.contains sm.id then
+        seen := seen.insert sm.id
+        if !(← TCM.isMetaSolved sm) then metas := metas.push sm
+  TCM.markStuck metas #[]
+
 mutual
 
 /-- Normalize wired primitive data type wrappers into canonical primitive types -/
@@ -410,9 +454,7 @@ partial def unifyRows (l1 : Value) (t1 : Value) (r1 : Value)
       unify t1 t2
       unify r1 r2
     else
-      -- Postpone this constraint
-      let span ← TCM.getSpan
-      TCM.postpone (.unify (.vRowExtend l1 t1 r1) (.vRowExtend l2 t2 r2) span)
+      TCM.markStuck #[m1, m2] #[]
 
   | _, _ =>
     -- Try to unify labels directly
@@ -487,19 +529,17 @@ partial def unifyLevel (l1 l2 : Level) : TCM Unit := do
     throwUnifyError (.vType l1n) (.vType l2n) "level mismatch: Prop is distinct from Type universes (use a coercion or subtype check if cumulativity is intended)"
 
   | .max a b, .max c d =>
-    if (a == c && b == d) || (a == d && b == c) then
-      return
-    else
-      TCM.postpone (.levelEq l1n l2n)
+    if (a == c && b == d) || (a == d && b == c) then return
+    else markStuckOnLevels l1n l2n
 
   | .max a b, rhs =>
     if a == rhs then unifyLevel b rhs
     else if b == rhs then unifyLevel a rhs
-    else TCM.postpone (.levelEq l1n l2n)
+    else markStuckOnLevels l1n l2n
   | lhs, .max a b =>
     if a == lhs then unifyLevel b lhs
     else if b == lhs then unifyLevel a lhs
-    else TCM.postpone (.levelEq l1n l2n)
+    else markStuckOnLevels l1n l2n
 
 private partial def rowFieldsClosed (r : Value) : TCM (Option (List (String × Value))) := do
   let r ← force r
@@ -601,10 +641,7 @@ partial def solveMetaProjectionSpine (m : MetaId) (spine : Array Elim) (rhs : Va
         TCM.throw (.internalError s!"unknown metavariable ?{m.id}" span)
       | some info =>
         let mTy ← force info.type
-        let postpone : TCM Unit := do
-          let span ← TCM.getSpan
-          let neu := Neutral.mk (.hMeta m) spine
-          TCM.postpone (.unify (.vNeutral mTy neu) rhs span)
+        let stuck : TCM Unit := markStuckOnMetaWithSpine m spine
 
         let rec walkPi (ty : Value) (args : List Value) : TCM (Option Value) := do
           match args with
@@ -618,10 +655,10 @@ partial def solveMetaProjectionSpine (m : MetaId) (spine : Array Elim) (rhs : Va
             | _ => return none
 
         match ← walkPi mTy leadingArgs with
-        | none => postpone
+        | none => stuck
         | some innerTy =>
           match ← buildExpectedInner innerTy projTail rhs with
-          | none => postpone
+          | none => stuck
           | some expectedInner => solveMeta m leadingArgs expectedInner
   else
     solveMeta m [] rhs
@@ -652,10 +689,7 @@ partial def decomposePairMeta (m : MetaId) (fstSide : Bool)
         let span ← TCM.getSpan
         TCM.throw (.internalError "freshMetaVal returned non-meta value" span)
     | _ =>
-      let span ← TCM.getSpan
-      let proj : Elim := if fstSide then .eFst else .eSnd
-      let neu := Neutral.mk (.hMeta m) (#[proj] ++ restSpine)
-      TCM.postpone (.unify (.vNeutral mTy neu) rhs span)
+      markStuckOnMetaSpine m restSpine
 
 /-- Decompose a metavariable known to be a record -/
 partial def decomposeRecordMeta (m : MetaId) (fieldName : String)
@@ -677,9 +711,7 @@ partial def decomposeRecordMeta (m : MetaId) (fieldName : String)
         | _ => none
       match rowFields row with
       | none =>
-        let span ← TCM.getSpan
-        let neu := Neutral.mk (.hMeta m) (#[Elim.eField fieldName] ++ restSpine)
-        TCM.postpone (.unify (.vNeutral mTy neu) rhs span)
+        markStuckOnMetaSpine m restSpine
       | some fields =>
         if !fields.any (·.1 == fieldName) then
           let span ← TCM.getSpan
@@ -701,9 +733,7 @@ partial def decomposeRecordMeta (m : MetaId) (fieldName : String)
             let span ← TCM.getSpan
             TCM.throw (.internalError "freshMetaVal returned non-meta value" span)
     | _ =>
-      let span ← TCM.getSpan
-      let neu := Neutral.mk (.hMeta m) (#[Elim.eField fieldName] ++ restSpine)
-      TCM.postpone (.unify (.vNeutral mTy neu) rhs span)
+      markStuckOnMetaSpine m restSpine
 
 /-- Try to solve a metavariable application: ?m spine = rhs -/
 partial def solveMeta (m : MetaId) (spine : List Value) (rhs : Value) : TCM Unit := do
@@ -763,9 +793,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
   -- First, check if the meta's type involves unsolved metas (heterogeneous case)
   let shouldDefer ← shouldDeferMeta m
   if shouldDefer then
-    -- Defer: the meta's type needs to be solved first
-    let span ← TCM.getSpan
-    TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+    markStuckOnMetaWithSpineList m spine
     return
 
   -- Check for reflexivity: ?m spine = ?m spine should always succeed
@@ -815,8 +843,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
     | .error .occursCheck =>
       let pruned ← tryOccursCheckPruning m spine rhs
       if pruned then
-        let span ← TCM.getSpan
-        TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+        markStuckOnMetaWithSpineList m spine
       else
         let rhsForced ← force rhs
         let resolved ←
@@ -846,8 +873,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
           | none => pure false
         | _ => pure false
       if !resolved then
-        let span ← TCM.getSpan
-        TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+        markStuckOnMetaWithSpineList m spine
 
   | none =>
     -- Not a pattern - try η-expansion to make it one
@@ -861,99 +887,45 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
       match rhs with
       | .vNeutral _ (.nMeta m2) =>
         -- Flex-flex: ?m spine = ?m2
-        -- Try to solve by intersection if spines overlap
         if m == m2 then
-          -- Same meta: always succeeds (reflexivity)
           pure ()
         else
           -- Different metas: try pruning both or postpone
           let _ ← tryPrune m spine rhs
-          let span ← TCM.getSpan
-          TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+          markStuckOnFlexFlex m spine m2
       | .vNeutral _ neu2 =>
         match getMetaWithSpine neu2 with
         | some (m2, spine2) =>
           -- Flex-flex with spines: ?m spine1 = ?m2 spine2
           if m == m2 then
-            -- Same meta with different spines - check if spines are equal
             if spine.length == spine2.length then
               -- Try to unify the spines
               for (v1, v2) in spine.zip spine2 do
                 unify v1 v2
             else
-              -- Different length spines - postpone
-              let span ← TCM.getSpan
-              TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+              markStuckOnMetaWithSpineList m spine
           else
-            -- NEW: Different metas with spines - try spine intersection
             let intersected ← tryFlexFlexIntersection m spine m2 spine2
-            if intersected then
-              -- Successfully solved via intersection
-              pure ()
-            else
-              -- Intersection failed, postpone
-              let span ← TCM.getSpan
-              TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+            if !intersected then
+              markStuckOnFlexFlex m spine m2
         | none =>
-          -- Not a meta application - postpone
-          let span ← TCM.getSpan
-          TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+          markStuckOnMetaWithSpineList m spine
       | _ =>
-        -- Not a pattern and not flex-flex - postpone
-        let span ← TCM.getSpan
-        TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+        markStuckOnMetaWithSpineList m spine
 
 end
 
-/-- Collect every unsolved metavariable referenced anywhere in two values -/
-private def collectUnsolvedMetasOf (v1 v2 : Value) : TCM (Array MetaId) := do
-  let raw := Value.collectMetas v1 ++ Value.collectMetas v2
-  let mut metas : Array MetaId := #[]
-  let mut seen : Std.HashSet Nat := {}
-  for m in raw do
-    if seen.contains m.id then continue
-    seen := seen.insert m.id
-    if !(← TCM.isMetaSolved m) then metas := metas.push m
-  return metas
-
-/-- Drop any postponed entries appended since `priorSize` -/
-private def dropPostponesSince (priorSize : Nat) : TCM Unit := do
-  let state ← TCM.getState
-  if state.postponed.size <= priorSize then return
-  let dropped := state.postponed.extract priorSize state.postponed.size
-  let droppedCids := dropped.map (·.constraintId)
-  let metas' := droppedCids.foldl (fun m cid => m.removeConstraint cid) state.metas
-  TCM.modifyState fun s => { s with
-    postponed := s.postponed.extract 0 priorSize
-    metas := metas' }
-
-/-- Run a unification action under a constraint-graph dispatch envelope -/
-private def runUnifyAction (blockedMetas : Array MetaId)
-    (blockedLevelVars : Array LevelVarId) (action : TCM Unit) : TCM SolveResult := do
-  let postponedBefore := (← TCM.getState).postponed.size
-  let blockedNonEmpty := !(blockedMetas.isEmpty && blockedLevelVars.isEmpty)
+/-- Run a unification action under the constraint-graph dispatch envelope -/
+private def runUnifyAction (action : TCM Unit) : TCM SolveResult := do
+  TCM.clearStuckSignal
   try
     action
-    if (← TCM.getState).postponed.size > postponedBefore then
-      dropPostponesSince postponedBefore
-      if blockedNonEmpty then return .blocked blockedMetas blockedLevelVars
-      else return .deferred
-    return .solved
-  catch e =>
-    if blockedNonEmpty then return .blocked blockedMetas blockedLevelVars
-    else return .failed e
-
-/-- Collect the unsolved level variables reachable from a level expression -/
-private def unsolvedLevelVarsOf (l : Level) : TCM (Array LevelVarId) := do
-  let state ← TCM.getState
-  let sols := state.levelSolutions
-  let mut out : Array LevelVarId := #[]
-  let mut seen : Std.HashSet Nat := {}
-  for v in l.freeVars do
-    if seen.contains v.id then continue
-    seen := seen.insert v.id
-    if !sols.contains v.id then out := out.push v
-  return out
+    match ← TCM.getStuckSignal with
+    | some (m, lv) =>
+      TCM.clearStuckSignal
+      return .blocked m lv
+    | none => return .solved
+  catch e => return .failed e
 
 /-- Try to solve a single non-instance constraint -/
 def trySolveBasicConstraint (c : Constraint) : TCM SolveResult := do
@@ -963,20 +935,19 @@ def trySolveBasicConstraint (c : Constraint) : TCM SolveResult := do
       -- Force values to see if they're blocked on metas
       let v1' ← force v1
       let v2' ← force v2
-      runUnifyAction (← collectUnsolvedMetasOf v1' v2') #[] (unify v1' v2')
+      runUnifyAction (unify v1' v2')
 
   | .subtype v1 v2 span =>
     TCM.withSpan span do
       let v1' ← force v1
       let v2' ← force v2
-      runUnifyAction (← collectUnsolvedMetasOf v1' v2') #[] (subtypeUnify v1' v2')
+      runUnifyAction (subtypeUnify v1' v2')
 
   | .levelEq l1 l2 =>
     let l1n := (← TCM.zonkLevel l1).simplify
     let l2n := (← TCM.zonkLevel l2).simplify
     if l1n == l2n then return .solved
-    let lvs := (← unsolvedLevelVarsOf l1n) ++ (← unsolvedLevelVarsOf l2n)
-    runUnifyAction #[] lvs.toList.eraseDups.toArray (unifyLevel l1n l2n)
+    runUnifyAction (unifyLevel l1n l2n)
 
   | .levelLe l1 l2 =>
     let l1n := (← TCM.zonkLevel l1).simplify
@@ -995,10 +966,9 @@ def trySolveBasicConstraint (c : Constraint) : TCM SolveResult := do
       if v1.id == v2.id then return .solved
       else TCM.solveLevelVar v1 (.var v2); return .solved
     | _, _ =>
-      let lvs := (← unsolvedLevelVarsOf l1n) ++ (← unsolvedLevelVarsOf l2n)
-      let lvsU := lvs.toList.eraseDups.toArray
-      if lvsU.isEmpty then return .deferred
-      else return .blocked #[] lvsU
+      let lvs := (l1n.freeVars ++ l2n.freeVars).eraseDups.toArray
+      if lvs.isEmpty then return .deferred
+      else return .blocked #[] lvs
 
   | .resolveInstance metaId _ _ _ =>
     return .blocked #[metaId] #[]

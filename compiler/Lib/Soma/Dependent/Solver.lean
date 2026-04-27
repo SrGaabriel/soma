@@ -1,3 +1,43 @@
+/-
+  Soma.Dependent.Solver - Unified constraint solver
+
+  The solver runs three distinct *modes*, each appropriate for a different
+  elaboration phase. Every mode is the same constraint-graph driver
+  (`Unify.solveConstraintGraph`) parameterized by a per-constraint dispatcher
+  that encodes the policy for that mode:
+
+  * `solveConstraints` (incremental, in-flight inference)
+      Instance constraints are intentionally inert — they're parked as
+      `.blocked` on their own meta so the graph wakes them when a relevant
+      meta advances, but no actual dispatch happens. This avoids triggering
+      instance resolution while elaborating partial expressions where the
+      typeclass dictionary's argument metas may still be unsolved.
+
+  * `solveConstraintsSilently` (soft boundary — instance method bodies and
+    function-type elaboration)
+      Full instance dispatch runs, but a "no matching instance / cycle /
+      depth-exceeded" outcome converts the constraint back to `.blocked`
+      instead of raising an error. This is essential for **recursive
+      instances**: when elaborating `instance Gt Nat where def gt := … gt n m`,
+      the body's recursive `gt n m` call triggers a `Gt Nat` lookup before
+      `instance Gt Nat` itself is fully registered. The silent mode lets the
+      constraint live until a later drain at a wider scope retries the lookup
+      with the now-complete environment.
+
+  * `drainConstraints` (hard boundary — function/instance/module finalization)
+      Full dispatch with errors surfaced. Iterates `solveConstraintGraph`
+      until a pass makes no progress (no meta or level variable newly solved
+      and `s.postponed` did not shrink).
+
+  All three modes share the same scheduling, wake-up, dependency-tracking,
+  and error-chain enrichment from `Unify.solveConstraintGraph` — they only
+  differ in their per-constraint dispatcher.
+
+  `s.postponed` is the persistent store of constraints across solver calls.
+  The graph driver mutates it in-place: solved/failed constraints leave the
+  store, blocked/deferred constraints stay until a later call resumes them.
+-/
+
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
 import Soma.Dependent.Unify
@@ -89,30 +129,22 @@ private def trySolveDrainConstraint (c : Constraint) : TCM SolveResult := do
   | _ =>
     Soma.Dependent.trySolveBasicConstraint c
 
-/-- Silent version of `trySolveDrainConstraint` -/
-private def trySolveDrainConstraintSilent (c : Constraint) : TCM SolveResult := do
+/-- Same as the drain dispatcher but blocked instances are kept -/
+private def trySolveSoftConstraint (c : Constraint) : TCM SolveResult := do
   let result ← trySolveDrainConstraint c
   match c, result with
   | .resolveInstance metaId _ _ _, .failed _ => return .blocked #[metaId] #[]
   | .deferredInstance metaId _ _, .failed _ => return .blocked #[metaId] #[]
   | _, _ => return result
 
-/-- Reintroduce constraints the graph left unsolved so they survive across calls -/
-private def reintroduceUnsolved (unsolved : Array TrackedConstraint) : TCM Unit := do
-  for tc in unsolved do
-    let _ ← TCM.postponeTracked tc.constraint tc.metas tc.levelVars
-              tc.origin tc.parentConstraints
-
 /-- Incremental driver -/
 def solveConstraints : TCM Nat := do
   let unsolved ← Unify.solveConstraintGraph trySolveIncrementalConstraint
-  reintroduceUnsolved unsolved
   return unsolved.size
 
 /-- Silent-drain driver -/
 def solveConstraintsSilently : TCM Nat := do
-  let unsolved ← Unify.solveConstraintGraph trySolveDrainConstraintSilent
-  reintroduceUnsolved unsolved
+  let unsolved ← Unify.solveConstraintGraph trySolveSoftConstraint
   return unsolved.size
 
 /-- Final-pass driver -/
@@ -122,7 +154,6 @@ partial def drainConstraints : TCM Unit := do
   let solvedLevelsBefore := stateBefore.levelSolutions.size
   let postponedBefore := stateBefore.postponed.size
   let unsolved ← Unify.solveConstraintGraph trySolveDrainConstraint
-  reintroduceUnsolved unsolved
   if unsolved.size == 0 then return
   let stateAfter ← TCM.getState
   let solvedMetasAfter ← countSolvedMetas stateAfter

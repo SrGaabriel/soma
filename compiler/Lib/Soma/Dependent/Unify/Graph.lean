@@ -642,10 +642,9 @@ def computeMinimalUnsatisfiableSet (g : ConstraintGraph) (failedTc : TrackedCons
 
   return (relevantConstraints, relevantMetas)
 
-/-- Build a constraint graph from postponed constraints -/
-def fromPostponed : TCM ConstraintGraph := do
+/-- Build the initial transient state for a solver run -/
+def initialFromPostponed : TCM ConstraintGraph := do
   let allConstraints ← TCM.getPostponedTracked
-  TCM.clearPostponed
   let mut g := ConstraintGraph.empty
   for tc in allConstraints do
     let complexity ← countUnsolvedMetas tc.metas
@@ -667,10 +666,10 @@ def enhanceErrorWithChain (error : TCError) (chain : Array ConstraintInfo)
     .typeMismatch expected actual purpose expectedSpan actualSpan chain
   | other => other
 
-/-- Main unified constraint solver using the constraint graph with smart retrying -/
+/-- Main unified constraint solver -/
 def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
     (fuel : Nat := constraintSolverFuel) : TCM (Array TrackedConstraint) := do
-  let mut g ← ConstraintGraph.fromPostponed
+  let mut g ← ConstraintGraph.initialFromPostponed
   let mut remainingFuel := fuel
 
   while remainingFuel > 0 do
@@ -678,8 +677,7 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
 
     -- Try to extract a constraint from the queue
     match g.extractMin with
-    | none =>
-      break
+    | none => break
     | some (tc, g') =>
       g := g'
       -- Try to solve this constraint
@@ -688,6 +686,7 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
       | .solved =>
         -- Successfully solved! Remove from graph
         g := g.remove tc.constraintId.id
+        TCM.modifyState (·.removeConstraint tc.constraintId)
         for mid in tc.metas do
           if (← TCM.isMetaSolved mid) then
             g ← g.smartWakeBlocked mid
@@ -711,15 +710,16 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
         let (chain, metas) ← g.computeMinimalUnsatisfiableSet tc
         TCM.addError (enhanceErrorWithChain error chain metas)
         g := g.remove tc.constraintId.id
+        TCM.modifyState (·.removeConstraint tc.constraintId)
 
-    -- Pull in any constraints that the per-constraint dispatcher added
-    let newPostponed ← TCM.getPostponedTracked
-    if !newPostponed.isEmpty then
-      TCM.clearPostponed
-      for tc in newPostponed do
+    let postponedSnap ← TCM.getPostponedTracked
+    let mut anyNew := false
+    for tc in postponedSnap do
+      if !g.constraints.contains tc.constraintId.id then
         let complexity ← ConstraintGraph.countUnsolvedMetas tc.metas
         g := g.insert tc complexity
-      -- Invalidate clusters when new constraints are added
+        anyNew := true
+    if anyNew then
       g := g.invalidateClusters
 
   let mut unsolved : Array TrackedConstraint := #[]
@@ -727,16 +727,14 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
     unsolved := unsolved.push tc
   return unsolved
 
-/-- Solve constraints using a cluster-based strategy.
-    This groups related constraints and solves them together. -/
+/-- Creates a cluster from initial postponed state of related constraints and solves them together -/
 def solveConstraintGraphClustered (tryConstraint : Constraint → TCM SolveResult)
     (strategy : SolveStrategy := .smallestClusterFirst)
     (fuel : Nat := constraintSolverFuel) : TCM (Array TrackedConstraint) := do
-  let mut g ← ConstraintGraph.fromPostponed
+  let mut g ← ConstraintGraph.initialFromPostponed
   g := g.withStrategy strategy
 
   let mut remainingFuel := fuel
-  let mut solvedCount := 0
 
   let tcState ← TCM.getState
   let sccIdx := ConstraintGraph.metaSCCIndices tcState.metas
@@ -747,7 +745,7 @@ def solveConstraintGraphClustered (tryConstraint : Constraint → TCM SolveResul
 
   -- Sort clusters based on strategy
   let sortedClusters := match strategy with
-    | .priority => initialClusters  -- Use default priority order
+    | .priority => initialClusters
     | .smallestClusterFirst => ConstraintGraph.sortClustersBySize initialClusters true
     | .largestClusterFirst => ConstraintGraph.sortClustersBySize initialClusters false
 
@@ -759,15 +757,13 @@ def solveConstraintGraphClustered (tryConstraint : Constraint → TCM SolveResul
       remainingFuel := remainingFuel - 1
 
       match g.constraints.get? cid with
-      | none => continue  -- Already solved/removed
+      | none => continue
       | some tc =>
         let result ← tryConstraint tc.constraint
-
         match result with
         | .solved =>
           g := g.remove tc.constraintId.id
-          solvedCount := solvedCount + 1
-          -- Smart wake for related constraints
+          TCM.modifyState (·.removeConstraint tc.constraintId)
           for mid in tc.metas do
             if (← TCM.isMetaSolved mid) then
               g ← g.smartWakeBlocked mid
@@ -788,114 +784,66 @@ def solveConstraintGraphClustered (tryConstraint : Constraint → TCM SolveResul
 
         | .failed error =>
           let (chain, metas) ← g.computeMinimalUnsatisfiableSet tc
-          let enhancedError := enhanceErrorWithChain error chain metas
-          TCM.addError enhancedError
+          TCM.addError (enhanceErrorWithChain error chain metas)
           g := g.remove tc.constraintId.id
+          TCM.modifyState (·.removeConstraint tc.constraintId)
 
-      -- Check for newly postponed constraints
-      let newPostponed ← TCM.getPostponedTracked
-      if !newPostponed.isEmpty then
-        TCM.clearPostponed
-        for ntc in newPostponed do
+      let postponedSnap ← TCM.getPostponedTracked
+      let mut anyNew := false
+      for ntc in postponedSnap do
+        if !g.constraints.contains ntc.constraintId.id then
           let complexity ← ConstraintGraph.countUnsolvedMetas ntc.metas
           g := g.insert ntc complexity
-        g := g.invalidateClusters
+          anyNew := true
+      if anyNew then g := g.invalidateClusters
 
-  -- Fall back to regular solving for any remaining constraints
   if !g.isEmpty then
-    let remaining ← solveConstraintGraph tryConstraint remainingFuel
-    return remaining
+    return ← solveConstraintGraph tryConstraint remainingFuel
 
   let mut unsolved : Array TrackedConstraint := #[]
   for (_, tc) in g.constraints do
     unsolved := unsolved.push tc
   return unsolved
 
-/-- Speculative solving: try multiple strategies and pick the best result.
-    This is useful when we're stuck and want to try different approaches. -/
+/-- Multiple solving strategies with rollback -/
 def solveConstraintGraphSpeculative (tryConstraint : Constraint → TCM SolveResult)
     (fuel : Nat := constraintSolverFuel) : TCM (Array TrackedConstraint) := do
-  -- Save initial state
   let initialState ← TCM.getState
-  let initialPostponed ← TCM.getPostponedTracked
+  let initialSize := initialState.postponed.size
 
-  -- Try strategy 1: Priority-based (default)
-  let result1 ← TCM.tryWithRollback do
-    TCM.clearPostponed
-    for tc in initialPostponed do
-      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.levelVars tc.origin tc.parentConstraints
-    solveConstraintGraph tryConstraint fuel
+  let runStrategy (action : TCM (Array TrackedConstraint))
+      : TCM (Option (Array TrackedConstraint × Nat × Nat × TCState)) := do
+    set initialState
+    match ← TCM.tryWithRollback action with
+    | some r =>
+      let st ← TCM.getState
+      return some (r, r.size, st.errors.size, st)
+    | none => return none
 
-  -- Get state after first attempt
-  let state1 ← TCM.getState
-  let errors1 := state1.errors.size
-  let remaining1 := match result1 with
-    | some r => r.size
-    | none => initialPostponed.size
+  let result1 ← runStrategy (solveConstraintGraph tryConstraint fuel)
+  let result2 ← runStrategy (solveConstraintGraphClustered tryConstraint .smallestClusterFirst fuel)
+  let result3 ← runStrategy (solveConstraintGraphClustered tryConstraint .largestClusterFirst fuel)
 
-  -- Reset state and try strategy 2: Smallest cluster first
-  set initialState
-  let result2 ← TCM.tryWithRollback do
-    TCM.clearPostponed
-    for tc in initialPostponed do
-      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.levelVars tc.origin tc.parentConstraints
-    solveConstraintGraphClustered tryConstraint .smallestClusterFirst fuel
-
-  let state2 ← TCM.getState
-  let errors2 := state2.errors.size
-  let remaining2 := match result2 with
-    | some r => r.size
-    | none => initialPostponed.size
-
-  -- Reset state and try strategy 3: Largest cluster first
-  set initialState
-  let result3 ← TCM.tryWithRollback do
-    TCM.clearPostponed
-    for tc in initialPostponed do
-      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.levelVars tc.origin tc.parentConstraints
-    solveConstraintGraphClustered tryConstraint .largestClusterFirst fuel
-
-  let state3 ← TCM.getState
-  let errors3 := state3.errors.size
-  let remaining3 := match result3 with
-    | some r => r.size
-    | none => initialPostponed.size
-
-  -- Pick the best result: fewer errors first, then fewer remaining constraints
-  let results := [
-    (remaining1, errors1, result1, state1),
-    (remaining2, errors2, result2, state2),
-    (remaining3, errors3, result3, state3)
-  ]
-
-  -- Find the best result
-  let mut bestRemaining := initialPostponed.size
-  let mut bestErrors := initialPostponed.size
+  let mut bestRemaining := initialSize
+  let mut bestErrors := initialSize
   let mut bestResult : Option (Array TrackedConstraint) := none
   let mut bestState := initialState
-
-  for (rem, errs, res, st) in results do
-    -- Prefer fewer errors, then fewer remaining constraints
-    if errs < bestErrors || (errs == bestErrors && rem < bestRemaining) then
-      match res with
-      | some r =>
+  for r in [result1, result2, result3] do
+    match r with
+    | some (arr, rem, errs, st) =>
+      if errs < bestErrors || (errs == bestErrors && rem < bestRemaining) then
         bestRemaining := rem
         bestErrors := errs
-        bestResult := some r
+        bestResult := some arr
         bestState := st
-      | none => pure ()
+    | none => pure ()
 
-  -- Apply the best state
   set bestState
-
   match bestResult with
   | some r => return r
   | none =>
     -- All strategies failed, fall back to default
     set initialState
-    TCM.clearPostponed
-    for tc in initialPostponed do
-      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.levelVars tc.origin tc.parentConstraints
     solveConstraintGraph tryConstraint fuel
 
 end Soma.Dependent.Unify

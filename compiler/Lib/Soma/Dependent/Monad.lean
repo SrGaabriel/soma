@@ -1110,6 +1110,14 @@ structure TCState where
   postponed : Array TrackedConstraint := #[]
   /-- Worklist of constraint IDs to retry (populated when metas are solved) -/
   worklist : Array ConstraintId := #[]
+  /-- Set by `unify` / `unifyLevel` / `subtypeUnify` when they cannot make
+      progress on a stuck case (flex-flex rows, projection metas, stuck `max`
+      levels, etc.). The constraint dispatcher reads this and converts it into
+      a `.blocked` outcome. Cleared at the start of every dispatch call.
+      A non-`none` value at the end of an outer `unify` means "the operation
+      made whatever progress it could, but the overall constraint is stuck on
+      these dependencies." -/
+  stuckSignal : Option (Array MetaId × Array LevelVarId) := none
   /-- Accumulated errors -/
   errors : Array TCError := #[]
   /-- Accumulated warnings -/
@@ -1870,6 +1878,18 @@ def wakeConstraintsFor (mid : MetaId) : TCM Unit := do
   let state ← getState
   let affectedCids := state.metas.getAffectedConstraints mid
   modifyState (·.wakeConstraints affectedCids)
+
+/-- Mark the current operation as stuck on the given dependency set -/
+def markStuck (metas : Array MetaId) (levelVars : Array LevelVarId) : TCM Unit :=
+  modifyState fun s => { s with stuckSignal := some (metas, levelVars) }
+
+/-- Clear any pending stuck signal -/
+def clearStuckSignal : TCM Unit :=
+  modifyState fun s => { s with stuckSignal := none }
+
+/-- Read the current stuck signal -/
+def getStuckSignal : TCM (Option (Array MetaId × Array LevelVarId)) := do
+  return (← getState).stuckSignal
 
 /-- Pop a constraint from the worklist -/
 def popWorklist : TCM (Option ConstraintId) := do
