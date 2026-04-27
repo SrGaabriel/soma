@@ -799,19 +799,6 @@ instance : Inhabited InstanceFailure where
     span := Span.uninhabited
   }
 
-/-- Check if a Value is concrete enough for instance resolution -/
-private partial def isConcreteForResolution : Value → Bool
-  | .vNeutral _ (.nVar _) => false
-  | .vNeutral _ (.nMeta _) => false
-  | .vDataType _ params => params.all isConcreteForResolution
-  | .vPrimTy _ => true
-  | .vType _ => true
-  | .vPi _ _ _ dom cod =>
-    isConcreteForResolution dom && match cod with
-    | .const _ v => isConcreteForResolution v
-    | .term _ _ _ => true
-  | _ => true
-
 /-- Deeply force metavariables inside values -/
 partial def deepForceValue (v : Value) : TCM Value := do
   let v' ← force v
@@ -852,89 +839,6 @@ def addInstanceWithIdForced (env : InstanceEnv) (inst : InstanceInfo)
   return env.addInstanceWithId inst'
 
 end InstanceEnv
-
-/-- Best-effort attempt to resolve pending instance-resolution constraints -/
-def solvePendingInstances : TCM (Array InstanceFailure) := do
-  let pending ← TCM.getPendingInstances
-  let mut failures : Array InstanceFailure := #[]
-  let mut solvedIds : Array MetaId := #[]
-
-  for p in pending do
-    let solved ← TCM.isMetaSolved p.metaId
-    if solved then
-      solvedIds := solvedIds.push p.metaId
-      continue
-    let forcedArgs ← p.args.mapM deepForceValue
-    let allConcrete := forcedArgs.all isConcreteForResolution
-    if !allConcrete then continue
-
-    let result ← resolveInstance p.classId forcedArgs
-    match result with
-    | .found value _ =>
-      TCM.solveMeta p.metaId value (callerTag := "Instance.solvePendingA")
-      solvedIds := solvedIds.push p.metaId
-    | .notFound classId args reason =>
-      failures := failures.push {
-        metaId := p.metaId, classId := classId, args := args,
-        reason := reason, span := p.span
-      }
-    | .cycle classId args =>
-      failures := failures.push {
-        metaId := p.metaId, classId := classId, args := args,
-        reason := "cycle in instance resolution", span := p.span
-      }
-    | .depthExceeded classId =>
-      failures := failures.push {
-        metaId := p.metaId, classId := classId, args := #[],
-        reason := "instance search depth exceeded", span := p.span
-      }
-
-  -- Remove only the constraints we actually solved
-  if solvedIds.size == pending.size then
-    TCM.clearPendingInstances
-  else if !solvedIds.isEmpty then
-    let toDrop : Std.HashSet Nat := solvedIds.foldl (fun s m => s.insert m.id) {}
-    TCM.modifyState fun s =>
-      let (keep, drop) := s.postponed.partition fun tc =>
-        match tc.constraint with
-        | .resolveInstance m _ _ _ => !toDrop.contains m.id
-        | _ => true
-      let droppedCids := drop.map (·.constraintId)
-      let metas' := droppedCids.foldl (fun m cid => m.removeConstraint cid) s.metas
-      { s with postponed := keep, metas := metas' }
-  return failures
-
-/-- Solve pending instances and accumulate errors for all failures -/
-def solvePendingInstancesOrFail : TCM Unit := do
-  let deferred ← TCM.getDeferredInstanceMetas
-  TCM.clearDeferredInstanceMetas
-  for (metaId, domTy, span) in deferred do
-    let solved ← TCM.isMetaSolved metaId
-    if !solved then
-      let forcedDom ← deepForceValue domTy
-      match forcedDom with
-      | .vDataType classId args =>
-        let forcedArgs ← args.mapM deepForceValue
-        let result ← resolveInstance classId forcedArgs.toArray
-        match result with
-        | .found value _ =>
-          TCM.solveMeta metaId value (callerTag := "Instance.solvePendingB")
-        | .notFound _ _ _ =>
-          TCM.addError (.noInstance classId forcedArgs.toArray span #[] #[])
-        | .cycle classId _ =>
-          TCM.addError (.instanceCycle classId span #[])
-        | .depthExceeded classId =>
-          TCM.addError (.instanceDepthExceeded classId span #[])
-      | _ => pure ()
-  let failures ← solvePendingInstances
-  for failure in failures do
-    match failure.reason with
-    | "cycle in instance resolution" =>
-      TCM.addError (.instanceCycle failure.classId failure.span #[])
-    | "instance search depth exceeded" =>
-      TCM.addError (.instanceDepthExceeded failure.classId failure.span #[])
-    | _ =>
-      TCM.addError (.noInstance failure.classId failure.args failure.span #[] #[])
 
 /-- Create an empty closure for non-dependent types -/
 private def mkSimpleClosure (name : String) : Closure :=

@@ -33,9 +33,6 @@ def maxTerminationFuel : Nat := 1000
 /-- Maximum number of positivity checking iterations -/
 def maxPositivityIterations : Nat := 100
 
-/-- Maximum iterations for greedy implicit solving -/
-def maxGreedySolveIterations : Nat := 10
-
 /-- A span that indicates no source location (for internal use) -/
 def noSpan : Span := Span.uninhabited
 

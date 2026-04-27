@@ -400,7 +400,7 @@ def testSolveConstraintGraphBasic : Bool :=
     let constraint := Constraint.unify (.vPrimTy .int) (.vPrimTy .int) testSpan
     TCM.postpone constraint
     -- Solve it
-    let remaining ← solveConstraintGraph trySolveConstraint
+    let remaining ← solveConstraintGraph trySolveBasicConstraint
     return remaining.isEmpty
   with
   | .ok (true, _) => true
@@ -410,11 +410,11 @@ def testSolveConstraintGraphWithMeta : Bool :=
   match runTCM do
     -- Create a meta and unify with a concrete type
     let metaVal ← TCM.freshMetaVal (.vType .zero)
-    let metas := collectMetas metaVal
+    let metas := Value.collectMetas metaVal
     let constraint := Constraint.unify metaVal (.vPrimTy .int) testSpan
     let _ ← TCM.postponeTracked constraint metas
     -- Solve
-    let remaining ← solveConstraintGraph trySolveConstraint
+    let remaining ← solveConstraintGraph trySolveBasicConstraint
     -- The meta should be solved
     let metaVal' ← force metaVal
     match metaVal' with
@@ -431,10 +431,10 @@ def testSolveConstraintGraphMultiple : Bool :=
     let meta2 ← TCM.freshMetaVal (.vType .zero)
     let c1 := Constraint.unify meta1 (.vPrimTy .int) testSpan
     let c2 := Constraint.unify meta2 (.vPrimTy .bool) testSpan
-    let _ ← TCM.postponeTracked c1 (collectMetas meta1)
-    let _ ← TCM.postponeTracked c2 (collectMetas meta2)
+    let _ ← TCM.postponeTracked c1 (Value.collectMetas meta1)
+    let _ ← TCM.postponeTracked c2 (Value.collectMetas meta2)
     -- Solve
-    let remaining ← solveConstraintGraph trySolveConstraint
+    let remaining ← solveConstraintGraph trySolveBasicConstraint
     -- Both should be solved
     let m1 ← force meta1
     let m2 ← force meta2
@@ -451,10 +451,10 @@ def testSolveConstraintGraphClustered : Bool :=
     let sharedMeta ← TCM.freshMetaVal (.vType .zero)
     let c1 := Constraint.unify sharedMeta (.vPrimTy .int) testSpan
     let c2 := Constraint.unify sharedMeta (.vPrimTy .int) testSpan
-    let _ ← TCM.postponeTracked c1 (collectMetas sharedMeta)
-    let _ ← TCM.postponeTracked c2 (collectMetas sharedMeta)
+    let _ ← TCM.postponeTracked c1 (Value.collectMetas sharedMeta)
+    let _ ← TCM.postponeTracked c2 (Value.collectMetas sharedMeta)
     -- Solve using clustered strategy
-    let remaining ← solveConstraintGraphClustered trySolveConstraint .smallestClusterFirst
+    let remaining ← solveConstraintGraphClustered trySolveBasicConstraint .smallestClusterFirst
     return remaining.isEmpty
   with
   | .ok (true, _) => true

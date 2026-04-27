@@ -905,114 +905,104 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
 
 end
 
-/-- Try to solve a single postponed constraint, returning a detailed result -/
-def trySolveConstraint (c : Constraint) : TCM SolveResult := do
+/-- Collect every unsolved metavariable referenced anywhere in two values -/
+private def collectUnsolvedMetasOf (v1 v2 : Value) : TCM (Array MetaId) := do
+  let raw := Value.collectMetas v1 ++ Value.collectMetas v2
+  let mut metas : Array MetaId := #[]
+  let mut seen : Std.HashSet Nat := {}
+  for m in raw do
+    if seen.contains m.id then continue
+    seen := seen.insert m.id
+    if !(← TCM.isMetaSolved m) then metas := metas.push m
+  return metas
+
+/-- Drop any postponed entries appended since `priorSize` -/
+private def dropPostponesSince (priorSize : Nat) : TCM Unit := do
+  let state ← TCM.getState
+  if state.postponed.size <= priorSize then return
+  let dropped := state.postponed.extract priorSize state.postponed.size
+  let droppedCids := dropped.map (·.constraintId)
+  let metas' := droppedCids.foldl (fun m cid => m.removeConstraint cid) state.metas
+  TCM.modifyState fun s => { s with
+    postponed := s.postponed.extract 0 priorSize
+    metas := metas' }
+
+/-- Run a unification action under a constraint-graph dispatch envelope -/
+private def runUnifyAction (blockedMetas : Array MetaId)
+    (blockedLevelVars : Array LevelVarId) (action : TCM Unit) : TCM SolveResult := do
+  let postponedBefore := (← TCM.getState).postponed.size
+  let blockedNonEmpty := !(blockedMetas.isEmpty && blockedLevelVars.isEmpty)
+  try
+    action
+    if (← TCM.getState).postponed.size > postponedBefore then
+      dropPostponesSince postponedBefore
+      if blockedNonEmpty then return .blocked blockedMetas blockedLevelVars
+      else return .deferred
+    return .solved
+  catch e =>
+    if blockedNonEmpty then return .blocked blockedMetas blockedLevelVars
+    else return .failed e
+
+/-- Collect the unsolved level variables reachable from a level expression -/
+private def unsolvedLevelVarsOf (l : Level) : TCM (Array LevelVarId) := do
+  let state ← TCM.getState
+  let sols := state.levelSolutions
+  let mut out : Array LevelVarId := #[]
+  let mut seen : Std.HashSet Nat := {}
+  for v in l.freeVars do
+    if seen.contains v.id then continue
+    seen := seen.insert v.id
+    if !sols.contains v.id then out := out.push v
+  return out
+
+/-- Try to solve a single non-instance constraint -/
+def trySolveBasicConstraint (c : Constraint) : TCM SolveResult := do
   match c with
   | .unify v1 v2 span =>
     TCM.withSpan span do
       -- Force values to see if they're blocked on metas
       let v1' ← force v1
       let v2' ← force v2
-
-      -- Check if either side is an unsolved meta - if so, we're blocked
-      let blockedMetas ← collectUnsolvedMetas v1' v2'
-      if !blockedMetas.isEmpty then
-        -- Check if we can make progress anyway
-        try
-          unify v1' v2'
-          return .solved
-        catch e =>
-          -- Check if this is a "stuck" error vs a real failure
-          if blockedMetas.size > 0 then
-            return .blocked blockedMetas
-          else
-            return .failed e
-      else
-        try
-          unify v1' v2'
-          return .solved
-        catch e =>
-          return .failed e
+      runUnifyAction (← collectUnsolvedMetasOf v1' v2') #[] (unify v1' v2')
 
   | .subtype v1 v2 span =>
     TCM.withSpan span do
       let v1' ← force v1
       let v2' ← force v2
-      let blockedMetas ← collectUnsolvedMetas v1' v2'
-      try
-        subtypeUnify v1' v2'
-        return .solved
-      catch e =>
-        if !blockedMetas.isEmpty then
-          return .blocked blockedMetas
-        else
-          return .failed e
+      runUnifyAction (← collectUnsolvedMetasOf v1' v2') #[] (subtypeUnify v1' v2')
 
   | .levelEq l1 l2 =>
-    let l1' ← TCM.zonkLevel l1
-    let l2' ← TCM.zonkLevel l2
-    let l1n := l1'.simplify
-    let l2n := l2'.simplify
+    let l1n := (← TCM.zonkLevel l1).simplify
+    let l2n := (← TCM.zonkLevel l2).simplify
     if l1n == l2n then return .solved
-    try
-      unifyLevel l1n l2n
-      return .solved
-    catch e =>
-      return .failed e
+    let lvs := (← unsolvedLevelVarsOf l1n) ++ (← unsolvedLevelVarsOf l2n)
+    runUnifyAction #[] lvs.toList.eraseDups.toArray (unifyLevel l1n l2n)
 
   | .levelLe l1 l2 =>
-    let l1' ← TCM.zonkLevel l1
-    let l2' ← TCM.zonkLevel l2
-    let l1n := l1'.simplify
-    let l2n := l2'.simplify
+    let l1n := (← TCM.zonkLevel l1).simplify
+    let l2n := (← TCM.zonkLevel l2).simplify
     match l1n, l2n with
     | .lit n1, .lit n2 =>
       if n1 ≤ n2 then return .solved
       else
         let span ← TCM.getSpan
         return .failed (.internalError s!"level constraint failed: {l1n} ≤ {l2n}" span)
-    | .prop, _ => return .solved -- Prop fits below every Type universe.
-    | .lit 0, _ => return .solved -- 0 ≤ anything.
-    | .var v, .lit n =>
-      let _ := n
-      TCM.solveLevelVar v (.lit 0)
-      return .solved
-    | .lit n, .var v =>
-      TCM.solveLevelVar v (.lit n)
-      return .solved
+    | .prop, _ => return .solved   -- Prop fits below every Type universe.
+    | .lit 0, _ => return .solved  -- 0 ≤ anything.
+    | .var v, .lit _ => TCM.solveLevelVar v (.lit 0); return .solved
+    | .lit n, .var v => TCM.solveLevelVar v (.lit n); return .solved
     | .var v1, .var v2 =>
       if v1.id == v2.id then return .solved
-      else
-        TCM.solveLevelVar v1 (.var v2)
-        return .solved
-    | _, _ => return .deferred
+      else TCM.solveLevelVar v1 (.var v2); return .solved
+    | _, _ =>
+      let lvs := (← unsolvedLevelVarsOf l1n) ++ (← unsolvedLevelVarsOf l2n)
+      let lvsU := lvs.toList.eraseDups.toArray
+      if lvsU.isEmpty then return .deferred
+      else return .blocked #[] lvsU
 
-  | .resolveInstance _ _ _ _ =>
-    return .deferred
-
-  | .deferredInstance _ _ _ =>
-    return .deferred
-where
-  /-- Collect unsolved metavariables from two values -/
-  collectUnsolvedMetas (v1 v2 : Value) : TCM (Array MetaId) := do
-    let mut metas : Array MetaId := #[]
-    -- Check v1 for unsolved metas at the head
-    match v1 with
-    | .vNeutral _ (.nMeta m) =>
-      let solved ← TCM.isMetaSolved m
-      if !solved then metas := metas.push m
-    | _ => pure ()
-    -- Check v2 for unsolved metas at the head
-    match v2 with
-    | .vNeutral _ (.nMeta m) =>
-      let solved ← TCM.isMetaSolved m
-      if !solved then metas := metas.push m
-    | _ => pure ()
-    return metas
-
-/-- Run the unified constraint graph solver.
-    Returns the remaining unsolved constraints. -/
-def solveConstraints : TCM (Array Constraint) :=
-  Unify.solveConstraintGraph trySolveConstraint
+  | .resolveInstance metaId _ _ _ =>
+    return .blocked #[metaId] #[]
+  | .deferredInstance metaId _ _ =>
+    return .blocked #[metaId] #[]
 
 end Soma.Dependent

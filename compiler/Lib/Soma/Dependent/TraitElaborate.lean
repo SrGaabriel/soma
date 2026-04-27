@@ -361,7 +361,7 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
 
   let (_bodyVal, coreBody, generatedParams) ← bindParams 0 #[]
 
-  let _ ← Soma.Dependent.solvePendingInstances
+  let _ ← Soma.Dependent.solveConstraintsSilently
   let coreBody' ← zonkExpr coreBody
   let expectedType' ← zonkValue expectedType
 

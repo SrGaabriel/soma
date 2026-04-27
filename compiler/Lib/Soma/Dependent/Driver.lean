@@ -6,6 +6,7 @@ import Soma.Dependent.Infer
 import Soma.Dependent.Unify
 import Soma.Dependent.Level
 import Soma.Dependent.Instance
+import Soma.Dependent.Solver
 import Soma.Dependent.Error
 import Soma.Dependent.Totality
 import Soma.Dependent.Elaborate
@@ -285,7 +286,7 @@ def elaborateFunctionType (sigSyntax : Syntax.Expr) : TCM Value := do
     piExpr := Soma.Core.Expr.pi .omega .implicit name (.sort Level.zero) piExpr
   let fnType ← TCM.evalExprInEnv Soma.Core.Env.empty piExpr
 
-  let _ ← Soma.Dependent.solvePendingInstances
+  let _ ← Soma.Dependent.solveConstraintsSilently
   return fnType
 
 /-- Finds the index among explicit binders of the first pi whose domain is uninhabited per `Coverage.liveCandidates` -/
@@ -335,7 +336,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       let declaredType ← match storedType with
         | some ty => pure ty
         | none => TCM.freshMetaVal (.vType .zero)
-      Soma.Dependent.solvePendingInstancesOrFail
+      Soma.Dependent.drainConstraints
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
       let declaredType'' ← expandAbbrevValue declaredType'
@@ -373,7 +374,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       else pure (some fn.body)
     match effectiveBody with
     | none =>
-      Soma.Dependent.solvePendingInstancesOrFail
+      Soma.Dependent.drainConstraints
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
       let resolved' ← expandAbbrevValue declaredType'
@@ -385,7 +386,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
         TCM.infallible (Soma.Dependent.checkSyntax body resultType) default
       let (generatedParams, typedBody) ← withSignaturePrefixBindings allParams fn.params span do
         if bodyIsProof then TCM.inErasedContext runBodyCheck else runBodyCheck
-      Soma.Dependent.solvePendingInstancesOrFail
+      Soma.Dependent.drainConstraints
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
       let typedBody' ← zonkExpr typedBody
@@ -399,7 +400,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     let (generatedParams, (inferredType, typedBody)) ← withFunctionParams fn.params paramTypes span do
       TCM.infallibleExpr (Soma.Dependent.inferSyntax fn.body) span
     -- Solve pending instance constraints before zonking
-    Soma.Dependent.solvePendingInstancesOrFail
+    Soma.Dependent.drainConstraints
     -- Zonk all solved metas so downstream passes see concrete types
     let inferredType' ← zonkValue inferredType
     reportUnsolvedMetas inferredType' span
@@ -688,7 +689,7 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
 def resolveAndZonkSignatures (module : Soma.Core.UntypedModule) : TCM Globals := do
   let ctx ← TCM.getCtx
   let ns := ctx.currentNamespace
-  Soma.Dependent.solvePendingInstancesOrFail
+  Soma.Dependent.drainConstraints
   let mut globals := ctx.globals
   for fn in module.functions ++ module.theorems do
     if fn.declaredTypeSyntax.isNone then continue

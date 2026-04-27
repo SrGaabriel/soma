@@ -79,9 +79,32 @@ def isInstanceConstraint : Constraint → Bool
   | .deferredInstance _ _ _ => true
   | _ => false
 
+/-- Every metavariable whose progress could affect this constraint -/
+def referencedMetas : Constraint → Array MetaId
+  | .unify v1 v2 _ =>
+    (Value.collectMetas v1 ++ Value.collectMetas v2).toList.eraseDups.toArray
+  | .subtype v1 v2 _ =>
+    (Value.collectMetas v1 ++ Value.collectMetas v2).toList.eraseDups.toArray
+  | .levelEq _ _ => #[]
+  | .levelLe _ _ => #[]
+  | .resolveInstance metaId _ args _ =>
+    (#[metaId] ++ args.foldl (fun acc v => acc ++ Value.collectMetas v) #[])
+      |>.toList.eraseDups.toArray
+  | .deferredInstance metaId domTy _ =>
+    (#[metaId] ++ Value.collectMetas domTy).toList.eraseDups.toArray
+
+/-- Every level variable whose progress could affect this constraint. -/
+def referencedLevelVars : Constraint → Array LevelVarId
+  | .unify _ _ _ => #[]   -- value-level metas, not level vars
+  | .subtype _ _ _ => #[]
+  | .levelEq l1 l2 => (l1.freeVars ++ l2.freeVars).eraseDups.toArray
+  | .levelLe l1 l2 => (l1.freeVars ++ l2.freeVars).eraseDups.toArray
+  | .resolveInstance _ _ _ _ => #[]
+  | .deferredInstance _ _ _ => #[]
+
 end Constraint
 
-/-- A tracked constraint with its ID, metas, and provenance -/
+/-- A tracked constraint with its ID, dependencies, and provenance -/
 structure TrackedConstraint where
   /-- The underlying constraint -/
   constraint : Constraint
@@ -89,6 +112,8 @@ structure TrackedConstraint where
   constraintId : ConstraintId
   /-- Metas referenced by this constraint (cached for efficiency) -/
   metas : Array MetaId
+  /-- Level variables referenced by this constraint (cached for efficiency) -/
+  levelVars : Array LevelVarId := #[]
   /-- Where this constraint originated from -/
   origin : ConstraintOrigin
   /-- Parent constraints that led to this one (for error chain) -/
@@ -1130,31 +1155,27 @@ def solveMeta (s : TCState) (id : MetaId) (v : Value) : TCState :=
 def lookupMeta (s : TCState) (id : MetaId) : Option MetaInfo :=
   s.metas.lookup id
 
-/-- Add a postponed constraint without dependency tracking -/
-def postpone (s : TCState) (c : Constraint) : TCState :=
-  let tc : TrackedConstraint := {
-    constraint := c
-    constraintId := ⟨0⟩ -- assigned lazily when the constraint is registered
-    metas := #[]
-    origin := .unknown
-    parentConstraints := #[]
-  }
-  { s with postponed := s.postponed.push tc }
-
 /-- Add a postponed constraint with full dependency tracking -/
-def postponeTracked (s : TCState) (c : Constraint) (metas : Array MetaId)
-    (origin : ConstraintOrigin := .unknown) (parents : Array ConstraintId := #[])
+def postponeTracked (s : TCState) (c : Constraint)
+    (metas : Array MetaId)
+    (levelVars : Array LevelVarId := #[])
+    (origin : ConstraintOrigin := .unknown)
+    (parents : Array ConstraintId := #[])
     : ConstraintId × TCState :=
-  -- Register the constraint in the dependency system
-  let (cid, metas') := s.metas.registerConstraint metas
+  let (cid, metas') := s.metas.registerConstraint metas levelVars
   let tc : TrackedConstraint := {
     constraint := c
     constraintId := cid
     metas := metas
+    levelVars := levelVars
     origin := origin
     parentConstraints := parents
   }
   (cid, { s with metas := metas', postponed := s.postponed.push tc })
+
+/-- Add a postponed constraint -/
+def postpone (s : TCState) (c : Constraint) : TCState :=
+  (s.postponeTracked c c.referencedMetas c.referencedLevelVars).2
 
 /-- Add constraint IDs to the worklist (to be retried after a meta is solved) -/
 def wakeConstraints (s : TCState) (cids : Array ConstraintId) : TCState :=
@@ -1219,17 +1240,7 @@ def restoreUsages (s : TCState) (usages : Std.HashMap Unique Nat) : TCState :=
 
 /-- Add a pending instance constraint to the unified queue -/
 def addPendingInstance (s : TCState) (p : PendingInstance) : TCState :=
-  let c : Constraint := .resolveInstance p.metaId p.classId p.args p.span
-  let metas : Array MetaId := #[p.metaId]
-  let (cid, metas') := s.metas.registerConstraint metas
-  let tc : TrackedConstraint := {
-    constraint := c
-    constraintId := cid
-    metas := metas
-    origin := .unknown
-    parentConstraints := #[]
-  }
-  { s with metas := metas', postponed := s.postponed.push tc }
+  s.postpone (.resolveInstance p.metaId p.classId p.args p.span)
 
 /-- Get all pending instance constraints from the unified queue -/
 def getPendingInstances (s : TCState) : Array PendingInstance :=
@@ -1251,17 +1262,7 @@ def clearPendingInstances (s : TCState) : TCState :=
 
 /-- Enqueue a deferred instance meta on the unified queue -/
 def addDeferredInstanceMeta (s : TCState) (metaId : MetaId) (domTy : Value) (span : Span) : TCState :=
-  let c : Constraint := .deferredInstance metaId domTy span
-  let metas : Array MetaId := #[metaId]
-  let (cid, metas') := s.metas.registerConstraint metas
-  let tc : TrackedConstraint := {
-    constraint := c
-    constraintId := cid
-    metas := metas
-    origin := .unknown
-    parentConstraints := #[]
-  }
-  { s with metas := metas', postponed := s.postponed.push tc }
+  s.postpone (.deferredInstance metaId domTy span)
 
 /-- Get all deferred instance metas from the unified queue -/
 def getDeferredInstanceMetas (s : TCState) : Array (MetaId × Value × Span) :=
@@ -1786,17 +1787,19 @@ def postpone (c : Constraint) : TCM Unit := do
 
 /-- Postpone a constraint with full dependency tracking -/
 def postponeTracked (c : Constraint) (metas : Array MetaId)
-    (origin : ConstraintOrigin := .unknown) (parents : Array ConstraintId := #[])
+    (levelVars : Array LevelVarId := #[])
+    (origin : ConstraintOrigin := .unknown)
+    (parents : Array ConstraintId := #[])
     : TCM ConstraintId := do
   let state ← getState
-  let (cid, state') := state.postponeTracked c metas origin parents
+  let (cid, state') := state.postponeTracked c metas levelVars origin parents
   set state'
   return cid
 
 /-- Postpone a constraint with origin derived from current context -/
 def postponeWithOrigin (c : Constraint) (metas : Array MetaId)
     (origin : ConstraintOrigin) : TCM ConstraintId := do
-  postponeTracked c metas origin #[]
+  postponeTracked c metas #[] origin #[]
 
 /-- Get the constraint chain leading to a constraint (for error reporting) -/
 def getConstraintChain (cid : ConstraintId) : TCM (Array ConstraintInfo) := do

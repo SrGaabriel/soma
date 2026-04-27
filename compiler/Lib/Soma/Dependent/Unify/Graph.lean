@@ -42,8 +42,7 @@ import Std.Data.HashSet
 
 namespace Soma.Dependent.Unify
 
-open Soma.Core (Value MetaId ConstraintId)
-open Soma.Dependent (collectMetas)
+open Soma.Core (Value MetaId LevelVarId ConstraintId)
 open Soma.Syntax (Span)
 open Std (HashMap HashSet)
 
@@ -98,9 +97,9 @@ structure SpeculativeResult where
 inductive SolveResult where
   /-- Constraint was solved successfully -/
   | solved
-  /-- Constraint is blocked on unsolved metas -/
-  | blocked (metas : Array MetaId)
-  /-- Constraint could not be solved (but may succeed later with more info) -/
+  /-- Constraint is blocked -/
+  | blocked (metas : Array MetaId) (levelVars : Array LevelVarId)
+  /-- Constraint couldn't make progress in this pass -/
   | deferred
   /-- Constraint failed with an error -/
   | failed (error : TCError)
@@ -116,6 +115,8 @@ structure ConstraintGraph where
   queue : Array (Nat × Nat) := #[]
   /-- Constraints blocked on specific metas -/
   blocked : HashMap Nat (Array Nat) := {}
+  /-- Constraints blocked waiting for a specific level variable to be solved -/
+  blockedOnLevelVar : HashMap Nat (Array Nat) := {}
   /-- Next constraint ID for newly created constraints -/
   nextId : Nat := 0
   /-- Constraint clusters (lazily computed) -/
@@ -131,7 +132,7 @@ def empty : ConstraintGraph := {}
 
 /-- Check if the graph has no pending constraints -/
 def isEmpty (g : ConstraintGraph) : Bool :=
-  g.queue.isEmpty && g.blocked.isEmpty
+  g.queue.isEmpty && g.blocked.isEmpty && g.blockedOnLevelVar.isEmpty
 
 /-- Number of active constraints -/
 def size (g : ConstraintGraph) : Nat :=
@@ -226,16 +227,28 @@ def remove (g : ConstraintGraph) (cid : Nat) : ConstraintGraph :=
       match acc.get? mid.id with
       | none => acc
       | some arr => acc.insert mid.id (arr.filter (· != cid))
+    let blockedOnLevelVar' := tc.levelVars.foldl (init := g.blockedOnLevelVar) fun acc lv =>
+      match acc.get? lv.id with
+      | none => acc
+      | some arr => acc.insert lv.id (arr.filter (· != cid))
     { g with
       constraints := constraints'
       metaToConstraints := metaToConstraints'
-      blocked := blocked' }
+      blocked := blocked'
+      blockedOnLevelVar := blockedOnLevelVar' }
 
 /-- Mark a constraint as blocked on a specific meta -/
 def blockOn (g : ConstraintGraph) (cid : Nat) (mid : MetaId) : ConstraintGraph :=
   let existing := g.blocked.getD mid.id #[]
   if existing.contains cid then g
   else { g with blocked := g.blocked.insert mid.id (existing.push cid) }
+
+/-- Mark a constraint as blocked on a specific level variable -/
+def blockOnLevelVar (g : ConstraintGraph) (cid : Nat) (lv : LevelVarId)
+    : ConstraintGraph :=
+  let existing := g.blockedOnLevelVar.getD lv.id #[]
+  if existing.contains cid then g
+  else { g with blockedOnLevelVar := g.blockedOnLevelVar.insert lv.id (existing.push cid) }
 
 /-- Count unsolved metas in a constraint -/
 def countUnsolvedMetas (metas : Array MetaId) : TCM Nat := do
@@ -254,7 +267,19 @@ def wakeBlocked (g : ConstraintGraph) (mid : MetaId) : TCM ConstraintGraph := do
     match g'.constraints.get? cid with
     | none => pure ()
     | some tc =>
-      -- Re-compute complexity and add back to queue
+      let complexity ← countUnsolvedMetas tc.metas
+      g' := { g' with queue := bubbleUp (g'.queue.push (complexity, cid)) g'.queue.size }
+  return g'
+
+/-- Wake up constraints blocked on a level variable -/
+def wakeBlockedOnLevelVar (g : ConstraintGraph) (lv : LevelVarId)
+    : TCM ConstraintGraph := do
+  let blockedCids := g.blockedOnLevelVar.getD lv.id #[]
+  let mut g' := { g with blockedOnLevelVar := g.blockedOnLevelVar.erase lv.id }
+  for cid in blockedCids do
+    match g'.constraints.get? cid with
+    | none => pure ()
+    | some tc =>
       let complexity ← countUnsolvedMetas tc.metas
       g' := { g' with queue := bubbleUp (g'.queue.push (complexity, cid)) g'.queue.size }
   return g'
@@ -336,7 +361,7 @@ def buildMetaDepGraph (metas : Soma.Core.MetaState) : HashMap Nat (Array Nat) :=
     let typeDeps : Array Nat := info.dependsOn.map (·.id)
     let solDeps : Array Nat :=
       match info.solution with
-      | some sol => (Soma.Dependent.collectMetas sol).map (·.id)
+      | some sol => (Value.collectMetas sol).map (·.id)
       | none => #[]
     let merged := (typeDeps ++ solDeps).toList.eraseDups.filter (· != mid)
     acc.insert mid merged.toArray
@@ -644,48 +669,38 @@ def enhanceErrorWithChain (error : TCError) (chain : Array ConstraintInfo)
 
 /-- Main unified constraint solver using the constraint graph with smart retrying -/
 def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
-    (fuel : Nat := constraintSolverFuel) : TCM (Array Constraint) := do
+    (fuel : Nat := constraintSolverFuel) : TCM (Array TrackedConstraint) := do
   let mut g ← ConstraintGraph.fromPostponed
   let mut remainingFuel := fuel
-  let mut solvedCount := 0
 
-  -- Main solving loop
   while remainingFuel > 0 do
     remainingFuel := remainingFuel - 1
 
     -- Try to extract a constraint from the queue
     match g.extractMin with
     | none =>
-      -- Queue is empty, check if there are blocked constraints
-      if g.blocked.isEmpty then
-        break  -- All done!
-      else
-        -- Still have blocked constraints but nothing in queue
-        -- This means we're stuck - these constraints may need more info
-        break
+      break
     | some (tc, g') =>
       g := g'
-
       -- Try to solve this constraint
       let result ← tryConstraint tc.constraint
-
       match result with
       | .solved =>
         -- Successfully solved! Remove from graph
         g := g.remove tc.constraintId.id
-        solvedCount := solvedCount + 1
-
-        -- Smart retrying: only wake up constraints related to solved metas
         for mid in tc.metas do
-          let isSolved ← TCM.isMetaSolved mid
-          if isSolved then
-            -- Use smart wake instead of waking all constraints
+          if (← TCM.isMetaSolved mid) then
             g ← g.smartWakeBlocked mid
+        let lvSols := (← TCM.getState).levelSolutions
+        for lv in tc.levelVars do
+          if lvSols.contains lv.id then
+            g ← g.wakeBlockedOnLevelVar lv
 
-      | .blocked metas =>
-        -- Constraint is blocked, move to blocked set
+      | .blocked metas levelVars =>
         for mid in metas do
           g := g.blockOn tc.constraintId.id mid
+        for lv in levelVars do
+          g := g.blockOnLevelVar tc.constraintId.id lv
 
       | .deferred =>
         -- Constraint couldn't make progress, re-add with same complexity
@@ -693,13 +708,11 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
         g := { g with queue := ConstraintGraph.bubbleUp (g.queue.push (complexity, tc.constraintId.id)) g.queue.size }
 
       | .failed error =>
-        -- Constraint failed - compute minimal unsatisfiable set and record enhanced error
         let (chain, metas) ← g.computeMinimalUnsatisfiableSet tc
-        let enhancedError := enhanceErrorWithChain error chain metas
-        TCM.addError enhancedError
+        TCM.addError (enhanceErrorWithChain error chain metas)
         g := g.remove tc.constraintId.id
 
-    -- Check for newly postponed constraints and add them
+    -- Pull in any constraints that the per-constraint dispatcher added
     let newPostponed ← TCM.getPostponedTracked
     if !newPostponed.isEmpty then
       TCM.clearPostponed
@@ -709,18 +722,16 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
       -- Invalidate clusters when new constraints are added
       g := g.invalidateClusters
 
-  -- Collect remaining unsolved constraints
-  let mut unsolved : Array Constraint := #[]
+  let mut unsolved : Array TrackedConstraint := #[]
   for (_, tc) in g.constraints do
-    unsolved := unsolved.push tc.constraint
-
+    unsolved := unsolved.push tc
   return unsolved
 
 /-- Solve constraints using a cluster-based strategy.
     This groups related constraints and solves them together. -/
 def solveConstraintGraphClustered (tryConstraint : Constraint → TCM SolveResult)
     (strategy : SolveStrategy := .smallestClusterFirst)
-    (fuel : Nat := constraintSolverFuel) : TCM (Array Constraint) := do
+    (fuel : Nat := constraintSolverFuel) : TCM (Array TrackedConstraint) := do
   let mut g ← ConstraintGraph.fromPostponed
   g := g.withStrategy strategy
 
@@ -758,13 +769,18 @@ def solveConstraintGraphClustered (tryConstraint : Constraint → TCM SolveResul
           solvedCount := solvedCount + 1
           -- Smart wake for related constraints
           for mid in tc.metas do
-            let isSolved ← TCM.isMetaSolved mid
-            if isSolved then
+            if (← TCM.isMetaSolved mid) then
               g ← g.smartWakeBlocked mid
+          let lvSols := (← TCM.getState).levelSolutions
+          for lv in tc.levelVars do
+            if lvSols.contains lv.id then
+              g ← g.wakeBlockedOnLevelVar lv
 
-        | .blocked metas =>
+        | .blocked metas levelVars =>
           for mid in metas do
             g := g.blockOn tc.constraintId.id mid
+          for lv in levelVars do
+            g := g.blockOnLevelVar tc.constraintId.id lv
 
         | .deferred =>
           let complexity ← ConstraintGraph.countUnsolvedMetas tc.metas
@@ -790,17 +806,15 @@ def solveConstraintGraphClustered (tryConstraint : Constraint → TCM SolveResul
     let remaining ← solveConstraintGraph tryConstraint remainingFuel
     return remaining
 
-  -- Collect remaining unsolved constraints
-  let mut unsolved : Array Constraint := #[]
+  let mut unsolved : Array TrackedConstraint := #[]
   for (_, tc) in g.constraints do
-    unsolved := unsolved.push tc.constraint
-
+    unsolved := unsolved.push tc
   return unsolved
 
 /-- Speculative solving: try multiple strategies and pick the best result.
     This is useful when we're stuck and want to try different approaches. -/
 def solveConstraintGraphSpeculative (tryConstraint : Constraint → TCM SolveResult)
-    (fuel : Nat := constraintSolverFuel) : TCM (Array Constraint) := do
+    (fuel : Nat := constraintSolverFuel) : TCM (Array TrackedConstraint) := do
   -- Save initial state
   let initialState ← TCM.getState
   let initialPostponed ← TCM.getPostponedTracked
@@ -809,7 +823,7 @@ def solveConstraintGraphSpeculative (tryConstraint : Constraint → TCM SolveRes
   let result1 ← TCM.tryWithRollback do
     TCM.clearPostponed
     for tc in initialPostponed do
-      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.origin tc.parentConstraints
+      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.levelVars tc.origin tc.parentConstraints
     solveConstraintGraph tryConstraint fuel
 
   -- Get state after first attempt
@@ -824,7 +838,7 @@ def solveConstraintGraphSpeculative (tryConstraint : Constraint → TCM SolveRes
   let result2 ← TCM.tryWithRollback do
     TCM.clearPostponed
     for tc in initialPostponed do
-      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.origin tc.parentConstraints
+      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.levelVars tc.origin tc.parentConstraints
     solveConstraintGraphClustered tryConstraint .smallestClusterFirst fuel
 
   let state2 ← TCM.getState
@@ -838,7 +852,7 @@ def solveConstraintGraphSpeculative (tryConstraint : Constraint → TCM SolveRes
   let result3 ← TCM.tryWithRollback do
     TCM.clearPostponed
     for tc in initialPostponed do
-      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.origin tc.parentConstraints
+      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.levelVars tc.origin tc.parentConstraints
     solveConstraintGraphClustered tryConstraint .largestClusterFirst fuel
 
   let state3 ← TCM.getState
@@ -857,7 +871,7 @@ def solveConstraintGraphSpeculative (tryConstraint : Constraint → TCM SolveRes
   -- Find the best result
   let mut bestRemaining := initialPostponed.size
   let mut bestErrors := initialPostponed.size
-  let mut bestResult : Option (Array Constraint) := none
+  let mut bestResult : Option (Array TrackedConstraint) := none
   let mut bestState := initialState
 
   for (rem, errs, res, st) in results do
@@ -881,7 +895,7 @@ def solveConstraintGraphSpeculative (tryConstraint : Constraint → TCM SolveRes
     set initialState
     TCM.clearPostponed
     for tc in initialPostponed do
-      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.origin tc.parentConstraints
+      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.levelVars tc.origin tc.parentConstraints
     solveConstraintGraph tryConstraint fuel
 
 end Soma.Dependent.Unify

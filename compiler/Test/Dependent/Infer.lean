@@ -569,8 +569,7 @@ def testGreedySolving : IO TestResult := do
     -- Postpone a constraint: ?meta1 = Int
     TCM.postpone (.unify metaVal1 (.vPrimTy .int) testSpan)
 
-    -- Call greedy solving
-    solveImplicitsGreedy
+    let _ ← solveConstraints
 
     -- Check if meta1 was solved
     let solved1 ← TCM.isMetaSolved meta1

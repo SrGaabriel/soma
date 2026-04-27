@@ -233,7 +233,7 @@ def testUnifyRecordTypes : Bool :=
 def testSolveConstraintSuccess : Bool :=
   match runTCM do
     let c := Constraint.unify (.vPrimTy .int) (.vPrimTy .int) testSpan
-    trySolveConstraint c
+    trySolveBasicConstraint c
   with
   | .ok (.solved, _) => true
   | _ => false
@@ -241,7 +241,7 @@ def testSolveConstraintSuccess : Bool :=
 def testSolveConstraintFail : Bool :=
   match runTCM do
     let c := Constraint.unify (.vPrimTy .int) (.vPrimTy .bool) testSpan
-    trySolveConstraint c
+    trySolveBasicConstraint c
   with
   | .ok (.failed _, _) => true
   | _ => false
@@ -249,7 +249,7 @@ def testSolveConstraintFail : Bool :=
 def testSolveLevelConstraintEqual : Bool :=
   match runTCM do
     let c := Constraint.levelEq (.lit 0) (.lit 0)
-    trySolveConstraint c
+    trySolveBasicConstraint c
   with
   | .ok (.solved, _) => true
   | _ => false
@@ -257,7 +257,7 @@ def testSolveLevelConstraintEqual : Bool :=
 def testSolveLevelConstraintUnequal : Bool :=
   match runTCM do
     let c := Constraint.levelEq (.lit 0) (.lit 1)
-    trySolveConstraint c
+    trySolveBasicConstraint c
   with
   | .ok (.failed _, _) => true
   | _ => false
@@ -423,13 +423,13 @@ def unsolvedMetaTests : List (String × Bool) := [
 /-! ## Metavariable Dependency Tracking Tests -/
 
 def testCollectMetasEmpty : Bool :=
-  let metas := collectMetas (.vPrimTy .int)
+  let metas := Value.collectMetas (.vPrimTy .int)
   metas.isEmpty
 
 def testCollectMetasSingle : Bool :=
   let metaId : MetaId := ⟨0⟩
   let v := Value.vNeutral .type0 (.nMeta metaId)
-  let metas := collectMetas v
+  let metas := Value.collectMetas v
   metas.size == 1 && metas[0]! == metaId
 
 def testCollectMetasMultiple : Bool :=
@@ -438,7 +438,7 @@ def testCollectMetasMultiple : Bool :=
   let v := Value.vPair
     (Value.vNeutral .type0 (.nMeta meta1))
     (Value.vNeutral .type0 (.nMeta meta2))
-  let metas := collectMetas v
+  let metas := Value.collectMetas v
   metas.size == 2 && metas.contains meta1 && metas.contains meta2
 
 def testCollectMetasPi : Bool :=
@@ -446,7 +446,7 @@ def testCollectMetasPi : Bool :=
   let dom := Value.vNeutral .type0 (.nMeta metaId)
   let clos := Closure.const "_" (.vPrimTy .int)
   let v := Value.vPi .omega .explicit "x" dom clos
-  let metas := collectMetas v
+  let metas := Value.collectMetas v
   metas.contains metaId
 
 def testCollectMetasConstraint : Bool :=
@@ -455,7 +455,7 @@ def testCollectMetasConstraint : Bool :=
   let v1 := Value.vNeutral .type0 (.nMeta meta1)
   let v2 := Value.vNeutral .type0 (.nMeta meta2)
   let c := Constraint.unify v1 v2 testSpan
-  let metas := collectMetasConstraint c
+  let metas := c.referencedMetas
   metas.size == 2 && metas.contains meta1 && metas.contains meta2
 
 def testMetaDependenciesEmpty : Bool :=

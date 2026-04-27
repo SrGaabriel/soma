@@ -546,7 +546,6 @@ def testResolveEqInt : IO TestResult := do
       return .failed s!"Resolution failed: {result}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
-
 /-- Test: Resolve for non-existent class fails -/
 def testResolveNonExistentClass : IO TestResult := do
   let ctx := TCContext.withDefaultInstances

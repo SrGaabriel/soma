@@ -806,6 +806,42 @@ partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
     r.countFVar fvar + ep.countFVar fvar + b.countFVar fvar
   | .ann x t => x.countFVar fvar + t.countFVar fvar
 
+/-- Collect every metavariable referenced anywhere inside this expression -/
+partial def collectMetas : Expr → Array MetaId
+  | .mvar mid => #[mid]
+  | .app f a => collectMetas f ++ collectMetas a
+  | .lam _ _ d b => collectMetas d ++ collectMetas b
+  | .let_ _ t v b => collectMetas t ++ collectMetas v ++ collectMetas b
+  | .pi _ _ _ d c => collectMetas d ++ collectMetas c
+  | .sigma _ _ _ f s => collectMetas f ++ collectMetas s
+  | .pair f s => collectMetas f ++ collectMetas s
+  | .projFst e | .projSnd e => collectMetas e
+  | .if_ c t e => collectMetas c ++ collectMetas t ++ collectMetas e
+  | .«case» scruts motive arms =>
+    let m := scruts.foldl (fun acc s => acc ++ collectMetas s) #[]
+    let m := m ++ collectMetas motive
+    arms.foldl (fun acc arm => acc ++ collectMetas arm.body) m
+  | .eqTy _ t l r => collectMetas t ++ collectMetas l ++ collectMetas r
+  | .refl t x => collectMetas t ++ collectMetas x
+  | .transport _ t m l r e b =>
+    collectMetas t ++ collectMetas m ++ collectMetas l ++
+    collectMetas r ++ collectMetas e ++ collectMetas b
+  | .rowExtend l t tail => collectMetas l ++ collectMetas t ++ collectMetas tail
+  | .recordTy r => collectMetas r
+  | .variantTy r => collectMetas r
+  | .record fs => fs.foldl (fun acc (_, e) => acc ++ collectMetas e) #[]
+  | .recordUpdate b us =>
+    us.foldl (fun acc (_, e) => acc ++ collectMetas e) (collectMetas b)
+  | .fieldAccess e _ _ => collectMetas e
+  | .construct _ _ args _ => args.foldl (fun acc a => acc ++ collectMetas a) #[]
+  | .inject _ args _ => args.foldl (fun acc a => acc ++ collectMetas a) #[]
+  | .closure _ caps => caps.foldl (fun acc c => acc ++ collectMetas c) #[]
+  | .array es _ => es.foldl (fun acc e => acc ++ collectMetas e) #[]
+  | .tuple es => es.foldl (fun acc e => acc ++ collectMetas e) #[]
+  | .dataTy _ ps => ps.foldl (fun acc p => acc ++ collectMetas p) #[]
+  | .fvar _ t | .const _ t | .ann _ t => collectMetas t
+  | _ => #[]
+
 end Expr
 
 end Soma.Core

@@ -443,6 +443,57 @@ def mkMeta (id : Nat) : Neutral :=
 
 end Neutral
 
+mutual
+  partial def Value.collectMetas : Value → Array MetaId
+    | .vType _ => #[]
+    | .vPi _ _ _ dom cod =>
+      Value.collectMetas dom ++ Closure.collectMetas cod
+    | .vLam _ body => Closure.collectMetas body
+    | .vSigma _ _ fst snd =>
+      Value.collectMetas fst ++ Closure.collectMetas snd
+    | .vPair a b => Value.collectMetas a ++ Value.collectMetas b
+    | .vNeutral ty neu => Value.collectMetas ty ++ Neutral.collectMetas neu
+    | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _ => #[]
+    | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => #[]
+    | .vRowExtend label ty tail =>
+      Value.collectMetas label ++ Value.collectMetas ty ++ Value.collectMetas tail
+    | .vRecord row => Value.collectMetas row
+    | .vVariant row => Value.collectMetas row
+    | .vRecordVal fields =>
+      fields.foldl (fun acc (_, v) => acc ++ Value.collectMetas v) #[]
+    | .vDataType _ params =>
+      params.foldl (fun acc p => acc ++ Value.collectMetas p) #[]
+    | .vConstructor _ _ args _ =>
+      args.foldl (fun acc a => acc ++ Value.collectMetas a) #[]
+    | .vEq _ ty lhs rhs =>
+      Value.collectMetas ty ++ Value.collectMetas lhs ++ Value.collectMetas rhs
+    | .vRefl ty x => Value.collectMetas ty ++ Value.collectMetas x
+    | .vTransport _ ty motive lhs rhs eq body =>
+      Value.collectMetas ty ++ Value.collectMetas motive ++ Value.collectMetas lhs ++
+      Value.collectMetas rhs ++ Value.collectMetas eq ++ Value.collectMetas body
+
+  partial def Neutral.collectMetas (n : Neutral) : Array MetaId :=
+    Head.collectMetas n.head ++ n.spine.foldl (fun acc e => acc ++ Elim.collectMetas e) #[]
+
+  partial def Head.collectMetas : Head → Array MetaId
+    | .hVar _ | .hConst _ _ | .hErrored => #[]
+    | .hMeta id => #[id]
+    | .hCase scrutinees motive arms =>
+      let m := scrutinees.foldl (fun acc s => acc ++ Value.collectMetas s) #[]
+      let m := m ++ Value.collectMetas motive
+      arms.foldl (fun acc arm => acc ++ Closure.collectMetas arm.closure) m
+
+  partial def Elim.collectMetas : Elim → Array MetaId
+    | .eApp arg => Value.collectMetas arg
+    | .eFst | .eSnd | .eField _ => #[]
+
+  partial def Closure.collectMetas : Closure → Array MetaId
+    | .const _ value => Value.collectMetas value
+    | .term _ env body =>
+      let envMetas := env.values.foldl (fun acc (_, v) => acc ++ Value.collectMetas v) #[]
+      envMetas ++ body.collectMetas
+end
+
 /-- Provenance of a metavariable -/
 inductive MetaOrigin where
   /-- Regular inference -/
@@ -478,14 +529,16 @@ structure ConstraintId where
 instance : ToString ConstraintId where
   toString c := s!"C{c.id}"
 
-/-- Dependency tracking for metavariables.
-    Tracks which metas occur in which constraints, enabling efficient "wake-up"
-    when a meta is solved. -/
+/-- Dependency tracking for postponed constraints -/
 structure MetaDependencies where
-  /-- Map from MetaId to constraint IDs that contain it -/
+  /-- Map from MetaId to constraint IDs that depend on it -/
   metaToConstraints : Std.HashMap Nat (Array ConstraintId) := {}
-  /-- Map from constraint ID to the metas it contains -/
+  /-- Map from LevelVarId to constraint IDs that depend on it -/
+  levelVarToConstraints : Std.HashMap Nat (Array ConstraintId) := {}
+  /-- Map from constraint ID to the metas it depends on -/
   constraintToMetas : Std.HashMap Nat (Array MetaId) := {}
+  /-- Map from constraint ID to the level variables it depends on -/
+  constraintToLevelVars : Std.HashMap Nat (Array LevelVarId) := {}
   /-- Next constraint ID -/
   nextConstraintId : Nat := 0
   deriving Inhabited
@@ -496,18 +549,23 @@ def empty : MetaDependencies := {}
 
 /-- Register a new constraint and return its ID -/
 def registerConstraint (deps : MetaDependencies) (metas : Array MetaId)
-    : ConstraintId × MetaDependencies :=
+    (levelVars : Array LevelVarId := #[]) : ConstraintId × MetaDependencies :=
   let cid : ConstraintId := ⟨deps.nextConstraintId⟩
-  -- Add constraint -> metas mapping
   let constraintToMetas := deps.constraintToMetas.insert cid.id metas
-  -- Add metas -> constraint mapping for each meta
+  let constraintToLevelVars := deps.constraintToLevelVars.insert cid.id levelVars
   let metaToConstraints := metas.foldl (fun acc mid =>
     let existing := acc.getD mid.id #[]
     acc.insert mid.id (existing.push cid)
   ) deps.metaToConstraints
+  let levelVarToConstraints := levelVars.foldl (fun acc lv =>
+    let existing := acc.getD lv.id #[]
+    acc.insert lv.id (existing.push cid)
+  ) deps.levelVarToConstraints
   (cid, { deps with
     constraintToMetas := constraintToMetas
+    constraintToLevelVars := constraintToLevelVars
     metaToConstraints := metaToConstraints
+    levelVarToConstraints := levelVarToConstraints
     nextConstraintId := deps.nextConstraintId + 1
   })
 
@@ -515,25 +573,40 @@ def registerConstraint (deps : MetaDependencies) (metas : Array MetaId)
 def getConstraintsFor (deps : MetaDependencies) (mid : MetaId) : Array ConstraintId :=
   deps.metaToConstraints.getD mid.id #[]
 
+/-- Get all constraints that involve a given level variable -/
+def getConstraintsForLevelVar (deps : MetaDependencies) (lv : LevelVarId)
+    : Array ConstraintId :=
+  deps.levelVarToConstraints.getD lv.id #[]
+
 /-- Get all metas involved in a constraint -/
 def getMetasFor (deps : MetaDependencies) (cid : ConstraintId) : Array MetaId :=
   deps.constraintToMetas.getD cid.id #[]
 
+/-- Get all level variables involved in a constraint -/
+def getLevelVarsFor (deps : MetaDependencies) (cid : ConstraintId) : Array LevelVarId :=
+  deps.constraintToLevelVars.getD cid.id #[]
+
 /-- Remove a constraint from tracking (after it's been solved) -/
 def removeConstraint (deps : MetaDependencies) (cid : ConstraintId) : MetaDependencies :=
-  -- Get the metas this constraint references
   let metas := deps.constraintToMetas.getD cid.id #[]
-  -- Remove constraint from each meta's constraint list
+  let levelVars := deps.constraintToLevelVars.getD cid.id #[]
   let metaToConstraints := metas.foldl (fun acc mid =>
     let existing := acc.getD mid.id #[]
     let filtered := existing.filter (· != cid)
     acc.insert mid.id filtered
   ) deps.metaToConstraints
-  -- Remove the constraint entry
+  let levelVarToConstraints := levelVars.foldl (fun acc lv =>
+    let existing := acc.getD lv.id #[]
+    let filtered := existing.filter (· != cid)
+    acc.insert lv.id filtered
+  ) deps.levelVarToConstraints
   let constraintToMetas := deps.constraintToMetas.erase cid.id
+  let constraintToLevelVars := deps.constraintToLevelVars.erase cid.id
   { deps with
     metaToConstraints := metaToConstraints
+    levelVarToConstraints := levelVarToConstraints
     constraintToMetas := constraintToMetas
+    constraintToLevelVars := constraintToLevelVars
   }
 
 /-- Check if any constraints reference a given meta -/
@@ -597,15 +670,20 @@ def MetaState.implicitLevelMap (state : MetaState) : Std.HashMap Nat Nat :=
     | some lvl => acc.insert metaId lvl
     | none => acc
 
-/-- Register a constraint and the metas it references -/
+/-- Register a constraint and the metas/level variables it references -/
 def MetaState.registerConstraint (state : MetaState) (metas : Array MetaId)
-    : ConstraintId × MetaState :=
-  let (cid, deps') := state.dependencies.registerConstraint metas
+    (levelVars : Array LevelVarId := #[]) : ConstraintId × MetaState :=
+  let (cid, deps') := state.dependencies.registerConstraint metas levelVars
   (cid, { state with dependencies := deps' })
 
 /-- Get constraints affected by solving a meta -/
 def MetaState.getAffectedConstraints (state : MetaState) (mid : MetaId) : Array ConstraintId :=
   state.dependencies.getConstraintsFor mid
+
+/-- Get constraints affected by solving a level variable -/
+def MetaState.getAffectedConstraintsForLevelVar (state : MetaState) (lv : LevelVarId)
+    : Array ConstraintId :=
+  state.dependencies.getConstraintsForLevelVar lv
 
 /-- Remove a constraint after it's been solved -/
 def MetaState.removeConstraint (state : MetaState) (cid : ConstraintId) : MetaState :=

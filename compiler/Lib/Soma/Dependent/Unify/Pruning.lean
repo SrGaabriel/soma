@@ -440,7 +440,7 @@ the type metas first. -/
 def hasMetaType (v : Value) : TCM Bool := do
   match v with
   | .vNeutral ty _ =>
-    let metas := collectMetas ty
+    let metas := Value.collectMetas ty
     metas.anyM fun mid => do
       let solved ← TCM.isMetaSolved mid
       return !solved
@@ -456,7 +456,7 @@ def shouldDeferMeta (m : MetaId) : TCM Bool := do
   | none => return false
   | some info =>
     -- Check if the type contains unsolved metas
-    let typeMetas := collectMetas info.type
+    let typeMetas := Value.collectMetas info.type
     for mid in typeMetas do
       let solved ← TCM.isMetaSolved mid
       if !solved then

@@ -10,6 +10,7 @@ import Soma.Dependent.Monad
 import Soma.Dependent.Convert
 import Soma.Dependent.Coverage
 import Soma.Dependent.Unify
+import Soma.Dependent.Solver
 import Soma.Dependent.Error
 import Soma.Dependent.Usage
 import Soma.Syntax.Ast
@@ -164,65 +165,6 @@ partial def projectResultTypeWithMetas (ty : Value) (numExplicitArgs : Nat)
       projectResultTypeWithMetas resultTy (numExplicitArgs - 1) existingMetas
   | _ => return none
 
-/-- Single pass of greedy constraint solving -/
-def solveImplicitsGreedyPass : TCM Bool := do
-  let constraints ← TCM.getPostponedTracked
-  if constraints.isEmpty then return false
-
-  -- Sort constraints by complexity (fewer unsolved metas first)
-  let sortedConstraints ← constraints.mapM fun tc => do
-    let mut unsolvedCount := 0
-    for mid in tc.metas do
-      let solved ← TCM.isMetaSolved mid
-      if !solved then unsolvedCount := unsolvedCount + 1
-    return (tc, unsolvedCount)
-
-  let prioritized := sortedConstraints.qsort (fun (_, c1) (_, c2) => c1 < c2)
-
-  -- Track which metas we solve
-  let mut solvedMetas : Array MetaId := #[]
-  let mut madeProgress := false
-
-  TCM.clearPostponed
-
-  for (tc, _) in prioritized do
-    match tc.constraint with
-    | .unify v1 v2 constraintSpan =>
-      let v1' ← force v1
-      let v2' ← force v2
-      let success ← tryUnify v1' v2'
-      if success then
-        madeProgress := true
-        for mid in tc.metas do
-          let solved ← TCM.isMetaSolved mid
-          if solved && !solvedMetas.contains mid then
-            solvedMetas := solvedMetas.push mid
-      else
-        let _ ← TCM.postponeTracked (.unify v1' v2' constraintSpan) tc.metas
-    | other =>
-      TCM.postpone other
-
-  -- Wake constraints that depend on solved metas
-  for mid in solvedMetas do
-    TCM.wakeConstraintsFor mid
-
-  return madeProgress
-
-/-- Solve implicit arguments greedily using dependency-aware constraint solving.
-    Uses fuel to avoid infinite recursion -/
-def solveImplicitsGreedy : TCM Unit := do
-  -- Use fuel-based iteration instead of direct recursion
-  let mut fuel := maxGreedySolveIterations
-  let mut progress := true
-  while progress && fuel > 0 do
-    fuel := fuel - 1
-    progress ← solveImplicitsGreedyPass
-
-/-- Propagate type information from an argument back to solve implicits in the function -/
-def propagateFromArgument (argTy : Value) (expectedDom : Value) : TCM Unit := do
-  let _ ← tryUnify argTy expectedDom
-  solveImplicitsGreedy
-
 /-- Insert implicit arguments with expected type guidance and full bidirectional propagation -/
 partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
     (expected : Option Value) (numExplicitArgs : Nat) (span : Span)
@@ -233,7 +175,7 @@ partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
   -- If we have an expected type, use it to solve implicits early
   match expected with
   | none =>
-    solveImplicitsGreedy
+    let _ ← solveConstraints
     let finalTy ← force fnTy'
     return (finalTy, fnExpr')
   | some expectedTy =>
@@ -242,11 +184,11 @@ partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
     | some resultTy =>
       -- Unify projected result with expected type
       let _ ← tryUnify resultTy expectedTy
-      solveImplicitsGreedy
+      let _ ← solveConstraints
       let finalTy ← force fnTy'
       return (finalTy, fnExpr')
     | none =>
-      solveImplicitsGreedy
+      let _ ← solveConstraints
       let finalTy ← force fnTy'
       return (finalTy, fnExpr')
 
@@ -259,14 +201,15 @@ def trySolveMetaFromExpected (metaId : MetaId) (expected : Value) : TCM Bool := 
     | none =>
       let metaVal := Value.vNeutral info.type (.nMeta metaId)
       let success ← tryUnify metaVal expected
-      if success then solveImplicitsGreedy
+      if success then
+        let _ ← solveConstraints
       return success
   | none => return false
 
 /-- Aggressively propagate type information during inference -/
 def propagateTypeInfo (inferredTy : Value) (targetTy : Value) : TCM Unit := do
   unify inferredTy targetTy
-  solveImplicitsGreedy
+  let _ ← solveConstraints
 
 
 /-- Build nested Core lambdas from `(fvar, name, domainExpr)` bindings. -/
@@ -1413,7 +1356,7 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
         let resultTy ← applyClosure cod argVal
         let argExpr ← quoteValueToExpr argVal
         let appExpr := Soma.Core.Expr.app fnExpr argExpr
-        solveImplicitsGreedy
+        let _ ← solveConstraints
         return (resultTy, appExpr)
       else
         -- Explicit param with typeApp — insert implicits first, then apply
@@ -1423,14 +1366,14 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
         let argExpr ← quoteValueToExpr argVal
         let resultTy ← applyClosure cod argVal
         let appExpr := Soma.Core.Expr.app fnExpr' argExpr
-        solveImplicitsGreedy
+        let _ ← solveConstraints
         return (resultTy, appExpr)
     | .vRecord row =>
       -- Polymorphic field access: rec @l
       match typeArg with
       | .label name =>
         let (fieldTy, fieldExpr) ← inferPolymorphicFieldAccess fnExpr row name.name argSpan span
-        solveImplicitsGreedy
+        let _ ← solveConstraints
         return (fieldTy, fieldExpr)
       | _ =>
         -- Not a label — insert implicits and apply
@@ -1440,7 +1383,7 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
         let argExpr ← quoteValueToExpr argVal
         let resultTy ← applyClosure cod argVal
         let appExpr := Soma.Core.Expr.app fnExpr' argExpr
-        solveImplicitsGreedy
+        let _ ← solveConstraints
         return (resultTy, appExpr)
     | _ =>
       let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
@@ -1449,7 +1392,7 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
       let argExpr ← quoteValueToExpr argVal
       let resultTy ← applyClosure cod argVal
       let appExpr := Soma.Core.Expr.app fnExpr' argExpr
-      solveImplicitsGreedy
+      let _ ← solveConstraints
       return (resultTy, appExpr)
   | _ =>
     -- Regular value application: insert implicits, then check arg against domain
@@ -1460,7 +1403,7 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
     let argVal ← TCM.evalExpr argExpr
     let resultTy ← applyClosure cod argVal
     let appExpr := Soma.Core.Expr.app fnExpr' argExpr
-    solveImplicitsGreedy
+    let _ ← solveConstraints
     return (resultTy, appExpr)
 
 /-- Infer lambda body from Syntax params, building nested Core.Expr lambdas -/
@@ -1739,7 +1682,7 @@ where
         let (inferred, expr) ← inferSyntax e
         let (inferred', expr') ← insertImplicits inferred expr e.span
         subtypeUnify inferred' expected'
-        solveImplicitsGreedy
+        let _ ← solveConstraints
         return expr'
 
     -- If-then-else: check both branches
@@ -1777,7 +1720,7 @@ where
       let (fnTy, fnExpr) ← inferSyntax fn
       let (fnTy', fnExpr') ← insertImplicitsWithExpected fnTy fnExpr (some expected') 1 span
       let (resultTy, appExpr) ← inferSyntaxApp fnTy' fnExpr' arg span
-      solveImplicitsGreedy
+      let _ ← solveConstraints
       subtypeUnify resultTy expected'
       return appExpr
 
@@ -1793,7 +1736,7 @@ where
         let (inferred, expr) ← inferSyntax e
         let (inferred', expr') ← insertImplicits inferred expr e.span
         subtypeUnify inferred' expected'
-        solveImplicitsGreedy
+        let _ ← solveConstraints
         return expr'
 
     -- Default: infer against expected
@@ -1801,7 +1744,7 @@ where
       let (inferred, expr) ← inferSyntax e
       let (inferred', expr') ← insertImplicits inferred expr e.span
       subtypeUnify inferred' expected'
-      solveImplicitsGreedy
+      let _ ← solveConstraints
       return expr'
 
 /-- Check tuple elements against a Sigma type -/
