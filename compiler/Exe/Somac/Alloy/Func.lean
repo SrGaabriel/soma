@@ -318,6 +318,8 @@ structure Module where
   mainFunc : Option FuncId := none
   /-- Wired-in function roles → FuncIds. Maps each known role to all FuncIds -/
   wiredFuncIds : Std.HashMap WiredFunc (Array FuncId) := {}
+  /-- Canonical Alloy layout for the wired-in `type.string` record -/
+  stringTy : ClosedTy := .struct #[("data", .rawPtr), ("len", .prim .i64)]
   deriving Inhabited
 
 namespace Module

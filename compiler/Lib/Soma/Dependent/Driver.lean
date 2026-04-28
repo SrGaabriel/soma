@@ -415,7 +415,8 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
     (typeVarBinders : Array Syntax.TypeVarBinder)
     (fieldTypeSyntax : Array Syntax.Expr)
     (fieldBinderInfos : Array Soma.Core.BinderInfo := #[])
-    (fieldQuantities : Array Soma.Core.Quantity := #[]) : TCM Value := do
+    (fieldQuantities : Array Soma.Core.Quantity := #[])
+    (fieldNames : Array String := #[]) : TCM Value := do
   let N := typeVarBinders.size
 
   let mut paramKindExprs : Array Soma.Core.Expr := #[]
@@ -433,15 +434,15 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
     let uid ← TCM.freshLocalId binder.name.name
     bindings := bindings.push (uid, binder.name.name)
 
-  let paddedBinderInfos : Array Soma.Core.BinderInfo :=
-    Array.range fieldTypeSyntax.size |>.map fun i =>
-      fieldBinderInfos[i]?.getD .explicit
-  let paddedQuantities : Array Soma.Core.Quantity :=
-    Array.range fieldTypeSyntax.size |>.map fun i =>
-      fieldQuantities[i]?.getD .omega
-  let fieldEntries := fieldTypeSyntax.zip (paddedBinderInfos.zip paddedQuantities)
+  let M := fieldTypeSyntax.size
+  let fieldBI (i : Nat) : Soma.Core.BinderInfo :=
+    fieldBinderInfos[i]?.getD .explicit
+  let fieldQty (i : Nat) : Soma.Core.Quantity :=
+    fieldQuantities[i]?.getD .omega
+  let fieldNm (i : Nat) : String :=
+    fieldNames[i]?.getD "_"
 
-  let buildInner : TCM Soma.Core.Expr := do
+  let resultExpr (depth : Nat) : TCM Soma.Core.Expr := do
     let mut typeVarVals : List Value := []
     for (_, name) in bindings do
       match ← TCM.lookupLocal name with
@@ -449,14 +450,25 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
         typeVarVals := typeVarVals ++
           [Value.vNeutral entry.type (Soma.Core.Neutral.nVar ⟨name, entry.level⟩)]
       | none => pure ()
-    let mut ctorVal : Value := Value.vDataType typeName.id typeVarVals
-    for (fieldTy, bi, qty) in fieldEntries.reverse do
+    pure (Soma.Core.quoteExpr ⟨depth⟩ (Value.vDataType typeName.id typeVarVals))
+
+  let rec processFields (i : Nat) : TCM Soma.Core.Expr := do
+    if h : i < fieldTypeSyntax.size then
+      let fieldTy := fieldTypeSyntax[i]
       let fieldExpr ← Soma.Dependent.inferTypeExpr fieldTy
       let fieldVal ← TCM.evalExpr fieldExpr
-      ctorVal := Value.vPi qty bi "_" fieldVal (Soma.Core.Closure.const "_" ctorVal)
-    pure (Soma.Core.quoteExpr ⟨N⟩ ctorVal)
+      let bi := fieldBI i
+      let qty := fieldQty i
+      let fname := fieldNm i
+      let uid ← TCM.freshLocalId fname
+      TCM.withBinding fname uid fieldVal qty bi Span.uninhabited do
+        let inner ← processFields (i + 1)
+        pure (.pi qty bi fname fieldExpr inner)
+    else
+      resultExpr (N + M)
+  termination_by fieldTypeSyntax.size - i
 
-  let wrapped ← bindings.zip paramKinds |>.foldrM (init := buildInner)
+  let wrapped ← bindings.zip paramKinds |>.foldrM (init := processFields 0)
     (fun ((uid, name), kindVal) acc =>
       pure (TCM.withBinding name uid kindVal .omega .implicit Span.uninhabited acc))
   let innerBody ← wrapped
@@ -838,6 +850,7 @@ private def registerConstructorRaw
     (isDirty : Bool)
     (fieldBinderInfos : Array Soma.Core.BinderInfo := #[])
     (fieldQuantities : Array Soma.Core.Quantity := #[])
+    (fieldNames : Array String := #[])
     : TCM Globals := do
   let ns ← TCM.getCurrentNamespace
   let typeNs := ns.push typeName.display
@@ -862,7 +875,7 @@ private def registerConstructorRaw
       | some sig => TCM.withGlobals globals (elaborateIndexedCtorType typeName typeVarNames sig)
       | none => TCM.withGlobals globals
           (elaborateCtorType typeName typeVarBinders fieldTypes
-            fieldBinderInfos fieldQuantities))
+            fieldBinderInfos fieldQuantities fieldNames))
     (TCM.typePlaceholder Span.uninhabited)
   let ctorValue := mkConstructorValue ctorQN ctorTag ctorType
   let info : GlobalInfo := {
@@ -895,6 +908,9 @@ private def registerConstructor
   registerConstructorRaw globals typeName typeVarBinders
     ctor.name ctor.name.id.original ctor.tag ctor.fieldTypeSyntax ctor.sigSyntax
     prevGlobals isDirty
+    (fieldBinderInfos := ctor.fieldBinderInfos)
+    (fieldQuantities := ctor.fieldQuantities)
+    (fieldNames := ctor.fieldNames)
 
 /-- Register or reuse record field accessors, returns updated globals -/
 private def registerRecordFieldAccessors
@@ -945,6 +961,7 @@ private def registerRecordConstructor
     ctorName "New" 0 (fields.map (·.type)) none prevGlobals isDirty
     (fieldBinderInfos := fields.map (·.binderInfo))
     (fieldQuantities := fields.map (·.quantity))
+    (fieldNames := fields.map (fun f => f.name.getD "_"))
   registerRecordFieldAccessors g recordName fields prevGlobals isDirty
 
 /-- Elaborate a type class method type -/

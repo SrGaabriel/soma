@@ -10,6 +10,7 @@ structure Constructor where
   fieldTypeSyntax : Array Syntax.Expr
   fieldBinderInfos : Array BinderInfo := #[]
   fieldQuantities : Array Quantity := #[]
+  fieldNames : Array String := #[]
   /-- Full type signature for indexed data types -/
   sigSyntax : Option Syntax.Expr := none
   /-- Attributes from the source declaration -/
@@ -27,6 +28,10 @@ def fieldBinderInfo (c : Constructor) (i : Nat) : BinderInfo :=
 /-- Quantity for the i-th field -/
 def fieldQuantity (c : Constructor) (i : Nat) : Quantity :=
   c.fieldQuantities[i]?.getD .omega
+
+/-- Name for the i-th field -/
+def fieldName (c : Constructor) (i : Nat) : String :=
+  c.fieldNames[i]?.getD "_"
 
 end Constructor
 
@@ -83,7 +88,8 @@ def constructors : TypeDef → Array Constructor
       #[{ name := cn, tag := 0,
           fieldTypeSyntax := fields.map (·.type),
           fieldBinderInfos := fields.map (·.binderInfo),
-          fieldQuantities := fields.map (·.quantity) }]
+          fieldQuantities := fields.map (·.quantity),
+          fieldNames := fields.map (fun f => f.name.getD "_") }]
 
 /-- The universe the type itself lives in -/
 def headSort : TypeDef → Level

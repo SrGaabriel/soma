@@ -1,7 +1,8 @@
 use base::core::{<>, >>=}
 use base::ffi::{CString, CInt, CLong, from_cstring}
 use base::io::{pure_io}
-use base::prim::{Ptr, IO, String, Unit, Word8, Int32, Int64}
+use base::prim::{Ptr, IO, Unit, Word8, Int32, Int64}
+use base::string::{String}
 
 @[intrinsic "primop.add"]
 def add64 : Int64 -> Int64 -> Int64
@@ -45,8 +46,8 @@ def c_calloc : CLong -> CLong -> IO (Ptr Word8)
 def c_remove : CString -> IO CInt
 
 def open (path : Path) (mode : String) : IO FileHandle := compose
-    let cpath := path.value.data
-    let cmode := mode.data
+    let cpath := path.value.bytes.data
+    let cmode := mode.bytes.data
     bind handle <- c_fopen cpath cmode
     pure_io (FileHandle::New handle)
 
@@ -59,7 +60,7 @@ def flush (handle : FileHandle) : IO CInt :=
     c_fflush (handle.ptr)
 
 def write (handle : FileHandle) (content : String) : IO CInt := compose
-    let ccontent := content.data
+    let ccontent := content.bytes.data
     c_fputs ccontent (handle.ptr)
 
 def read_to_string (handle : FileHandle) : IO String := compose
@@ -72,5 +73,5 @@ def read_to_string (handle : FileHandle) : IO String := compose
     pure_io (from_cstring buf)
 
 def remove (path : Path) : IO CInt := compose
-    let cpath := path.value.data
+    let cpath := path.value.bytes.data
     c_remove cpath

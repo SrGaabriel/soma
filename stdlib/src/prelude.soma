@@ -1,3 +1,4 @@
-pub use base::prim::{+, -, *, /, %, ==, String, IO, World, List}
+pub use base::prim::{+, -, *, /, %, ==, IO, World, List}
 pub use base::core::{Option, Either, Display, display, Semigroup, <>, Monoid, Functor, fmap, Applicative, pure, <*>, *>, <*, Monad, >>=, >>}
 pub use stdlib::core::{puts}
+pub use base::string::{String}

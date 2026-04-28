@@ -198,7 +198,6 @@ def u64 : Ty n := .prim .u64
 def u32 : Ty n := .prim .u32
 def bool : Ty n := .prim .bool
 def unit : Ty n := .prim .unit
-def string : Ty n := .struct #[("data", .rawPtr), ("len", .prim .i64)]
 
 /-- Array-backed list: { data: ptr, len: u32, offset: u32 } -/
 def somaList : Ty n := .struct #[("data", .rawPtr), ("len", .prim .u32), ("offset", .prim .u32)]
@@ -433,14 +432,15 @@ instance : Repr Const where
 
 namespace Const
 
-def ty : Const → ClosedTy
-  | .int _ t => .prim t
-  | .float _ t => .prim t
-  | .bool _ => .prim .bool
-  | .unit => .prim .unit
-  | .null t => .ptr t
-  | .string _ _ => Ty.string
-  | .undef t => t
+/-- Type of a constant, when it can be determined without context -/
+def ty? : Const → Option ClosedTy
+  | .int _ t => some (.prim t)
+  | .float _ t => some (.prim t)
+  | .bool _ => some (.prim .bool)
+  | .unit => some (.prim .unit)
+  | .null t => some (.ptr t)
+  | .string _ _ => none
+  | .undef t => some t
 
 instance : ToString Const where
   toString
@@ -582,6 +582,7 @@ def hasResult : IntrinsicOp → Bool
 def isClosureCall : IntrinsicOp → Bool
   | _ => false
 
+/-- Return type of an intrinsic when known statically -/
 def fixedRetTy : IntrinsicOp → Option ClosedTy
   | .ptrNull => some .rawPtr
   | .ptrAdd => some .rawPtr
@@ -590,10 +591,15 @@ def fixedRetTy : IntrinsicOp → Option ClosedTy
   | .ptrWrite => some (.prim .unit)
   | .ptrCast => some .rawPtr
   | .toCString => some .rawPtr
-  | .fromCString => some Ty.string
+  | .fromCString => none
   | .cstringLen => some (.prim .u64)
-  | .strcat => some Ty.string
-  | .intToString => some Ty.string
+  | .strcat => none
+  | .intToString => none
+
+/-- True for intrinsics whose return type is the wired-in string layout -/
+def returnsString : IntrinsicOp → Bool
+  | .fromCString | .strcat | .intToString => true
+  | _ => false
 
 end IntrinsicOp
 

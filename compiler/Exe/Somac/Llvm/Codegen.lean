@@ -133,10 +133,12 @@ def naturalAlign (ty : LLVMType) (ptrBytes : Nat) : Option Nat :=
   if a > 0 then some a else none
 
 /-- Get the type of an Alloy operand -/
-def getOperandTy (op : Operand) (localTypes : Std.HashMap Nat ClosedTy) : ClosedTy :=
+def getOperandTy (op : Operand) (stringTy : ClosedTy)
+    (localTypes : Std.HashMap Nat ClosedTy) : ClosedTy :=
   match op with
   | .local id => localTypes.get? id.id |>.getD (.prim .i64)
-  | .const c => c.ty
+  | .const (.string _ _) => stringTy
+  | .const c => c.ty?.getD (.prim .i64)
   | .global _ => .rawPtr
   | .func _ => .rawPtr
 
@@ -234,6 +236,8 @@ structure CodegenState where
   ptrSize : Nat := 8
   /-- Set to true when the current instruction should be emitted as a tail call -/
   emitAsTailCall : Bool := false
+  /-- Canonical Alloy layout for the wired-in `type.string` record -/
+  stringTy : ClosedTy := .struct #[("data", .rawPtr), ("len", .prim .i64)]
 
 instance : Inhabited CodegenState where
   default := { moduleState := default, funcState := default, ptrSize := 8 }
@@ -411,7 +415,8 @@ def operandTy (op : Operand) : CodegenM ClosedTy := do
       match func?.bind (·.getLocalType id) with
       | some ty => pure ty
       | none => pure .rawPtr
-  | .const c => pure c.ty
+  | .const (.string _ _) => pure (← get).stringTy
+  | .const c => pure (c.ty?.getD .rawPtr)
   | .global _ => pure .rawPtr
   | .func _ => pure .rawPtr
 
@@ -576,15 +581,16 @@ def fromI64 (targetTy : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
     let boxPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 val)
     CodegenM.withFuncBuilder (FuncBuilder.load targetTy (.local boxPtr))
 
-/-- The LLVM type used for the SomaString fat pointer -/
-def somaStringLLVMTy : LLVMType := .struct false #[.ptr, .i64]
+/-- LLVM type for the wired-in `type.string` record -/
+def somaStringLLVMTy : CodegenM LLVMType := do
+  pure (convertTy (← get).stringTy)
 
 /-- The LLVM type used for the SomaList struct { data, len, offset } -/
 def somaListLLVMTy : LLVMType := .struct false #[.ptr, .i32, .i32]
 
-/-- Check if a type is the SomaString struct -/
-def isSomaStringLLVMTy (ty : LLVMType) : Bool :=
-  ty == somaStringLLVMTy
+/-- Whether `ty` is the canonical Soma-string LLVM layout -/
+def isSomaStringLLVMTy (ty : LLVMType) : CodegenM Bool := do
+  pure (ty == (convertTy (← get).stringTy))
 
 /-- Compute the SysV x86-64 coerced type for a struct -/
 def sysVCoercedType (ty : LLVMType) : LLVMType :=
@@ -1485,8 +1491,8 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
           FuncBuilder.asLocalRef llvmTy (.const (.undef llvmTy))
       pure (some (ref, ty))
     | .const (.string idx len) =>
-      -- Fat pointer struct: build via insertvalue from undef
-      let somaStrTy : LLVMType := .struct false #[.ptr, .i64]
+      let alloyStringTy := (← get).stringTy
+      let somaStrTy : LLVMType := convertTy alloyStringTy
       let staticBit : Int := Int.ofNat (1 <<< 63)
       let staticLen : Int := (Int.ofNat len) + staticBit
       let r1 ← CodegenM.withFuncBuilder
@@ -1495,7 +1501,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       let r2 ← CodegenM.withFuncBuilder
         (FuncBuilder.insertvalue somaStrTy (.local r1)
           (.const (.int staticLen 64)) #[1])
-      pure (some (r2, Ty.string))
+      pure (some (r2, alloyStringTy))
     | _ =>
       let srcTy ← operandTy src
       let srcVal ← convertOperand src
@@ -2187,7 +2193,8 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         | some (Operand.const (Const.string idx _)) => some idx
         | some (Operand.local localId) => strConsts.get? localId.id
         | _ => none
-      let somaStrTy : LLVMType := .struct false #[.ptr, .i64]
+      let alloyStringTy := (← get).stringTy
+      let somaStrTy : LLVMType := convertTy alloyStringTy
       match staticIdx? with
       | some idx =>
         -- Static string: look up length from string table and construct fat pointer inline
@@ -2202,11 +2209,10 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         let r2 ← CodegenM.withFuncBuilder
           (FuncBuilder.insertvalue somaStrTy (.local r1)
             (.const (.int staticLen 64)) #[1])
-        pure (some (r2, Ty.string))
+        pure (some (r2, alloyStringTy))
       | none =>
-        -- Dynamic path: call soma_from_cstring which returns { ptr, i64 }
-        let ref ← callCFuncStructABI somaStringLLVMTy "soma_from_cstring" llvmArgs
-        pure (some (ref, Ty.string))
+        let ref ← callCFuncStructABI somaStrTy "soma_from_cstring" llvmArgs
+        pure (some (ref, alloyStringTy))
 
     | .cstringLen =>
       -- Removed: soma_cstring_len no longer exists in runtime
@@ -2214,13 +2220,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
     | .strcat =>
       -- String concatenation: struct args and struct return
-      let ref ← callCFuncStructABI somaStringLLVMTy "soma_strcat" llvmArgs
-      pure (some (ref, Ty.string))
+      let alloyStringTy := (← get).stringTy
+      let somaStrTy : LLVMType := convertTy alloyStringTy
+      let ref ← callCFuncStructABI somaStrTy "soma_strcat" llvmArgs
+      pure (some (ref, alloyStringTy))
 
     | .intToString =>
-      -- Int to string: returns fat pointer struct
-      let ref ← callCFuncStructABI somaStringLLVMTy "soma_int_to_string" llvmArgs
-      pure (some (ref, Ty.string))
+      -- Int to string: returns the wired-in string layout
+      let alloyStringTy := (← get).stringTy
+      let somaStrTy : LLVMType := convertTy alloyStringTy
+      let ref ← callCFuncStructABI somaStrTy "soma_int_to_string" llvmArgs
+      pure (some (ref, alloyStringTy))
 
 
   | .callExtern name args retTy =>
@@ -2228,12 +2238,13 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let llvmRetTy := convertRetTy retTy
 
     let isSomaRuntime := name.startsWith "soma_"
+    let alloyStringTy := (← get).stringTy
     let mut llvmArgs : Array (LLVMType × LLVMValue) := #[]
     for arg in args do
       let argAlloTy ← operandTy arg
       if isZeroWidthLLVM argAlloTy then continue
       let (argLLVMTy, argVal) ← convertOperandWithTy arg
-      if argAlloTy == Ty.string && !isSomaRuntime then
+      if argAlloTy == alloyStringTy && !isSomaRuntime then
         let cstr ← CodegenM.withFuncBuilder
           (FuncBuilder.extractvalue argLLVMTy argVal #[0])
         llvmArgs := llvmArgs.push (.ptr, .local cstr)
@@ -2282,12 +2293,13 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let llvmRetTy := convertRetTy retTy
 
     let isSomaRuntime := name.startsWith "soma_"
+    let alloyStringTy := (← get).stringTy
     let mut llvmArgs : Array (LLVMType × LLVMValue) := #[]
     for arg in args do
       let argAlloTy ← operandTy arg
       if isZeroWidthLLVM argAlloTy then continue
       let (argLLVMTy, argVal) ← convertOperandWithTy arg
-      if argAlloTy == Ty.string && !isSomaRuntime then
+      if argAlloTy == alloyStringTy && !isSomaRuntime then
         let cstr ← CodegenM.withFuncBuilder
           (FuncBuilder.extractvalue argLLVMTy argVal #[0])
         llvmArgs := llvmArgs.push (.ptr, .local cstr)
@@ -2613,7 +2625,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     }
 
   -- String runtime functions: on Windows, structs > 8 bytes use byval/sret ABI
-  let strTy := somaStringLLVMTy
+  let strTy ← somaStringLLVMTy
   let strTyStr := strTy.toLLVM
   if (← get).targetOs.isWindowsABI then
     -- Windows x64: structs passed by hidden pointer (byval), returned via sret
@@ -3125,7 +3137,8 @@ def codegen (alloyModule : Module) (targetTriple : Option String := none)
     (borrowInfo : Std.HashMap Nat (Array Bool) := {})
     (dataLayout : Option String := none) : LLVMModule :=
   let initState : CodegenState :=
-    { CodegenM.init alloyModule.name targetTriple dataLayout ptrSize targetOs with borrowInfo }
+    { CodegenM.init alloyModule.name targetTriple dataLayout ptrSize targetOs with
+      borrowInfo, stringTy := alloyModule.stringTy }
   let (llvmModule, _) := Id.run (StateT.run (lowerModule alloyModule) initState)
   llvmModule
 

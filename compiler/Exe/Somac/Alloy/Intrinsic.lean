@@ -59,7 +59,7 @@ def primOpSignature (op : PrimOp) : ClosedSignature :=
     }
 
 /-- Get the closure-compatible signature for an intrinsicOp wrapper -/
-def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
+def intrinsicOpSignature (op : IntrinsicOp) (stringTy : ClosedTy) : ClosedSignature :=
   let name := s!"$intrinsic$${op.name}"
   match op with
   | .ptrNull =>
@@ -120,7 +120,7 @@ def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
     { name
     , params := #[
         { id := ⟨0⟩, name := "env", ty := .rawPtr },
-        { id := ⟨1⟩, name := "str", ty := Ty.string }
+        { id := ⟨1⟩, name := "str", ty := stringTy }
       ]
     , retTy := .rawPtr
     , isClosure := true
@@ -131,7 +131,7 @@ def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
         { id := ⟨0⟩, name := "env", ty := .rawPtr },
         { id := ⟨1⟩, name := "cstr", ty := .rawPtr }
       ]
-    , retTy := Ty.string
+    , retTy := stringTy
     , isClosure := true
     }
   | .cstringLen =>
@@ -147,10 +147,10 @@ def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
     { name
     , params := #[
         { id := ⟨0⟩, name := "env", ty := .rawPtr },
-        { id := ⟨1⟩, name := "a", ty := Ty.string },
-        { id := ⟨2⟩, name := "b", ty := Ty.string }
+        { id := ⟨1⟩, name := "a", ty := stringTy },
+        { id := ⟨2⟩, name := "b", ty := stringTy }
       ]
-    , retTy := Ty.string
+    , retTy := stringTy
     , isClosure := true
     }
   | .intToString =>
@@ -159,7 +159,7 @@ def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
         { id := ⟨0⟩, name := "env", ty := .rawPtr },
         { id := ⟨1⟩, name := "val", ty := .prim .i32 }
       ]
-    , retTy := Ty.string
+    , retTy := stringTy
     , isClosure := true
     }
 
@@ -231,8 +231,8 @@ def generatePrimOpWrapper (op : PrimOp) (funcId : FuncId) : ClosedFunc :=
   }
 
 /-- Generate wrapper function for an intrinsicOp -/
-def generateIntrinsicOpWrapper (op : IntrinsicOp) (funcId : FuncId) : ClosedFunc :=
-  let sig := intrinsicOpSignature op
+def generateIntrinsicOpWrapper (op : IntrinsicOp) (stringTy : ClosedTy) (funcId : FuncId) : ClosedFunc :=
+  let sig := intrinsicOpSignature op stringTy
   let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat ClosedTy)) fun acc p =>
     acc.insert p.id.id p.ty
 
@@ -322,10 +322,10 @@ def collectWrappersNeeded (mod : Module) : Std.HashSet WrapperNeeded := Id.run d
   result
 
 /-- Generate a wrapper function for a WrapperNeeded -/
-def generateWrapper (needed : WrapperNeeded) (funcId : FuncId) : ClosedFunc :=
+def generateWrapper (needed : WrapperNeeded) (stringTy : ClosedTy) (funcId : FuncId) : ClosedFunc :=
   match needed with
   | .primOp op => generatePrimOpWrapper op funcId
-  | .intrinsicOp op => generateIntrinsicOpWrapper op funcId
+  | .intrinsicOp op => generateIntrinsicOpWrapper op stringTy funcId
   | .externC name => generateExternCWrapper name #[.prim .i64] (.prim .i64) funcId
 
 /-- Get the wrapper name for a WrapperNeeded -/

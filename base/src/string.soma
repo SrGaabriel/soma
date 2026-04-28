@@ -1,0 +1,17 @@
+use base::prim::{Ptr, Word8, Word32, Int64}
+
+record ByteVec where
+    data : Ptr Word8
+    len  : Int64
+
+@[wired_in "type.string"]
+record String where
+    bytes : ByteVec
+
+record Char where
+    scalar : Word32
+
+record Substring where
+    parent : String
+    offset : Int64
+    length : Int64

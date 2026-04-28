@@ -1,4 +1,5 @@
-use base::prim::{String, IO}
+use base::prim::{IO}
+use base::string::{String}
 
 @[extern]
 def puts : String -> IO ()

@@ -539,6 +539,7 @@ structure SerializableModule where
   strings : SerializableStringTable
   funcIndex : Array (String × Nat)
   mainFunc : Option Nat
+  stringTy : SerializableTy
   deriving Serialize, Deserialize
 
 namespace StringTable
@@ -565,6 +566,7 @@ def toSerializable (m : Module) : SerializableModule :=
   , strings := StringTable.toSerializable m.strings
   , funcIndex := m.funcIndex.toArray.map fun (k, v) => (k, v.id)
   , mainFunc := m.mainFunc.map (·.id)
+  , stringTy := tyToSerializable m.stringTy
   }
 
 def fromSerializable (sm : SerializableModule) : Module :=
@@ -575,6 +577,7 @@ def fromSerializable (sm : SerializableModule) : Module :=
   , strings := StringTable.fromSerializable sm.strings
   , funcIndex := Std.HashMap.ofList (sm.funcIndex.toList.map fun (k, v) => (k, ⟨v⟩))
   , mainFunc := sm.mainFunc.map (⟨·⟩)
+  , stringTy := tyFromSerializable sm.stringTy
   }
 
 end Module
@@ -582,8 +585,8 @@ end Module
 /-- Magic bytes for .alloybin files -/
 def magicBytes : ByteArray := ByteArray.mk #[0x41, 0x4C, 0x4F, 0x59]
 
-/-- Version of the serialization format — bumped to 3 for polymorphic function support -/
-def formatVersion : UInt8 := 3
+/-- Version of the serialization format -/
+def formatVersion : UInt8 := 4
 
 /-- Serialize an Alloy module to binary format -/
 def serializeModule (m : Module) : ByteArray :=

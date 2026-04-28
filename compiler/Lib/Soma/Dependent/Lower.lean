@@ -335,7 +335,12 @@ private def lowerTypeDecl
             | some sig => { name := ctorName, tag := i, fieldTypeSyntax := #[], sigSyntax := some sig, attrs := ctor.attrs }
             | none =>
               let fieldTypes := ctor.fields.map (·.2)
-              { name := ctorName, tag := i, fieldTypeSyntax := fieldTypes, sigSyntax := none, attrs := ctor.attrs }
+              let fieldNames := ctor.fields.map (fun f => f.1.map (·.name) |>.getD "_")
+              { name := ctorName, tag := i,
+                fieldTypeSyntax := fieldTypes,
+                fieldNames := fieldNames,
+                sigSyntax := none,
+                attrs := ctor.attrs }
           acc := acc.push lowered
       acc
     let headSort := headSortOfKind kindAnnot

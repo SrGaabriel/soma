@@ -251,7 +251,8 @@ def runLLVM (p : Parsed) : IO UInt32 := do
 
   -- Phase 7: Lower to Alloy MIR
   let primTypes := Somac.Alloy.Lower.buildPrimTypeRegistry tcResult.globals.wiredIn
-  let alloyModule := Somac.Alloy.Lower.lower graph moduleName primTypes tcResult.globals.inductives tcResult.globals.intrinsics
+  let stringTy := Somac.Alloy.Lower.computeStringTy tcResult.globals.wiredIn tcResult.globals.inductives primTypes
+  let alloyModule := Somac.Alloy.Lower.lower graph moduleName primTypes stringTy tcResult.globals.inductives tcResult.globals.intrinsics
 
   -- Phase 8: Monomorphize the Alloy module
   let monoModule := Somac.Alloy.Monomorphize.monomorphize alloyModule
@@ -319,7 +320,8 @@ def runAlloy (p : Parsed) : IO UInt32 := do
 
   -- Phase 7: Lower to Alloy MIR
   let primTypes := Somac.Alloy.Lower.buildPrimTypeRegistry tcResult.globals.wiredIn
-  let alloyModule := Somac.Alloy.Lower.lower graph moduleName primTypes tcResult.globals.inductives tcResult.globals.intrinsics
+  let stringTy := Somac.Alloy.Lower.computeStringTy tcResult.globals.wiredIn tcResult.globals.inductives primTypes
+  let alloyModule := Somac.Alloy.Lower.lower graph moduleName primTypes stringTy tcResult.globals.inductives tcResult.globals.intrinsics
 
   IO.println (Somac.Alloy.Pretty.pp alloyModule)
   IO.println ""

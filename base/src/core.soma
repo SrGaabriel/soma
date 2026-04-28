@@ -1,4 +1,5 @@
-use base::prim::{Int32, String}
+use base::prim::{Int32}
+use base::string::{String}
 
 @[extern "soma_strcat"]
 def strcat : String -> String -> String

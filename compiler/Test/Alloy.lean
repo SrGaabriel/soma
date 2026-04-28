@@ -16,7 +16,9 @@ def testSupportsLazySupClosure : IO TestResult := do
     pure (.failed "closure types must support lazy SUP duplication")
 
 def testSupportsLazySupStringPtr : IO TestResult := do
-  let ty : ClosedTy := Ty.string
+  -- Canonical Soma string layout (data + length); previously `Ty.string`,
+  -- now derived from the wired-in record per module.
+  let ty : ClosedTy := .struct #[("data", .rawPtr), ("len", .prim .i64)]
   if !ty.supportsLazySup then
     pure .passed
   else

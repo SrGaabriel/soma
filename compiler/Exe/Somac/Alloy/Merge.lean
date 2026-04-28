@@ -418,7 +418,7 @@ def resolveFuncRefs (mod : Module) : Module := Id.run do
 
   for wrapper in needed do
     let funcId := FuncId.mk nextFuncId
-    let wrapperFunc : ClosedFunc := generateWrapper wrapper funcId
+    let wrapperFunc : ClosedFunc := generateWrapper wrapper mod.stringTy funcId
     wrapperFuncs := wrapperFuncs.push ⟨0, wrapperFunc⟩
 
     -- Register in resolver
@@ -452,6 +452,13 @@ def merge (modules : Array (String × Module)) (outputName : String := "merged")
     let (_, m) := modules[0]!
     return resolveFuncRefs { m with name := outputName }
 
+  let stringTy := (modules[0]!.2).stringTy
+  for (_, m) in modules do
+    if m.stringTy != stringTy then
+      panic! s!"Alloy merge: incompatible `type.string` layouts across modules \
+                (`{m.name}` and `{(modules[0]!.2).name}` disagree). \
+                The wired-in String record must be defined identically in every package."
+
   -- First pass: register everything
   let mut state := MergeState.init outputName
   for (name, module) in modules do
@@ -462,7 +469,7 @@ def merge (modules : Array (String × Module)) (outputName : String := "merged")
     state := remapModule name state
 
   -- Set main function if any module has one
-  let mut result := state.result
+  let mut result := { state.result with stringTy }
   for (name, module) in modules do
     if let some mainId := module.mainFunc then
       if let some newId := state.remap.lookupFunc name mainId.id then

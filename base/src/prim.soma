@@ -7,11 +7,6 @@ inductive Bool where
     | True
     | False
 
-@[wired_in "type.string"]
-record String where
-    data : Ptr Word8
-    len  : Int64
-
 @[wired_in "type.unit"]
 @[intrinsic]
 record Unit

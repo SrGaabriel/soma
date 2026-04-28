@@ -1,4 +1,5 @@
-use base::prim::{Ptr, Int32, Int8, Int16, Int64, Word32, Word8, Word16, Word64, String, Unit, IO}
+use base::prim::{Ptr, Int32, Int8, Int16, Int64, Word32, Word8, Word16, Word64, Unit, IO}
+use base::string::{String}
 
 @[intrinsic "ffi.null"]
 def null : Ptr a

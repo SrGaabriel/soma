@@ -106,6 +106,7 @@ structure TypeConvCtx (n : Nat) where
   inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {}
   abbrevEnv : Soma.Dependent.AbbrevEnv := {}
   inProgressInductives : Std.HashSet Soma.Unique := {}
+  stringTy : ClosedTy
   deriving Inhabited
 
 /-- Build the primitive type registry from the wired-in type registry -/
@@ -135,6 +136,8 @@ structure LowerState (n : Nat) where
   ctxIntrinsics : Std.HashMap QualifiedName Intrinsic := {}
   /-- String table index for panic message -/
   panicMsgIdx : Nat := 0
+  /-- Canonical Alloy layout for the wired-in `type.string` record -/
+  stringTy : ClosedTy
 
 namespace LowerState
 
@@ -147,17 +150,20 @@ instance : Inhabited (LowerState n) where
     nextBlockId := 1
     ctxIntrinsics := {}
     panicMsgIdx := 0
+    stringTy := default
   }
 
 /-- Create initial state for a function -/
 def init (funcId : FuncId) (sig : Signature n)
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
-    (panicMsgIdx : Nat := 0) : LowerState n :=
+    (panicMsgIdx : Nat := 0)
+    (stringTy : ClosedTy) : LowerState n :=
   let entry : Block n := { id := .entry, terminator := .unreachable }
   { func := Func.withBody funcId sig (CFG.withEntry entry)
   , currentBlock := entry
   , ctxIntrinsics := intrinsics
   , panicMsgIdx
+  , stringTy
   }
 
 /-- Allocate a fresh local -/
@@ -226,8 +232,9 @@ namespace LowerM
 def run' (funcId : FuncId) (sig : Signature n)
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
+    (stringTy : ClosedTy)
     (m : LowerM n α) : α × Func n :=
-  let (result, state) := Id.run (StateT.run m (LowerState.init funcId sig intrinsics panicMsgIdx))
+  let (result, state) := Id.run (StateT.run m (LowerState.init funcId sig intrinsics panicMsgIdx stringTy))
   (result, state.finalize)
 
 def freshLocal : LowerM n LocalId := do
@@ -473,7 +480,7 @@ partial def convertPrimToAlloyTy (prim : PrimType) (params : List Value) (ctx : 
   | .float => .prim .f32
   | .double => .prim .f64
   | .bool => .prim .bool
-  | .string => Ty.string
+  | .string => ctx.stringTy.embed
   | .unit => .prim .unit
   | .closurePtr => .rawPtr
   | .word => .prim .u32
@@ -612,9 +619,49 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
   | Value.vTransport _ _ _ _ _ _ _ => .rawPtr
   | Value.vIntLit _ => .prim .i32
   | Value.vFloatLit _ => .prim .f64
-  | Value.vStringLit _ => Ty.string
+  | Value.vStringLit _ => ctx.stringTy.embed
 
 end
+
+/-- Compute the canonical Alloy layout for the wired-in `type.string` -/
+def computeStringTy (wiredIn : Soma.Dependent.WiredIn)
+    (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta)
+    (primTypes : PrimTypeRegistry)
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : ClosedTy :=
+  match wiredIn.getUnique? .typeString with
+  | none =>
+    panic! "Soma compiler bug: missing wired-in `type.string`. \
+            Declare `@[wired_in \"type.string\"] record String` in the base package."
+  | some info =>
+    let qn := info.name
+    match inductives.get? qn with
+    | none =>
+      panic! s!"Soma compiler bug: wired-in `type.string` ({qn.display}) \
+                is not registered in the inductive metadata."
+    | some ind =>
+      if ind.ctors.size != 1 then
+        panic! s!"Soma compiler bug: wired-in `type.string` ({qn.display}) \
+                  must have exactly one constructor, found {ind.ctors.size}."
+      else
+        let ctor := ind.ctors[0]!
+        -- A placeholder `stringTy` is fed back into the recursive
+        -- conversion. It only matters if the String record's fields
+        -- contain other strings (which a well-formed wired-in entry
+        -- never should), so any concrete value is safe here.
+        let placeholder : ClosedTy := .struct #[("data", .rawPtr), ("len", .prim .i64)]
+        let ctx : TypeConvCtx 0 :=
+          { tyVars := TyVarMapping.empty, primTypes, inductives, abbrevEnv,
+            inProgressInductives := ({} : Std.HashSet _).insert qn.id,
+            stringTy := placeholder }
+        let fields := extractCtorFieldTypes ctor.type ctx
+        let fieldNames := ind.fieldNames
+        let namedFields : Array (String × ClosedTy) := fields.mapIdx fun i ty =>
+          let name := if h : i < fieldNames.size then fieldNames[i] else s!"field{i}"
+          (name, ty)
+        let kept := namedFields.filter fun (_, ty) => !Ty.isZeroWidth ty
+        if kept.isEmpty then .prim .unit
+        else if kept.size == 1 then kept[0]!.2
+        else .struct kept
 
 
 mutual
@@ -1133,6 +1180,8 @@ structure NodeState (n : Nat) where
   ptrBytes : Nat := 8
   /-- Type abbreviation environment for unfolding parameterized aliases -/
   abbrevEnv : Soma.Dependent.AbbrevEnv := {}
+  /-- Canonical Alloy layout for the wired-in `type.string` record -/
+  stringTy : ClosedTy
   deriving Inhabited
 
 namespace NodeState
@@ -1145,7 +1194,8 @@ def restoreResults (s : NodeState n) (snapshot : Std.HashMap Nat LocalId × Std.
 
 /-- Build a type conversion context from this node state -/
 def toTypeConvCtx (s : NodeState n) : TypeConvCtx n :=
-  { tyVars := s.tyVarMapping, primTypes := s.primTypes, inductives := s.inductives, abbrevEnv := s.abbrevEnv }
+  { tyVars := s.tyVarMapping, primTypes := s.primTypes, inductives := s.inductives,
+    abbrevEnv := s.abbrevEnv, stringTy := s.stringTy }
 
 end NodeState
 
@@ -1227,9 +1277,10 @@ def lowerMat (expectedTag : Nat) (scrutinee : LocalId) : LowerM n (LocalId × Bl
 
   pure (cond, thenBlock, elseBlock)
 
-/-- Lower a string literal to a fat pointer constant { ptr data, i64 len } -/
+/-- Lower a string literal -/
 def lowerString (stringIdx : Nat) (len : Nat) : LowerM n LocalId := do
-  LowerM.emitInst (.copy (.const (.string stringIdx len))) Ty.string
+  let s ← get
+  LowerM.emitInst (.copy (.const (.string stringIdx len))) s.stringTy.embed
 
 /-- Emit a constructor or record value, dispatching by target type -/
 partial def emitCtorOrRecord (tag : Nat) (fieldVals : Array LocalId) (ty : Ty n)
@@ -1306,7 +1357,9 @@ partial def emitInlineDup (inputVal : LocalId) (ty : Ty n)
 /-- Emit eager, type-directed String duplication -/
 partial def emitStringDup (inputVal : LocalId) : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
   let cstr1 ← StateT.lift (LowerM.emitInst (.callIntrinsic .toCString #[.local inputVal] .rawPtr) .rawPtr)
-  let copy1 ← StateT.lift (LowerM.emitInst (.callIntrinsic .fromCString #[.local cstr1] Ty.string) Ty.string)
+  let ns ← StateT.lift get
+  let strTy : Ty n := ns.stringTy.embed
+  let copy1 ← StateT.lift (LowerM.emitInst (.callIntrinsic .fromCString #[.local cstr1] strTy) strTy)
   pure (inputVal, copy1)
 
 /-- Emit eager type-directed tagged-union duplication via specialized clone -/
@@ -1704,7 +1757,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 let intrinsicOp := convertFFIOp op
                 let retTy : Ty n := match intrinsicOp.fixedRetTy with
                   | some t => ClosedTy.embed t
-                  | none => callRetTy
+                  | none =>
+                    if intrinsicOp.returnsString then ls.stringTy.embed
+                    else callRetTy
                 let result ← StateT.lift (LowerM.emitInst (.callIntrinsic intrinsicOp argOps retTy) retTy)
                 -- Memoize intermediate app nodes to prevent relowering
                 for intermediateId in chain.intermediateAppNodes do
@@ -1878,7 +1933,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         let intrinsicOp := convertFFIOp ffiOp
         let retTy : Ty n := match intrinsicOp.fixedRetTy with
           | some t => ClosedTy.embed t
-          | none => nodeTy
+          | none =>
+            if intrinsicOp.returnsString then lsUnsaturated.stringTy.embed
+            else nodeTy
         StateT.lift (LowerM.emitInst (.callIntrinsic intrinsicOp #[.local argVal] retTy) retTy)
       | some (Sum.inr externName, def_?) =>
         let callRetTy := match def_? with
@@ -2433,7 +2490,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                      |>.insert (nodeId.id * 1000 + 2) copy1
         }
         pure inputVal
-      else if nodeTy == Ty.string then
+      else if nodeTy == (← get).stringTy.embed then
         let (copy0, copy1) ← emitStringDup inputVal
         modify fun ns => { ns with
           results := ns.results.insert (nodeId.id * 1000 + 1) copy0
@@ -2698,6 +2755,7 @@ def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
 /-- Lower a definition with a specific type parameter count n -/
 def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (funcIdMap : FuncIdMap) (tyVarMapping : TyVarMapping n) (primTypes : PrimTypeRegistry)
+    (stringTy : ClosedTy)
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
@@ -2705,7 +2763,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (wiredRole : Option WiredFunc := none)
     (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
     : Func n :=
-  let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes, inductives, abbrevEnv }
+  let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes, inductives, abbrevEnv, stringTy }
   let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty ctx
   let numTyVars := n
   let typeParamNames := if explicitTypeParams.size >= numTyVars then
@@ -2726,13 +2784,13 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
   let sig : Signature n := { name := def_.name.symbolName, typeParamNames, params, retTy }
   let returnsZeroWidth := Ty.isZeroWidth sig.retTy
 
-  let (_, func) := LowerM.run' funcId sig intrinsics panicMsgIdx do
+  let (_, func) := LowerM.run' funcId sig intrinsics panicMsgIdx stringTy do
     -- Normal lowering path: compile the Circuit IR body
     let rootNode := if def_.arity == 0 then def_.root
       else (collectLamChain graph def_.root def_.arity alloyArity).1
     let lamParams := if def_.arity == 0 then {}
       else (collectLamChain graph def_.root def_.arity alloyArity).2
-    let initState : NodeState n := { lamParams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv }
+    let initState : NodeState n := { lamParams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv, stringTy }
     let (result, _) ← StateT.run (lowerNodeWithMap graph rootNode funcIdMap) initState
     -- Reconcile return type: the body's lowered type is ground truth
     let s ← get
@@ -2750,7 +2808,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
-    (funcIdMap : FuncIdMap) (primTypes : PrimTypeRegistry)
+    (funcIdMap : FuncIdMap) (primTypes : PrimTypeRegistry) (stringTy : ClosedTy)
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
@@ -2762,12 +2820,14 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
   -- Collect all type variable levels and build mapping
   let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_ metaState
   -- Lower with the determined n
-  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv
+  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes stringTy
+    inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv
   -- Return existentially quantified function
   ⟨n, func⟩
 
 /-- Lower an entire Circuit graph to an Alloy module -/
 def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
+    (stringTy : ClosedTy)
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (wiredFuncs : WiredFuncRegistry := {})
@@ -2775,6 +2835,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
     (metaState : Soma.Core.MetaState := .empty)
     : Module := Id.run do
   let mut module := Module.empty moduleName
+  module := { module with stringTy }
 
   -- Copy string table from Circuit graph to Alloy module
   let circuitStrings := graph.getStringTable
@@ -2910,7 +2971,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
       if def_.reducibility != .external then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
         let wiredRole := wiredFuncs.get? def_.name.id
-        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv metaState
+        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes stringTy inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv metaState
         module := module.addFunc func
 
   -- Set main function using the mapped ID
@@ -2922,12 +2983,13 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
 
 /-- Main entry point: lower a Circuit graph to an Alloy module -/
 def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
+    (stringTy : ClosedTy)
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (wiredFuncs : WiredFuncRegistry := {})
     (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
     (metaState : Soma.Core.MetaState := .empty)
     : Module :=
-  lowerGraph graph moduleName primTypes inductives intrinsics wiredFuncs abbrevEnv metaState
+  lowerGraph graph moduleName primTypes stringTy inductives intrinsics wiredFuncs abbrevEnv metaState
 
 end Somac.Alloy.Lower
