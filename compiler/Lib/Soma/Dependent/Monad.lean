@@ -266,6 +266,8 @@ inductive WiredRole where
   | listAny
   | listAll
   | listReverse
+  | typeEq
+  | refl
   deriving Inhabited, BEq, DecidableEq, Hashable, Repr, Serialize, Deserialize
 
 namespace WiredRole
@@ -311,6 +313,8 @@ def canonical : WiredRole → String
   | .listAny => "list.any"
   | .listAll => "list.all"
   | .listReverse => "list.reverse"
+  | .typeEq => "type.eq"
+  | .refl => "refl"
 
 instance : ToString WiredRole := ⟨canonical⟩
 
@@ -355,6 +359,8 @@ def fromString? : String → Option WiredRole
   | "list.any" => some .listAny
   | "list.all" => some .listAll
   | "list.reverse" => some .listReverse
+  | "type.eq" => some .typeEq
+  | "refl" => some .refl
   | _ => none
 
 /-- Map wired type roles to canonical primitive representations when applicable -/

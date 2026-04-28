@@ -4,6 +4,26 @@ namespace Soma.Syntax.Parse
 
 open ParserM
 
+inductive Assoc where | left | right | none deriving BEq, Repr
+
+def operatorPrecedence (op : String) : Nat × Assoc :=
+  match op with
+  | "." => (9, .right)
+  | "^" => (8, .right)
+  | "*" | "/" | "%" => (7, .left)
+  | "+" | "-" => (6, .left)
+  | ":" => (5, .right)
+  | "<>" | "++" => (5, .right)
+  | "=" => (4, .none)
+  | "==" | "/=" | "!=" | "<" | ">" | "<=" | ">=" => (4, .none)
+  | "&&" => (3, .right)
+  | "||" => (2, .right)
+  | ">>=" | ">>" => (1, .left)
+  | "<*>" | "*>" | "<*" => (4, .left)
+  | "<$>" | "<&>" => (4, .left)
+  | "$" => (0, .right)
+  | _ => (5, .left)
+
 /-! ## Type Atoms -/
 
 private def parseIdentAny : ParserM (Option GreenNode) := do
@@ -128,9 +148,10 @@ partial def parseParenType : ParserM (Option GreenNode) := do
           -- Not a binder, just a parenthesized type starting with identifier
           -- But we already consumed the identifier, so wrap it back
           let varNode := GreenNode.mkNode .typeVar #[nameTok]
-          -- Check for type application or continue parsing
+          -- Read application atoms greedily, then any infix tail
           match ← parseTypeAppContinue varNode with
           | some typeExpr =>
+              let typeExpr ← parseTypeInfixContinue typeExpr 0
               if (← check .comma) then
                 let mut elements := #[typeExpr]
                 while (← check .comma) do
@@ -524,8 +545,61 @@ partial def parseListType : ParserM (Option GreenNode) := do
               return some (GreenNode.mkError "incomplete list type" #[lbracket])
   | none => return none
 
-/-- Parse a single forall type variable binder -/
+/-- Parse a constraint binder -/
+partial def parseDictBinder : ParserM (Option GreenNode) := do
+  if !(← checkDoubleBrace) then return none
+  let lbrace1 ← consumeAny
+  let lbrace2 ← consumeAny
+  let tok ← current
+  let next ← peekNext
+  if tok.kind == some .lowerIdent && next.kind == some .colon then
+    let nameTok ← consumeAny
+    let colonTok ← consumeAny
+    match ← parseConstraint with
+    | some constraintNode =>
+      match ← tryConsume .rightBrace with
+      | some rbrace1 =>
+        match ← tryConsume .rightBrace with
+        | some rbrace2 =>
+          return some (GreenNode.mkNode .instDictBinder
+            #[lbrace1, lbrace2, nameTok, colonTok, constraintNode, rbrace1, rbrace2])
+        | none =>
+          recordError "expected '}}' to close constraint binder"
+          return some (GreenNode.mkError "unclosed constraint binder"
+            #[lbrace1, lbrace2, nameTok, colonTok, constraintNode, rbrace1])
+      | none =>
+        recordError "expected '}}' to close constraint binder"
+        return some (GreenNode.mkError "unclosed constraint binder"
+          #[lbrace1, lbrace2, nameTok, colonTok, constraintNode])
+    | none =>
+      recordError "expected constraint after ':' in constraint binder"
+      return some (GreenNode.mkError "missing constraint"
+        #[lbrace1, lbrace2, nameTok, colonTok])
+  else
+    match ← parseConstraint with
+    | some constraintNode =>
+      match ← tryConsume .rightBrace with
+      | some rbrace1 =>
+        match ← tryConsume .rightBrace with
+        | some rbrace2 =>
+          return some (GreenNode.mkNode .instDictBinder
+            #[lbrace1, lbrace2, constraintNode, rbrace1, rbrace2])
+        | none =>
+          recordError "expected '}}' to close constraint binder"
+          return some (GreenNode.mkError "unclosed constraint binder"
+            #[lbrace1, lbrace2, constraintNode, rbrace1])
+      | none =>
+        recordError "expected '}}' to close constraint binder"
+        return some (GreenNode.mkError "unclosed constraint binder"
+          #[lbrace1, lbrace2, constraintNode])
+    | none =>
+      recordError "expected constraint inside `{{...}}`"
+      return some (GreenNode.mkError "missing constraint" #[lbrace1, lbrace2])
+
+/-- Parse a single forall-style type binder -/
 partial def parseForallBinder : ParserM (Option GreenNode) := do
+  if (← checkDoubleBrace) then
+    return ← parseDictBinder
   -- Try kinded binder: (name : Kind) where Kind can be *, %, #, * -> *, etc.
   if (← check .leftParen) then
     let lparen ← consumeAny
@@ -656,8 +730,37 @@ partial def parseTypeApp : ParserM (Option GreenNode) := do
       else return some (GreenNode.mkNode .typeApp args)
   | none => return none
 
-partial def parseTypeArrow : ParserM (Option GreenNode) := do
+/-- Continue infix parsing from an already-parsed left-hand side -/
+partial def parseTypeInfixContinue (left : GreenNode) (minPrec : Nat)
+    : ParserM GreenNode := do
+  let mut result := left
+  while (← check .varSymbol) || (← check .equals) do
+    let tok ← current
+    let opText := if tok.kind == some .equals then "=" else tok.text
+    let (prec, assoc) := operatorPrecedence opText
+    if prec < minPrec then break
+    let opTok ← consumeAny
+    let nextMinPrec := match assoc with
+      | .right => prec
+      | .left  => prec + 1
+      | .none  => prec + 1
+    match ← parseTypeApp with
+    | some rightAtom =>
+        let right ← parseTypeInfixContinue rightAtom nextMinPrec
+        result := GreenNode.mkNode .exprInfix #[result, opTok, right]
+    | none =>
+        recordError s!"expected type after operator '{opText}'"
+        return result
+  return result
+
+/-- Parse a type that may contain infix operators -/
+partial def parseTypeInfix : ParserM (Option GreenNode) := do
   match ← parseTypeApp with
+  | some first => some <$> parseTypeInfixContinue first 0
+  | none       => return none
+
+partial def parseTypeArrow : ParserM (Option GreenNode) := do
+  match ← parseTypeInfix with
   | some left =>
       if (← check .arrow) then
         let arrowTok ← consumeAny

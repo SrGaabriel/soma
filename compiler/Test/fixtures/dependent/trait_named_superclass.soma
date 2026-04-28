@@ -1,0 +1,19 @@
+// expect: success
+
+class Eq (a : Type) where
+    eq : a -> a -> Bool
+
+class Ord (a : Type) {{Eq a}} where
+    compare : a -> a -> Int32
+
+class Display (a : Type) where
+    display : a -> String
+
+class ShowOrd (a : Type) {{d : Ord a}} where
+    showCompare : a -> a -> String
+
+class Functor (f : Type -> Type) where
+    fmap : ∀ a b. (a -> b) -> f a -> f b
+
+class MyApplicative (f : Type -> Type) {{fnct : Functor f}} {{Display Int32}} where
+    pure : ∀ a. a -> f a

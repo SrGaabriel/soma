@@ -44,6 +44,7 @@ structure Function where
   closureInfo : Option ClosureInfo
   attrs : FunctionAttrs
   isBodilessExFalso : Bool := false
+  isExternStub : Bool := false
 
 namespace Function
 
@@ -70,6 +71,7 @@ structure TypedFunction where
   closureInfo : Option ClosureInfo
   attrs : FunctionAttrs
   errored : Bool := false
+  isExternStub : Bool := false
 
 namespace TypedFunction
 

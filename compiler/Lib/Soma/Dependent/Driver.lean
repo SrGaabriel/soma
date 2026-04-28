@@ -330,7 +330,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
   let storedType : Option Value ← match ← TCM.lookupGlobalByQN fn.name with
     | some info => pure (some info.type)
     | none => pure none
-  if fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome then
+  if (fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome) && fn.isExternStub then
     match fn.declaredTypeSyntax with
     | some _ =>
       let declaredType ← match storedType with
@@ -635,14 +635,21 @@ where
 def elaborateTypeHeadKind
     (binders : Array Syntax.TypeVarBinder)
     (resultSort : Soma.Core.Level := Level.zero) : TCM Value := do
-  let mut paramKinds : Array (String × Value × Soma.Core.Quantity) := #[]
-  for binder in binders do
-    let kind ← match binder.kind with
-      | some k => elabTypeStandalone k
-      | none => pure (Value.vType Level.zero)
-    -- A data-type parameter whose kind is an universe or Prop-valued gets quantity 0
-    let qty ← if (← Soma.Dependent.shouldAutoEraseBinder kind) then pure .zero else pure .omega
-    paramKinds := paramKinds.push (binder.name.name, kind, qty)
+  let rec loop (i : Nat) (acc : Array (String × Value × Soma.Core.Quantity))
+      : TCM (Array (String × Value × Soma.Core.Quantity)) := do
+    if h : i < binders.size then
+      let binder := binders[i]
+      let kind ← match binder.kind with
+        | some k => elabTypeStandalone k
+        | none   => pure (Value.vType Level.zero)
+      let qty ← if (← Soma.Dependent.shouldAutoEraseBinder kind) then pure .zero else pure .omega
+      let acc' := acc.push (binder.name.name, kind, qty)
+      let uid ← TCM.freshLocalId binder.name.name
+      TCM.withBinding binder.name.name uid kind qty .explicit Span.uninhabited do
+        loop (i + 1) acc'
+    else
+      pure acc
+  let paramKinds ← loop 0 #[]
   let mut headKind : Value := Value.vType resultSort
   for (paramName, paramKind, qty) in paramKinds.reverse do
     headKind := Value.vPi qty .explicit paramName paramKind
@@ -1052,6 +1059,11 @@ def buildGlobals
     globals ← registerTypeClassHead globals typeClass prevGlobals (isDirty typeClass.name.display)
 
   for typeClass in module.typeClasses do
+    let dirty := isDirty typeClass.name.display
+    for (methodName, methodTypeSyntax) in typeClass.methodSignatures do
+      globals ← registerMethod globals typeClass methodName methodTypeSyntax prevGlobals dirty
+
+  for typeClass in module.typeClasses do
     let classNameStr := typeClass.name.display
     let dirty := isDirty classNameStr
     let methodFieldNames := typeClass.methodSignatures.map (·.1.display)
@@ -1071,12 +1083,6 @@ def buildGlobals
           let u ← TCM.freshUnique "New"
           pure ⟨u⟩
       globals ← registerRecordConstructor globals typeClass.name typeClass.params ctorName fields prevGlobals dirty
-
-  -- Type class methods
-  for typeClass in module.typeClasses do
-    let dirty := isDirty typeClass.name.display
-    for (methodName, methodTypeSyntax) in typeClass.methodSignatures do
-      globals ← registerMethod globals typeClass methodName methodTypeSyntax prevGlobals dirty
 
   -- Functions and theorems
   for fn in module.functions do

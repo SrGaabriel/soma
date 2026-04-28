@@ -1,0 +1,19 @@
+// expect: success
+
+inductive Nat where
+    | Zero : Nat
+    | Succ : Nat -> Nat
+
+inductive Fin (n : Nat) where
+    | FZero : ∀ (m : Nat). Fin (Nat::Succ m)
+    | FSucc : ∀ (m : Nat). Fin m -> Fin (Nat::Succ m)
+
+@[extern "soma_nat_add"]
+def add : Nat -> Nat -> Nat
+    | Nat::Zero, n => n
+    | Nat::Succ k, n => Nat::Succ (add k n)
+
+def two : Nat := add (Nat::Succ Nat::Zero) (Nat::Succ Nat::Zero)
+
+def fin_via_add : Fin (add (Nat::Succ Nat::Zero) (Nat::Succ Nat::Zero)) :=
+    Fin::FSucc Fin::FZero

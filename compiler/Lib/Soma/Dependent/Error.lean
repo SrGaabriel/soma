@@ -405,6 +405,19 @@ inductive TCError where
       (theoremName : String)
       (span : Span)
 
+  /-- An instance declaration provides a `def` whose name is not a method of the class -/
+  | unknownInstanceMethod
+      (className : String)
+      (methodName : String)
+      (knownMethods : Array String)
+      (span : Span)
+
+  /-- An instance declaration is missing one or more methods required by the class -/
+  | missingInstanceMethods
+      (className : String)
+      (missing : Array String)
+      (span : Span)
+
   /-- A case expression tries to eliminate a Prop-valued scrutinee into a Type-valued motive -/
   | propElimToType
       (scrutineeTy : Value)
@@ -462,6 +475,8 @@ def span : TCError → Span
   | .propElimToType _ _ s => s
   | .classNotInScope _ s => s
   | .unknownClass _ s => s
+  | .unknownInstanceMethod _ _ _ s => s
+  | .missingInstanceMethods _ _ s => s
 
 /-- Build secondary labels from constraint chain -/
 private def chainToLabels (chain : Array ConstraintInfo) : Array Label :=
@@ -880,6 +895,30 @@ def toDiagnostic : TCError → Diagnostic
     , notes := #[s!"no class named `{name}` is defined in this module or any of its dependencies"]
     , help := some "check for typos, or declare the class with `class ... where ...`"
     }
+
+  | .unknownInstanceMethod className methodName knownMethods span =>
+    let knownStr :=
+      if knownMethods.isEmpty then ""
+      else s!"class `{className}` has methods: {String.intercalate ", " knownMethods.toList}"
+    let suggestions := Soma.Dependent.Suggest.suggestSimilar methodName knownMethods
+    let help := match Soma.Dependent.Suggest.formatSuggestions suggestions with
+      | some hint => hint
+      | none =>
+        s!"remove this `def`, or move it to an `instance` of the class that owns `{methodName}`"
+    Diagnostic.error
+      s!"`{methodName}` is not a method of class `{className}`" span
+      s!"`{methodName}` is not declared in `{className}`"
+      |>.withCode "E1037"
+      |>.withHelp help
+      |> fun d => if knownStr.isEmpty then d else { d with notes := d.notes.push knownStr }
+
+  | .missingInstanceMethods className missing span =>
+    let list := String.intercalate ", " missing.toList
+    Diagnostic.error
+      s!"instance of `{className}` is missing required methods" span
+      s!"missing: {list}"
+      |>.withCode "E1038"
+      |>.withHelp s!"add a `def` clause for each missing method ({list}) inside this instance"
 
 instance : ToString TCError where
   toString err := err.toDiagnostic.message

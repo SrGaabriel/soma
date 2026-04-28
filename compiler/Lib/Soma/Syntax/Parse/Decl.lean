@@ -612,34 +612,6 @@ def parseTraitDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
                 params := params.push binder
             | none => break
 
-          let mut constraints : Array GreenNode := #[]
-          while (← checkDoubleBrace) do
-            let lbrace1 ← consumeAny
-            let lbrace2 ← consumeAny
-            match ← parseConstraint with
-            | some constraintNode =>
-              match ← tryConsume .rightBrace with
-              | some rbrace1 =>
-                match ← tryConsume .rightBrace with
-                | some rbrace2 =>
-                  constraints := constraints.push (GreenNode.mkNode .constraintList
-                    #[lbrace1, lbrace2, constraintNode, rbrace1, rbrace2])
-                | none =>
-                  recordError "expected '}}' to close super-class constraint"
-                  constraints := constraints.push (GreenNode.mkError "unclosed super-class"
-                    #[lbrace1, lbrace2, constraintNode, rbrace1])
-                  break
-              | none =>
-                recordError "expected '}}' to close super-class constraint"
-                constraints := constraints.push (GreenNode.mkError "unclosed super-class"
-                  #[lbrace1, lbrace2, constraintNode])
-                break
-            | none =>
-              recordError "expected constraint inside `{{...}}`"
-              constraints := constraints.push (GreenNode.mkError "missing constraint"
-                #[lbrace1, lbrace2])
-              break
-
           match ← tryConsume .kw_where with
           | some whereTok =>
               let methods ← layoutSepBy parseTraitMethod
@@ -647,7 +619,7 @@ def parseTraitDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
               let paramList := if params.isEmpty then #[]
                 else #[GreenNode.mkNode .tyParamList params]
               let children := attrs ++ #[traitTok, nameTok] ++ paramList ++
-                constraints ++ #[whereTok] ++ methods
+                #[whereTok] ++ methods
               return some (GreenNode.mkNode .declTrait children)
           | none =>
               recordError "expected 'where' in trait declaration"

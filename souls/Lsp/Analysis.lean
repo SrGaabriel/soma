@@ -54,7 +54,7 @@ private def getDeclName : Decl → Option String
   | .def_ _ name _ _ _ _ => some name.name
   | .inductive _ name _ _ _ _ => some name.name
   | .record _ name _ _ _ _ => some name.name
-  | .trait _ name _ _ _ _ => some name.name
+  | .trait _ name _ _ _ => some name.name
   | .abbrev name _ _ _ => some name.name
   | _ => none
 

@@ -3,5 +3,10 @@ inductive Truth : Prop where
 
 inductive Never : Prop
 
+@[wired_in "type.eq"]
+inductive Eq {a : Type} (x : a) : a -> Prop where
+    @[wired_in "refl"]
+    | Refl : Eq x x
+
 // Ex falso quodlibet: from a proof of falsehood, anything follows
 theorem ex_falso (a : Type) : Never -> a

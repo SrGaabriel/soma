@@ -276,7 +276,6 @@ def formatKeywordHover (kind : TokenKind) (text : String) : String :=
     | .kw_trait => "Define a type class."
     | .kw_instance => "Define a type class instance."
     | .kw_where => "Begin definition body or constraints."
-    | .kw_with => "Add constraints."
     | .kw_use => "Import a module."
     | .kw_pub => "Public visibility modifier."
     | .kw_forall => "Universal quantification."
@@ -451,7 +450,7 @@ private def findDeclNameSpanInAst (name : String) (mod : Soma.Syntax.Module) : O
         match field.name with
         | some q => if q.name == name then return some q.span
         | none => pure ()
-    | .trait _ _ _ _ methods _ =>
+    | .trait _ _ _ methods _ =>
       for m in methods do
         if m.name.name == name then return some m.name.span
     | _ => pure ()

@@ -1,0 +1,16 @@
+// expect: success
+
+class Eq (a : Type) where
+    eq : a -> a -> Bool
+
+class Functor (f : Type -> Type) where
+    fmap : ∀ a b. (a -> b) -> f a -> f b
+
+def equal_in_forall : ∀ a {{Eq a}}. a -> a -> Bool
+    | x, y => eq x y
+
+def use_eq_then_polymorphic : ∀ a {{Eq a}} b. a -> a -> b -> b
+    | _, _, z => z
+
+def fmap_pair : ∀ (f : Type -> Type) a b {{d : Functor f}}. (a -> b) -> f a -> f a -> (f b, f b)
+    | g, x, y => (d.fmap g x, d.fmap g y)

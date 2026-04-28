@@ -1,4 +1,4 @@
-use base::prim::{Int32, String, List}
+use base::prim::{Int32, String}
 
 @[extern "soma_strcat"]
 def strcat : String -> String -> String
@@ -16,12 +16,16 @@ inductive Either {err : Type} {ok : Type} where
 class Display (a : Type) where
     display : a -> String
 
-class Semigroup (a : Type) where
+class Magma (a : Type) where
     {<>} : a -> a -> a
 
-class Monoid (a : Type) {{Semigroup a}} where
-    mempty : a
-    mconcat : List a -> a
+class Semigroup (a : Type) {{m : Magma a}} where
+    associative : (x : a) -> (y : a) -> (z : a) -> (x <> (y <> z) = (x <> y) <> z)
+
+class Monoid (a : Type) {{m : Magma a}} {{Semigroup a}} where
+    identity : a
+    left_identity : (x : a) -> (identity <> x = x)
+    right_identity : (x : a) -> (x <> identity = x)
 
 class Functor (f : Type -> Type) where
     fmap : ∀ a b. (a -> b) -> f a -> f b
@@ -49,7 +53,7 @@ instance : Display Int32 where
     def display (n : Int32) : String :=
         int_to_string n
 
-instance : Semigroup String where
+instance : Magma String where
     @[inline]
     def {<>} (s1 : String) (s2 : String) : String :=
         strcat s1 s2

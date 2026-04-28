@@ -82,10 +82,24 @@ structure InstanceDecl where
 /-- Metadata about a type class -/
 structure TypeClassMeta where
   name : QualifiedName
-  params : Array Syntax.TypeVarBinder
-  superclasses : Array Syntax.Constraint
+  binders : Array Syntax.TypeVarBinder
   methodSignatures : Array (QualifiedName × Syntax.Expr)
   span : Syntax.Span
+
+namespace TypeClassMeta
+
+/-- The class's type-variable binders, in source order -/
+def params (m : TypeClassMeta) : Array Syntax.TypeVarBinder :=
+  m.binders.filter (! ·.isConstraint)
+
+/-- The class's super-class constraint binders -/
+def superclasses (m : TypeClassMeta)
+    : Array (Option Syntax.QualName × Syntax.Constraint) :=
+  m.binders.filterMap fun b => match b with
+    | .constraint n? c => some (n?, c)
+    | _                => none
+
+end TypeClassMeta
 
 /-- A type abbreviation (before type checking) -/
 structure TypeAbbrev where

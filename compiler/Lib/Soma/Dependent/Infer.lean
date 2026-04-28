@@ -1024,6 +1024,7 @@ where
     | .infix op left right span => do
       -- `a = b` desugars to the propositional equality type `Eq {A} a b`
       if op.value == "=" then
+        let _eqInfo ← requireUniqueWiredRole .typeEq span
         let (lhsTy, lhsExpr) ← inferSyntax left
         let rhsExpr ← checkSyntax right lhsTy
         let tyLevel ← inferUniverse lhsTy
@@ -1238,7 +1239,7 @@ where
       let listInfo ← requireUniqueWiredRole .typeList span
       return (.vType Level.zero, .dataTy listInfo.name.id #[elemExpr])
 
-/-- Elaborate `forall v1 v2 .. vN. body` into a nested implicit-Pi Core.Expr -/
+/-- Elaborate `∀ b1 b2 .. bN. body` into a nested Pi Core.Expr -/
 partial def inferForallChain
     (vars : List Soma.Syntax.TypeVarBinder) (body : Soma.Syntax.Expr)
     : TCM (Value × Soma.Core.Expr) := do
@@ -1247,17 +1248,32 @@ partial def inferForallChain
     let bodyExpr ← inferTypeExpr body
     return (.vType Level.zero, bodyExpr)
   | v :: rest => do
-    let kindExpr ← match v.kind with
-      | some k => inferTypeExpr k
-      | none => pure (.sort Level.zero)
-    let kindVal ← TCM.evalExpr kindExpr
-    let bindingId ← TCM.freshLocalId v.name.name
-    TCM.recordLocalBindingType v.name.span kindVal
-    let (_, restExpr) ← TCM.withBinding v.name.name bindingId kindVal
-        .omega .implicit v.name.span do
+    let (domExpr, domVal, name, span, info) ← match v with
+      | .mk n kind? =>
+          let kExpr ← match kind? with
+            | some k => inferTypeExpr k
+            | none   => pure (.sort Level.zero)
+          let kVal ← TCM.evalExpr kExpr
+          pure (kExpr, kVal, n.name, n.span, Soma.Core.BinderInfo.implicit)
+      | .constraint n? cstr =>
+          let head : Soma.Syntax.Expr := .con cstr.className
+          let appExpr := cstr.args.foldl
+            (fun acc a => Soma.Syntax.Expr.app acc a cstr.span) head
+          let kExpr ← inferTypeExpr appExpr
+          let kVal ← TCM.evalExpr kExpr
+          let bname := match n? with | some n => n.name | none => "_"
+          let bspan := match n? with | some n => n.span | none => cstr.span
+          pure (kExpr, kVal, bname, bspan, Soma.Core.BinderInfo.instance_)
+    let autoErase ← shouldAutoEraseBinder domVal
+    let effectiveQty : Soma.Core.Quantity :=
+      if autoErase then .zero else .omega
+    let bindingId ← TCM.freshLocalId name
+    TCM.recordLocalBindingType span domVal
+    let (_, restExpr) ← TCM.withBinding name bindingId domVal
+        effectiveQty info span do
       inferForallChain rest body
     return (.vType Level.zero,
-      .pi .omega .implicit v.name.name kindExpr restExpr)
+      .pi effectiveQty info name domExpr restExpr)
 
 /-- Elaborate a sub-expression appearing in type position -/
 partial def inferTypeExpr (e : Soma.Syntax.Expr) : TCM Soma.Core.Expr :=

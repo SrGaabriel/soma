@@ -135,23 +135,9 @@ Elaborate a type class (trait) declaration into a ClassInfo structure.
 The record type for the class is built from the method signatures.
 -/
 
-/-- Build the record type for a type class.
-
-For a trait like:
-  trait Eq a where
-    def eq :: a -> a -> Bool
-
-The record type is:
-  forall {a : Type}. { eq : a -> a -> Bool }
-
-We build this by:
-1. Creating an elaboration environment with type parameters bound
-2. Elaborating each method signature in that environment
-3. Building a record row from the method types
-4. Wrapping in implicit foralls for type parameters
--/
-def elaborateClassRecordType (params : Array TypeVarBinder)
+def elaborateClassRecordType (binders : Array TypeVarBinder)
   (methods : Array (QualifiedName × Soma.Syntax.Expr)) : TCM Value := do
+  let params := binders.filter (! ·.isConstraint)
   let N := params.size
 
   -- Resolve each type-param's kind once, outside the bindings
@@ -232,20 +218,27 @@ def elaborateSuperclasses (params : Array TypeVarBinder)
 def elaborateClass (typeClass : Soma.Core.TypeClassMeta) : TCM ClassInfo := do
   let classUnique := typeClass.name.id
 
-  -- Elaborate the record type from method signatures
-  let recordType ← elaborateClassRecordType typeClass.params typeClass.methodSignatures
+  -- Build the dictionary record type
+  let recordType ← elaborateClassRecordType typeClass.binders typeClass.methodSignatures
 
-  -- Elaborate superclass constraints
-  let superclasses ← elaborateSuperclasses typeClass.params typeClass.superclasses
+  let typeParams := typeClass.params
+  let supersOnly := typeClass.superclasses.map (·.2)
+  let superclasses ← elaborateSuperclasses typeParams supersOnly
 
   return {
     classId := classUnique
-    numParams := typeClass.params.size
-    paramQuantities := typeClass.params.map (fun _ => Quantity.omega)
+    numParams := typeParams.size
+    paramQuantities := typeParams.map (fun _ => Quantity.omega)
     recordType := recordType
     superclasses := superclasses
     span := Span.uninhabited
   }
+
+/-- A constraint paired with the optional user-chosen dictionary name from an instance binder -/
+structure NamedConstraint where
+  classId : Unique
+  args : Array Value
+  dictName? : Option String
 
 /-- Elaborate a constraint into (class Unique, arg Values). -/
 def elaborateConstraint (constraint : Syntax.Constraint) (env : ElabEnv)
@@ -256,15 +249,51 @@ def elaborateConstraint (constraint : Syntax.Constraint) (env : ElabEnv)
     let args ← constraint.args.mapM (elaborateType env)
     return some (classInfo.classId, args)
 
+/-- Compute the super-class constraints implied by an instance -/
+def superclassConstraintsForInstance
+    (typeClass : Soma.Core.TypeClassMeta)
+    (typeArgs : Array Value)
+    (env : ElabEnv)
+    : TCM (Array NamedConstraint) := do
+  let typeParams := typeClass.params
+  let mut env' := env
+  for (param, arg) in typeParams.zip typeArgs do
+    env' := env'.addOverride param.name.name arg
+  let mut result : Array NamedConstraint := #[]
+  for (name?, cstr) in typeClass.superclasses do
+    match ← elaborateConstraint cstr env' with
+    | some (cid, cargs) =>
+      result := result.push {
+        classId := cid, args := cargs, dictName? := name?.map (·.name)
+      }
+    | none => pure ()
+  return result
+
+/-- Validate that an instance body provides exactly the methods declared on the class -/
+def validateInstanceMethodSet
+    (className : String) (instSpan : Syntax.Span)
+    (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
+    (methods : Array Soma.Core.UntypedFunction)
+    : TCM Unit := do
+  let knownNames := methodSignatures.map (·.1.display)
+  let providedNames := methods.map (·.name.display)
+  for method in methods do
+    let nm := method.name.display
+    unless knownNames.contains nm do
+      TCM.addError (.unknownInstanceMethod className nm knownNames method.span)
+  let missing := knownNames.filter fun n => !providedNames.contains n
+  unless missing.isEmpty do
+    TCM.addError (.missingInstanceMethods className missing instSpan)
+
 /-- Substitute instance type arguments into a method signature.
 
 For `instance Display Int where def display | x => ...`:
 - The class method signature is `a -> String`
 - We substitute `a := Int` to get `Int -> String`
 -/
-def substituteMethodType (methodTypeSyntax : Soma.Syntax.Expr) (params : Array TypeVarBinder)
+def substituteMethodType (methodTypeSyntax : Soma.Syntax.Expr) (binders : Array TypeVarBinder)
     (typeArgs : Array Value) : TCM Value := do
-  -- Elaborate the method type with type parameters bound as TCM implicits
+  let params := binders.filter (! ·.isConstraint)
   let paramNames := params.map (·.name.name)
   let mut bindings : Array (Soma.Unique × String × Value) := #[]
   for param in params do
@@ -633,12 +662,6 @@ private def elaborateWithEagerDicts
     resolvedInstEnv ← resolvedInstEnv.addInstanceWithIdForced tempInst
   TCM.withInstanceEnv resolvedInstEnv elabMethods
 
-/-- A constraint with an optional user-chosen dict name from instance binders. -/
-private structure NamedConstraint where
-  classId : Unique
-  args : Array Value
-  dictName? : Option String
-
 /-- Full dictionary-passing elaboration for constrained instances -/
 private def elaborateDictPassingInstance
     (constraints : Array NamedConstraint)
@@ -814,14 +837,14 @@ partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
 def collectInstanceMethodJobs
     (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
     (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
-    (params : Array TypeVarBinder)
+    (binders : Array TypeVarBinder)
     : TCM (Array InstanceMethodJob × Array (String × QualifiedName × Value)) := do
   let mut jobs : Array InstanceMethodJob := #[]
   let mut selfRefs : Array (String × QualifiedName × Value) := #[]
   for method in methods do
     match methodSignatures.find? (fun (name, _) => name.display == method.name.display) with
     | some (_, sigSyntax) =>
-      let expectedType ← substituteMethodType sigSyntax params typeArgs
+      let expectedType ← substituteMethodType sigSyntax binders typeArgs
       jobs := jobs.push { method := method, expectedType := expectedType }
       selfRefs := selfRefs.push (method.name.display, method.name, expectedType)
     | none => pure ()
@@ -831,8 +854,8 @@ def collectInstanceMethodJobs
 def elaborateInstanceSkeleton
     (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
     (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
-    (params : Array TypeVarBinder) : TCM InstanceSkeleton := do
-  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures params
+    (binders : Array TypeVarBinder) : TCM InstanceSkeleton := do
+  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures binders
   pure { value := buildIndirectInstanceValue jobs,
          methodJobs := jobs, selfRefs := selfRefs }
 
@@ -840,10 +863,10 @@ def elaborateInstanceSkeleton
 def elaborateInstanceValue (typeArgs : Array Value)
   (methods : Array Soma.Core.UntypedFunction)
     (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
-    (params : Array TypeVarBinder)
+    (binders : Array TypeVarBinder)
     (constraintDicts : Array ConstraintDictEntry := #[])
     : TCM InstanceElabResult := do
-  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures params
+  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures binders
   elaborateInstanceBodiesCore jobs selfRefs constraintDicts
 
 /-- Elaborate a single instance declaration into an InstanceInfo.
@@ -854,19 +877,29 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl)
   match ← resolveClassName inst.className with
   | none => return none
   | some (_, _) =>
-    let (elabEnv, constraints) ← processInstanceBinders inst.binders
+    let (elabEnv, userConstraints) ← processInstanceBinders inst.binders
 
     let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
+
+    let superConstraints ← superclassConstraintsForInstance typeClass typeArgs elabEnv
+    for nc in superConstraints do
+      if !(nc.args.any valueContainsMeta) then
+        match ← Soma.Dependent.resolveInstance nc.classId nc.args with
+        | .found _ _ => pure ()
+        | _ =>
+          TCM.addError (.noInstance nc.classId nc.args inst.span #[] #[])
+
+    let constraints := userConstraints ++ superConstraints
 
     let instUnique ← TCM.freshUnique s!"$inst_{inst.className.name}_{typeArgs.size}"
 
     let elabSimple := elaborateInstanceValue typeArgs inst.methods
-      typeClass.methodSignatures typeClass.params
+      typeClass.methodSignatures typeClass.binders
     let (instanceInfo, typedFns) ← elaborateConstrainedInstance
       typeClass.name.id instUnique typeArgs constraints inst.span
       elabSimple
       (fun entries => elaborateInstanceValue typeArgs inst.methods
-        typeClass.methodSignatures typeClass.params entries)
+        typeClass.methodSignatures typeClass.binders entries)
 
     return some (instanceInfo, typedFns)
 
@@ -953,7 +986,7 @@ partial def elaborateSimpleInstanceSkeleton
       collectInstanceMethodJobsFromClassInfo classInfo typeArgs methods
     | none, some typeClass =>
       collectInstanceMethodJobs typeArgs methods
-        typeClass.methodSignatures typeClass.params
+        typeClass.methodSignatures typeClass.binders
     | none, none =>
       pure (#[], #[])
   let indirectValue := buildIndirectInstanceValue jobs
@@ -1008,6 +1041,14 @@ private def trySimpleInstanceSkeleton
   let (elabEnv, constraints) ← processInstanceBinders inst.binders
   if !constraints.isEmpty then
     return none
+  let hasSupers := match typeClass? with
+    | some tc => !tc.superclasses.isEmpty
+    | none =>
+      match classInfo? with
+      | some ci => !ci.superclasses.isEmpty
+      | none    => false
+  if hasSupers then
+    return none
   let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
   let instUnique ← TCM.freshUnique s!"$inst_{inst.className.name}_{typeArgs.size}"
   let (info, deferred) ← elaborateSimpleInstanceSkeleton
@@ -1035,6 +1076,10 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
     | none => pure ()
     | some (classQN, classInfo) =>
       let typeClass? := module.typeClasses.find? fun tc => tc.name.id == classQN.id
+      if let some typeClass := typeClass? then
+        TCM.withInstanceEnv visible <|
+          validateInstanceMethodSet inst.className.name inst.span
+            typeClass.methodSignatures inst.methods
       let attemptSkeleton :=
         trySimpleInstanceSkeleton inst classInfo.classId
           (if typeClass?.isSome then none else some classInfo)

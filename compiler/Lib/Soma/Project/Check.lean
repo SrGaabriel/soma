@@ -368,7 +368,7 @@ def registerTypedFnValue (globals : Globals) (fn : Soma.Core.TypedFunction)
   match globals.defs.get? fn.name with
   | none => globals
   | some info =>
-    let isOpaque := fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome || fn.attrs.partial_
+    let isOpaque := fn.isExternStub || fn.attrs.partial_
     let value := if isOpaque then info.value
                  else some (buildTypedFnValue fn globals instanceEnv metas)
     let info' := { info with type := fn.fnType, value := value }
@@ -448,6 +448,7 @@ def checkFunctionsCore
           closureInfo := fn.closureInfo
           attrs := fn.attrs
           errored := errored ∨ !newState.errors.isEmpty
+          isExternStub := fn.isExternStub
         }
         if isTheorem then
           typedThms := typedThms.insert fnName typedFn

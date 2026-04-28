@@ -149,7 +149,7 @@ private def registerGlobalNames
           let (u, s') := supply.fresh name.name
           supply := s'
           topLevel := topLevel.insert name.name ⟨u⟩
-      | .trait _ name _ _ methods _ =>
+      | .trait _ name _ methods _ =>
         if topLevel.get? name.name |>.isNone then
           let (u, s') := supply.fresh name.name
           supply := s'
@@ -247,6 +247,7 @@ private def lowerFunctionDeclCore
             declaredTypeSyntax := sig
             closureInfo := none
             attrs := fnAttrs
+            isExternStub := true
           }, #[])
         if sig.isSome then
           let headerExplicitNames := (headerParams.filter (!·.isImplicit)).map (·.name.name)
@@ -287,10 +288,10 @@ private partial def unfoldKindTelescope (e : Syntax.Expr) (defaultSpan : Span)
   match e with
   | .arrow from_ to _ =>
     let head : Syntax.TypeVarBinder :=
-      ⟨⟨#[], "_", defaultSpan⟩, some from_⟩
+      .mk ⟨#[], "_", defaultSpan⟩ (some from_)
     #[head] ++ unfoldKindTelescope to defaultSpan
   | .pi _qty _binder name dom cod _ =>
-    let head : Syntax.TypeVarBinder := ⟨name, some dom⟩
+    let head : Syntax.TypeVarBinder := .mk name (some dom)
     #[head] ++ unfoldKindTelescope cod defaultSpan
   | .parens inner _ => unfoldKindTelescope inner defaultSpan
   | _ => #[]
@@ -378,15 +379,14 @@ private def lowerTypeClassDecl
     (supply : UniqueSupply)
   : Option Soma.Core.TypeClassMeta × UniqueSupply :=
   match decl with
-  | .trait _ name params constraints methods span =>
+  | .trait _ name binders methods span =>
     let className := registry.requireTopLevel name.name
     let methodSigs := methods.map fun m =>
       let mName := registry.requireTopLevel m.name.name
       (mName, rewriteRecordArrowsAsImplicits m.type_)
     (some {
       name := className
-      params := params
-      superclasses := constraints
+      binders := binders
       methodSignatures := methodSigs
       span := span
     }, supply)

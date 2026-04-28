@@ -84,9 +84,16 @@ inductive Pattern : Type where
   /-- Variant pattern: .Ok x -/
   | variant (label : QualName) (arg : Option Pattern) (span : Span)
 
-/-- A type variable binder, optionally with a type/kind annotation -/
+/-- A type-class constraint applied to type arguments -/
+structure Constraint where
+  className : QualName
+  args : Array Expr
+  span : Span
+
+/-- A binder -/
 inductive TypeVarBinder : Type where
-  | mk (name : QualName) (kind : Option Expr) : TypeVarBinder
+  | mk (name : QualName)        (kind : Option Expr) : TypeVarBinder
+  | constraint (name : Option QualName) (cstr : Constraint)  : TypeVarBinder
 
 /-- A match arm -/
 inductive MatchArm : Type where
@@ -168,11 +175,32 @@ end
 
 namespace TypeVarBinder
 
+/-- The binder name -/
 def name : TypeVarBinder → QualName
   | .mk n _ => n
+  | .constraint (some n) _ => n
+  | .constraint none cstr => ⟨#[], "_", cstr.span⟩
 
+/-- The kind/type annotation of a type-variable binder -/
 def kind : TypeVarBinder → Option Expr
   | .mk _ k => k
+  | .constraint .. => none
+
+/-- The constraint of a `.constraint` binder -/
+def constraint? : TypeVarBinder → Option Constraint
+  | .mk .. => none
+  | .constraint _ cstr => some cstr
+
+/-- Whether this binder introduces a class-dictionary (instance) parameter -/
+def isConstraint : TypeVarBinder → Bool
+  | .mk .. => false
+  | .constraint .. => true
+
+/-- Source span of the binder -/
+def span : TypeVarBinder → Span
+  | .mk n _ => n.span
+  | .constraint (some n) _ => n.span
+  | .constraint none cstr => cstr.span
 
 end TypeVarBinder
 
@@ -268,9 +296,15 @@ instance : Repr TypeAppArg where
   reprPrec a _ := match a with
     | .type ty => f!"TypeAppArg.type ({Expr.repr' ty 0})"
     | .label n => f!"TypeAppArg.label {Repr.reprPrec n 0}"
+instance : Repr Constraint where
+  reprPrec c _ :=
+    f!"Constraint.mk {Repr.reprPrec c.className 0} #[...{c.args.size}] {Repr.reprPrec c.span 0}"
 instance : Repr TypeVarBinder where
-  reprPrec v _ :=
-    f!"TypeVarBinder.mk {Repr.reprPrec v.name 0} {Repr.reprPrec v.kind 0}"
+  reprPrec v _ := match v with
+    | .mk n k =>
+        f!"TypeVarBinder.mk {Repr.reprPrec n 0} {Repr.reprPrec k 0}"
+    | .constraint n? c =>
+        f!"TypeVarBinder.constraint {Repr.reprPrec n? 0} {Repr.reprPrec c 0}"
 instance : Repr MatchArm where
   reprPrec m _ := match m with
     | .mk ps guard body span =>
@@ -283,7 +317,12 @@ instance : Repr ComposeStmt where
     | .bind_ n v _ => f!"ComposeStmt.bind_ {Repr.reprPrec n 0} ({Expr.repr' v 0})"
 
 instance : BEq TypeVarBinder where
-  beq a b := a.name == b.name
+  beq a b := match a, b with
+    | .mk n₁ _, .mk n₂ _ => n₁ == n₂
+    | .constraint n₁ c₁, .constraint n₂ c₂ =>
+        n₁.map QualName.name == n₂.map QualName.name &&
+        c₁.className == c₂.className && c₁.args.size == c₂.args.size
+    | _, _ => false
 
 namespace Pattern
 
@@ -399,12 +438,22 @@ partial def freeVars : Expr → Array QualName
   | .sigma _ name fst snd _ =>
       fst.freeVars ++ (snd.freeVars.filter fun v => v.name != name.name)
   | .forall_ vars body _ =>
-      let boundNames := vars.map (fun v => v.name.name)
-      let varKindVars := vars.foldl (fun acc v =>
-        match v.kind with
-        | some k => acc ++ k.freeVars
-        | none => acc) #[]
-      varKindVars ++ body.freeVars.filter fun v => !boundNames.contains v.name
+      let (acc, bound) := vars.foldl
+        (fun (state : Array QualName × Array String) v =>
+          let (acc, bound) := state
+          let domVars : Array QualName := match v with
+            | .mk _ (some k)     => k.freeVars
+            | .mk _ none         => #[]
+            | .constraint _ cstr =>
+                cstr.args.foldl (fun a e => a ++ e.freeVars) #[]
+          let newAcc := acc ++ domVars.filter fun q => !bound.contains q.name
+          let bound' := match v with
+            | .mk n _              => bound.push n.name
+            | .constraint (some n) _ => bound.push n.name
+            | .constraint none _   => bound
+          (newAcc, bound'))
+        (#[], #[])
+      acc ++ body.freeVars.filter fun v => !bound.contains v.name
   | .recordTy fields tail _ =>
       let fieldVars := fields.foldl (fun acc (_, t) => acc ++ t.freeVars) #[]
       match tail with
@@ -452,13 +501,6 @@ def body (m : MatchArm) : Expr := match m with | .mk _ _ b _ => b
 def span (m : MatchArm) : Span := match m with | .mk _ _ _ s => s
 
 end MatchArm
-
-/-- Type class constraint: Show a, Functor f -/
-structure Constraint where
-  className : QualName
-  args : Array Expr
-  span : Span
-  deriving Repr
 
 instance : Nonempty Constraint :=
   ⟨⟨⟨#[], "_", Span.uninhabited⟩, #[], Span.uninhabited⟩⟩
@@ -550,9 +592,9 @@ inductive Decl where
   | record (attrs : Array Attribute) (name : QualName) (params : Array TypeVarBinder)
            (con : QualName) (fields : Array RecordField) (span : Span)
 
-  /-- Trait definition -/
+  /-- Class definition -/
   | trait (attrs : Array Attribute) (name : QualName) (params : Array TypeVarBinder)
-          (constraints : Array Constraint) (methods : Array MethodSig) (span : Span)
+          (methods : Array MethodSig) (span : Span)
 
   /-- Instance definition -/
   | instance_ (instanceName : Option QualName) (binders : Array InstanceBinder)
@@ -575,7 +617,7 @@ def span : Decl → Span
   | .theorem_ _ _ _ _ _ s => s
   | .inductive _ _ _ _ _ s => s
   | .record _ _ _ _ _ s => s
-  | .trait _ _ _ _ _ s => s
+  | .trait _ _ _ _ s => s
   | .instance_ _ _ _ _ _ s => s
   | .use _ _ _ s => s
   | .abbrev _ _ _ s => s
@@ -586,7 +628,7 @@ def name? : Decl → Option QualName
   | .theorem_ _ name _ _ _ _ => some name
   | .inductive _ name _ _ _ _ => some name
   | .record _ name _ _ _ _ => some name
-  | .trait _ name _ _ _ _ => some name
+  | .trait _ name _ _ _ => some name
   | .instance_ instanceName _ _ _ _ _ => instanceName
   | .use _ _ _ _ => none
   | .abbrev name _ _ _ => some name
@@ -646,9 +688,17 @@ partial def ppPattern : Pattern → String
       | none => s!".{label.name}"
 
 /-- Pretty print a TypeVarBinder -/
-partial def ppTypeVarBinder (v : TypeVarBinder) : String := match v.kind with
-  | some k => s!"({v.name.name} :: {ppExpr k})"
-  | none => v.name.name
+partial def ppTypeVarBinder : TypeVarBinder → String
+  | .mk n (some k) => s!"({n.name} :: {ppExpr k})"
+  | .mk n none => n.name
+  | .constraint name? cstr =>
+      let argsStr :=
+        if cstr.args.isEmpty then ""
+        else " " ++ (cstr.args.toList.map ppExpr |> String.intercalate " ")
+      let body := cstr.className.name ++ argsStr
+      match name? with
+      | some n => "{{" ++ n.name ++ " : " ++ body ++ "}}"
+      | none   => "{{" ++ body ++ "}}"
 
 /-- Pretty print an array of TypeVarBinders -/
 partial def ppTypeVarBinders (vs : Array TypeVarBinder) : String :=
@@ -838,14 +888,12 @@ partial def ppDecl : Decl → String
       ) |> String.intercalate ", "
       s!"{attrStr}record " ++ name.name ++ paramsStr ++ " = " ++ con.name ++ " { " ++ fieldsStr ++ " }"
 
-  | .trait attrs name params constraints methods _ =>
+  | .trait attrs name params methods _ =>
       let attrStr := if attrs.isEmpty then ""
         else s!"@[{attrs.toList.map (·.name.name) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
-      let consStr := if constraints.isEmpty then ""
-        else s!" with ({constraints.toList.map ppConstraint |> String.intercalate ", "})"
       let methodsStr := methods.toList.map ppMethodSig |> String.intercalate "\n"
-      s!"{attrStr}trait {name.name}{paramsStr}{consStr} where\n{indent 2 methodsStr}"
+      s!"{attrStr}trait {name.name}{paramsStr} where\n{indent 2 methodsStr}"
 
   | .instance_ instanceName binders traitName args methods _ =>
       let nameStr := match instanceName with

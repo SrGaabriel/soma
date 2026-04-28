@@ -6,25 +6,6 @@ namespace Soma.Syntax.Parse
 
 open ParserM
 
-inductive Assoc where | left | right | none deriving BEq, Repr
-
-def operatorPrecedence (op : String) : Nat × Assoc :=
-  match op with
-  | "." => (9, .right)
-  | "^" => (8, .right)
-  | "*" | "/" | "%" => (7, .left)
-  | "+" | "-" => (6, .left)
-  | ":" => (5, .right)
-  | "<>" | "++" => (5, .right)
-  | "=" => (4, .none)
-  | "==" | "/=" | "!=" | "<" | ">" | "<=" | ">=" => (4, .none)
-  | "&&" => (3, .right)
-  | "||" => (2, .right)
-  | ">>=" | ">>" => (1, .left)
-  | "<*>" | "*>" | "<*" => (4, .left)
-  | "<$>" | "<&>" => (4, .left)
-  | "$" => (0, .right)
-  | _ => (5, .left)
 
 private def parseIdentAny : ParserM (Option GreenNode) := do
   let tok ← current

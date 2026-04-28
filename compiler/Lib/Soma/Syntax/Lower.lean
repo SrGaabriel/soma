@@ -297,9 +297,30 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
       lowerError s!"missing {expected}" span
       pure (.wildcard span)
 
-/-- Lower a type parameter node (.typeVar or .tyParamKinded) to TypeVarBinder -/
+/-- Lower a single binder node to `TypeVarBinder` -/
 partial def lowerTypeVarBinder (v : GreenNode) (o : Nat) : LowerM TypeVarBinder := do
   match v.syntaxKind? with
+  | some .instDictBinder =>
+      let semanticKids := childrenWithOffsets v o
+        |>.filter fun (c, _) => isSemanticNode c || isTokenKind c .lowerIdent
+      let nameTokIdx? := semanticKids.findIdx? fun (c, _) => isTokenKind c .lowerIdent
+      let constraintIdx? := semanticKids.findIdx? fun (c, _) => c.syntaxKind? == some .constraint
+      match constraintIdx? with
+      | some cIdx =>
+          let (cNode, cOff) := semanticKids[cIdx]!
+          let cstr ← lowerConstraint cNode cOff
+          match nameTokIdx? with
+          | some nIdx =>
+              let (nTok, nOff) := semanticKids[nIdx]!
+              let text ← getGreenTokenText nTok nOff
+              let nspan ← spanFor nTok nOff
+              pure (TypeVarBinder.constraint (some ⟨#[], text, nspan⟩) cstr)
+          | none =>
+              pure (TypeVarBinder.constraint none cstr)
+      | none =>
+          let vspan ← spanFor v o
+          lowerError "constraint binder missing class application" vspan
+          pure (TypeVarBinder.constraint none ⟨⟨#[], "_error", vspan⟩, #[], vspan⟩)
   | some .tyParamKinded =>
       let kids := childrenWithOffsets v o |>.filter (isSemanticNode ·.1)
       -- Look for the type variable name: either a .typeVar wrapper node
@@ -335,7 +356,8 @@ partial def lowerTypeVarBinder (v : GreenNode) (o : Nat) : LowerM TypeVarBinder 
 /-- Lower type parameters from a tyParamList node -/
 partial def lowerTypeParams (plist : GreenNode) (plistOffset : Nat) : LowerM (Array TypeVarBinder) := do
   let varNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
-    c.syntaxKind? == some .typeVar || c.syntaxKind? == some .tyParamKinded
+    let k := c.syntaxKind?
+    k == some .typeVar || k == some .tyParamKinded || k == some .instDictBinder
   varNodes.mapM fun (v, vo) => lowerTypeVarBinder v vo
 
 /-- Lower a CST type to an AST `Expr` -/
@@ -359,7 +381,7 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
 
   | .node .triviaToken _ _ => pure (.var ⟨#[], "_error", span⟩)
 
-  | .node kind _children _ =>
+  | .node kind children _ =>
       match kind with
       | .typeVar =>
           match firstGreenChild green with
@@ -412,17 +434,18 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
 
       | .typeForall =>
           let allKids := childrenWithOffsets green offset
+          let isBinderKind : GreenNode → Bool := fun c =>
+            let k := c.syntaxKind?
+            k == some .typeVar || k == some .tyParamKinded || k == some .instDictBinder
           let tyParamListNode := allKids.find? fun (c, _) => c.syntaxKind? == some .tyParamList
           let binderNodes : Array (GreenNode × Nat) := match tyParamListNode with
             | some (paramList, paramOffset) =>
                 let paramKids := childrenWithOffsets paramList paramOffset
-                paramKids.filter fun (c, _) =>
-                  c.syntaxKind? == some .typeVar || c.syntaxKind? == some .tyParamKinded
+                paramKids.filter fun (c, _) => isBinderKind c
             | none =>
-                allKids.filter fun (c, _) =>
-                  c.syntaxKind? == some .typeVar || c.syntaxKind? == some .tyParamKinded
+                allKids.filter fun (c, _) => isBinderKind c
           let bodyNodes := allKids.filter fun (c, _) =>
-            c.syntaxKind? != some .typeVar && c.syntaxKind? != some .tyParamKinded &&
+            !isBinderKind c &&
             c.syntaxKind? != some .tyParamList && isSemanticNode c
           let vars ← binderNodes.mapM fun (v, o) => lowerTypeVarBinder v o
           if bodyNodes.isEmpty then
@@ -439,6 +462,22 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
           else
             let inner ← lowerTypeExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
             pure (.parens inner span)
+
+      | .exprInfix =>
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          let opNode := children.find? fun c => isTokenKind c .varSymbol || isTokenKind c .equals
+          match opNode, opNode.bind getTokenText with
+          | some _, some opText =>
+              if kidsWithOffsets.size >= 2 then
+                let left ← lowerTypeExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+                let right ← lowerTypeExpr kidsWithOffsets[1]!.1 kidsWithOffsets[1]!.2
+                pure (.infix ⟨opText, span⟩ left right span)
+              else
+                lowerError "infix type requires two operands" span
+                pure (.var ⟨#[], "_error", span⟩)
+          | _, _ =>
+              lowerError "infix type missing operator" span
+              pure (.var ⟨#[], "_error", span⟩)
 
       | .signature =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
@@ -854,9 +893,10 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
       -- Extract binder fields (present when constructor has both binders and a return type)
       let fieldNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .field
 
-      -- Find the type expression (a non-token semantic node that isn't a .field)
       let typeNodes := allKids.filter fun (c, _) =>
-        isSemanticNode c && !c.isToken && c.syntaxKind? != some .field
+        isSemanticNode c && !c.isToken
+          && c.syntaxKind? != some .field
+          && c.syntaxKind? != some .attribute
       if typeNodes.size >= 1 then
         let mut sig ← lowerTypeExpr typeNodes[0]!.1 typeNodes[0]!.2
         -- If there are binder fields, wrap them into the signature type.
@@ -1630,9 +1670,6 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               let (plist, plistOffset) := paramNodes[0]!
               lowerTypeParams plist plistOffset
 
-          let constraintNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .constraintList
-          let constraints ← constraintNodes.mapM fun (c, o) => lowerConstraint c o
-
           let methodNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .traitMethod
           let methods ← methodNodes.mapM fun (m, mo) => do
             let mspan ← spanFor m mo
@@ -1666,7 +1703,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           -- Extract attributes
           let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
           let attrs ← lowerAttributes attrNodes
-          pure (.trait attrs name params constraints methods span)
+          pure (.trait attrs name params methods span)
 
       | .declInstance =>
           let allKids := childrenWithOffsets green offset
