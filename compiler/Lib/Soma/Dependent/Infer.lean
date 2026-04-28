@@ -386,18 +386,13 @@ partial def fieldTypeFromCtor (ctorTy : Value) (typeArgs : List Value) (fieldIdx
     : TCM (Option Value) := do
   let ty ← force ctorTy
   match ty with
-  | .vPi qty binder _ dom cod =>
+  | .vPi _ binder _ dom cod =>
     if binder.isImplicit && !typeArgs.isEmpty then
       let (arg, restArgs) ← match typeArgs with
         | a :: rest => pure (a, rest)
         | [] => pure (← TCM.freshMetaVal dom, [])
       let next ← applyClosure cod arg
       fieldTypeFromCtor next restArgs fieldIdx
-    else if qty.isErased then
-      let lvl ← TCM.currentLevel
-      let placeholder := Value.vNeutral dom (.nVar ⟨"_erased_field", lvl⟩)
-      let next ← applyClosure cod placeholder
-      fieldTypeFromCtor next typeArgs fieldIdx
     else
       if fieldIdx == 0 then
         return some dom

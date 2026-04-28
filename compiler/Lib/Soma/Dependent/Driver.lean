@@ -679,7 +679,7 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
       let typeQN := typeName
       let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders headSort)
       globals := globals.registerInductive typeQN .algebraic
-        (binders.map (·.name.name)) #[] headSort
+        (binders.map (·.name.name)) #[] #[] headSort
       let dataTypeInfo : GlobalInfo := {
         name := typeQN
         type := headKind
@@ -691,13 +691,12 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
     | .record _ recordName binders _ fields _ =>
       let typeQN := recordName
       let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders)
-      let runtimeFieldNames := fields.filterMap fun f =>
-        match f.quantity with
-        | .zero => none
-        | _ => f.name
+      let sourceFieldNames := fields.map (fun f => f.name.getD "_")
+      let sourceFieldQuantities := fields.map (·.quantity)
       globals := globals.registerInductive typeQN .record
         (binders.map (·.name.name))
-        runtimeFieldNames
+        sourceFieldNames
+        sourceFieldQuantities
       let dataTypeInfo : GlobalInfo := {
         name := typeQN
         type := headKind
@@ -821,6 +820,7 @@ private def registerDataType
     (kind : InductiveKind)
     (binders : Array Syntax.TypeVarBinder := #[])
     (fieldNames : Array String := #[])
+    (fieldQuantities : Array Soma.Core.Quantity := #[])
     (headSort : Soma.Core.Level := Soma.Core.Level.zero)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
@@ -833,11 +833,11 @@ private def registerDataType
       if let some prevQN := prev.resolve ns #[] nameStr then
         if let some info := prev.getDef prevQN then
           let mut g := globals.register ns nameStr info
-          g := g.registerInductive prevQN kind typeVarNames fieldNames
+          g := g.registerInductive prevQN kind typeVarNames fieldNames fieldQuantities
           return g
 
   let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders headSort)
-  let mut g := globals.registerInductive typeQN kind typeVarNames fieldNames headSort
+  let mut g := globals.registerInductive typeQN kind typeVarNames fieldNames fieldQuantities headSort
   let dataTypeInfo : GlobalInfo := {
     name := typeQN
     type := headKind
@@ -1064,13 +1064,11 @@ def buildGlobals
   for typeDef in module.types do
     match typeDef with
     | .algebraic _ typeName binders _ headSort _ =>
-      globals ← registerDataType globals typeName .algebraic binders #[] headSort prevGlobals (isDirty typeName.display)
+      globals ← registerDataType globals typeName .algebraic binders #[] #[] headSort prevGlobals (isDirty typeName.display)
     | .record _ recordName binders _ fields _ =>
-      let runtimeFieldNames := fields.filterMap fun f =>
-        match f.quantity with
-        | .zero => none
-        | _ => f.name
-      globals ← registerDataType globals recordName .record binders runtimeFieldNames Soma.Core.Level.zero prevGlobals (isDirty recordName.display)
+      let sourceFieldNames := fields.map (fun f => f.name.getD "_")
+      let sourceFieldQuantities := fields.map (·.quantity)
+      globals ← registerDataType globals recordName .record binders sourceFieldNames sourceFieldQuantities Soma.Core.Level.zero prevGlobals (isDirty recordName.display)
 
   for typeClass in module.typeClasses do
     globals ← registerTypeClassHead globals typeClass prevGlobals (isDirty typeClass.name.display)
@@ -1112,7 +1110,10 @@ def buildGlobals
     let methodFieldNames := typeClass.methodSignatures.map (·.1.display)
     let typeVarNames := typeClass.params.map (·.name.name)
     if let some classQN := globals.resolve ns #[] classNameStr then
-      globals := globals.registerInductive classQN .record typeVarNames methodFieldNames
+      -- Class methods are always at runtime (no erasure), so the
+      -- parallel quantity array is uniform `.omega`.
+      let methodFieldQuantities := methodFieldNames.map fun _ => Soma.Core.Quantity.omega
+      globals := globals.registerInductive classQN .record typeVarNames methodFieldNames methodFieldQuantities
       let fields : Array Soma.Core.RecordFieldDef :=
         typeClass.methodSignatures.map fun (name, ty) =>
           { name := some name.display, type := ty }

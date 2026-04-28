@@ -470,6 +470,36 @@ partial def extractCtorFieldTypes (ty : Value) (ctx : TypeConvCtx n) : Array (Ty
       #[fieldTy] ++ extractCtorFieldTypes (cod.applyPure neutralArg) ctx
   | _ => #[]
 
+/-- Translate a source-level field index -/
+partial def sourceToRuntimeFieldIdx
+    (ctorType : Value) (sourceIdx : Nat) (ctx : TypeConvCtx n) : Option Nat :=
+  walkParams ctorType
+where
+  walkParams (ty : Value) : Option Nat :=
+    match ty with
+    | Value.vPi _ binder _ dom cod =>
+      if binder.isImplicit && isTypeLevelValue dom then
+        let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩)
+        walkParams (cod.applyPure neutralArg)
+      else
+        walkFields ty sourceIdx 0
+    | _ => walkFields ty sourceIdx 0
+  walkFields (ty : Value) (remaining : Nat) (runtimeIdx : Nat) : Option Nat :=
+    match ty with
+    | Value.vPi qty _ name dom cod =>
+      let neutralArg := Value.vNeutral dom (.nVar ⟨name, ⟨0⟩⟩)
+      let next := cod.applyPure neutralArg
+      let dropped :=
+        qty.isErased
+        || isTypeLevelValue dom
+        || Ty.isZeroWidth (convertValueTypeWithMapping dom ctx)
+      if remaining == 0 then
+        if dropped then none else some runtimeIdx
+      else
+        let runtimeIdx' := if dropped then runtimeIdx else runtimeIdx + 1
+        walkFields next (remaining - 1) runtimeIdx'
+    | _ => none
+
 /-- Convert a PrimType to an Alloy Ty -/
 partial def convertPrimToAlloyTy (prim : PrimType) (params : List Value) (ctx : TypeConvCtx n) : Ty n :=
   match prim with
@@ -2319,6 +2349,33 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       else
         StateT.lift (LowerM.emitPanic nodeTy)
     else
+    let sourceRecord? : Option Soma.Core.Value := match entry.getPort ⟨1⟩ with
+      | some targetPort => match graph.getNode targetPort.node with
+        | some targetEntry =>
+          if targetPort.port.idx == 0 then some targetEntry.ty
+          else match targetEntry.node with
+          | .lam _ =>
+            if targetPort.port.idx == 1 then targetEntry.ty.piDomain?
+            else some targetEntry.ty
+          | .app =>
+            if targetPort.port.idx == 2 then targetEntry.ty.piDomain?
+            else some targetEntry.ty
+          | _ => some targetEntry.ty
+        | none => none
+      | none => none
+    let runtimeFieldIdx : Nat := match sourceRecord? with
+      | some (.vDataType uid params) =>
+        match ns.inductives.get? ⟨uid⟩ with
+        | some indInfo =>
+          if indInfo.ctors.size == 1 then
+            let ctor := indInfo.ctors[0]!
+            let instantiated := applyCtorTypeArgs ctor.type params
+            match sourceToRuntimeFieldIdx instantiated fieldIdx ctx with
+            | some r => r
+            | none => fieldIdx
+          else fieldIdx
+        | none => fieldIdx
+      | _ => fieldIdx
     if Ty.isZeroWidth nodeTy then
       StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .u8))) (.prim .unit))
     else if recordTy == nodeTy then
@@ -2326,10 +2383,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     else
       match recordTy with
       | .struct fields =>
-        let fieldTy := if h : fieldIdx < fields.size then fields[fieldIdx].snd else nodeTy
-        StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) fieldTy)
+        let fieldTy := if h : runtimeFieldIdx < fields.size then fields[runtimeFieldIdx].snd else nodeTy
+        StateT.lift (LowerM.emitInst (.extractField (.local recordVal) runtimeFieldIdx) fieldTy)
       | _ =>
-        StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
+        StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 runtimeFieldIdx nodeTy) nodeTy)
 
   | .record numFields => do
     let mut fieldVals : Array LocalId := #[]

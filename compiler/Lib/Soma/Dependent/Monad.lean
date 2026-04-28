@@ -207,6 +207,8 @@ structure InductiveMeta where
   ctors : Array ConstructorMeta := #[]
   /-- Ordered field names for record declarations -/
   fieldNames : Array String := #[]
+  /-- QTT quantities of the fields, parallel to `fieldNames` -/
+  fieldQuantities : Array Soma.Core.Quantity := #[]
   /-- Universe the declaration head lives in -/
   headSort : Soma.Core.Level := .lit 0
   /-- For `Prop`-kinded inductives only: is this a small proposition? -/
@@ -221,6 +223,14 @@ def upsertCtor (m : InductiveMeta) (ctor : ConstructorMeta) : InductiveMeta :=
   match idx? with
   | some idx => { m with ctors := m.ctors.set! idx ctor }
   | none => { m with ctors := m.ctors.push ctor }
+
+/-- Quantity of the field at source index `i` -/
+def fieldQuantity (m : InductiveMeta) (i : Nat) : Soma.Core.Quantity :=
+  m.fieldQuantities[i]?.getD .omega
+
+/-- Whether the field at source index `i` is erased up to QTT -/
+def isFieldErased (m : InductiveMeta) (i : Nat) : Bool :=
+  (m.fieldQuantity i).isErased
 
 end InductiveMeta
 
@@ -597,6 +607,7 @@ def lookupIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
 def registerInductive (g : Globals) (qn : Soma.Core.QualifiedName)
     (kind : InductiveKind) (typeVarNames : Array String := #[])
     (fieldNames : Array String := #[])
+    (fieldQuantities : Array Soma.Core.Quantity := #[])
     (headSort : Soma.Core.Level := .lit 0) : Globals :=
   let metaInfo : InductiveMeta := match g.inductives.get? qn with
     | some existing =>
@@ -604,11 +615,13 @@ def registerInductive (g : Globals) (qn : Soma.Core.QualifiedName)
         kind := kind
         typeVarNames := typeVarNames
         fieldNames := fieldNames
+        fieldQuantities := fieldQuantities
         headSort := headSort }
     | none =>
       { kind := kind
         typeVarNames := typeVarNames
         fieldNames := fieldNames
+        fieldQuantities := fieldQuantities
         headSort := headSort }
   { g with
     recordFields := if fieldNames.isEmpty then g.recordFields else g.recordFields.insert qn fieldNames
