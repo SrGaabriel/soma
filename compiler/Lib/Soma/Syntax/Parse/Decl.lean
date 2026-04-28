@@ -553,6 +553,7 @@ def parseInductiveBinders : ParserM (Array GreenNode) := do
   while true do
     if (← check .leftBrace) then
       let lbrace ← consumeAny
+      let quantityOpt ← Soma.Syntax.Parse.parseQuantity
       match ← parseLowerIdent with
       | some nameTok =>
         if (← check .colon) then
@@ -561,7 +562,10 @@ def parseInductiveBinders : ParserM (Array GreenNode) := do
           | some typeTy =>
             match ← tryConsume .rightBrace with
             | some rbrace =>
-              let paramNode := GreenNode.mkNode .tyParamKinded #[lbrace, nameTok, colonTok, typeTy, rbrace]
+              let children := #[lbrace] ++
+                (match quantityOpt with | some q => #[q] | none => #[]) ++
+                #[nameTok, colonTok, typeTy, rbrace]
+              let paramNode := GreenNode.mkNode .tyParamKinded children
               params := params.push paramNode
             | none =>
               recordError "expected '}' after binder"
@@ -577,6 +581,7 @@ def parseInductiveBinders : ParserM (Array GreenNode) := do
         break
     else if (← check .leftParen) then
       let lparen ← consumeAny
+      let quantityOpt ← Soma.Syntax.Parse.parseQuantity
       match ← parseLowerIdent with
       | some nameTok =>
         if (← check .colon) then
@@ -585,7 +590,10 @@ def parseInductiveBinders : ParserM (Array GreenNode) := do
           | some typeTy =>
             match ← tryConsume .rightParen with
             | some rparen =>
-              let paramNode := GreenNode.mkNode .tyParamKinded #[lparen, nameTok, colonTok, typeTy, rparen]
+              let children := #[lparen] ++
+                (match quantityOpt with | some q => #[q] | none => #[]) ++
+                #[nameTok, colonTok, typeTy, rparen]
+              let paramNode := GreenNode.mkNode .tyParamKinded children
               params := params.push paramNode
             | none =>
               recordError "expected ')' after binder"

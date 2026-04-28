@@ -386,13 +386,18 @@ partial def fieldTypeFromCtor (ctorTy : Value) (typeArgs : List Value) (fieldIdx
     : TCM (Option Value) := do
   let ty ← force ctorTy
   match ty with
-  | .vPi _ binder _ dom cod =>
+  | .vPi qty binder _ dom cod =>
     if binder.isImplicit && !typeArgs.isEmpty then
       let (arg, restArgs) ← match typeArgs with
         | a :: rest => pure (a, rest)
         | [] => pure (← TCM.freshMetaVal dom, [])
       let next ← applyClosure cod arg
       fieldTypeFromCtor next restArgs fieldIdx
+    else if qty.isErased then
+      let lvl ← TCM.currentLevel
+      let placeholder := Value.vNeutral dom (.nVar ⟨"_erased_field", lvl⟩)
+      let next ← applyClosure cod placeholder
+      fieldTypeFromCtor next typeArgs fieldIdx
     else
       if fieldIdx == 0 then
         return some dom
@@ -1268,13 +1273,13 @@ partial def inferForallChain
     let bodyExpr ← inferTypeExpr body
     return (.vType Level.zero, bodyExpr)
   | v :: rest => do
-    let (domExpr, domVal, name, span, info) ← match v with
-      | .mk n kind? =>
+    let (domExpr, domVal, name, span, info, userQty) ← match v with
+      | .mk n kind? q =>
           let kExpr ← match kind? with
             | some k => inferTypeExpr k
             | none   => pure (.sort Level.zero)
           let kVal ← TCM.evalExpr kExpr
-          pure (kExpr, kVal, n.name, n.span, Soma.Core.BinderInfo.implicit)
+          pure (kExpr, kVal, n.name, n.span, Soma.Core.BinderInfo.implicit, q)
       | .constraint n? cstr =>
           let head : Soma.Syntax.Expr := .con cstr.className
           let appExpr := cstr.args.foldl
@@ -1283,10 +1288,13 @@ partial def inferForallChain
           let kVal ← TCM.evalExpr kExpr
           let bname := match n? with | some n => n.name | none => "_"
           let bspan := match n? with | some n => n.span | none => cstr.span
-          pure (kExpr, kVal, bname, bspan, Soma.Core.BinderInfo.instance_)
-    let autoErase ← shouldAutoEraseBinder domVal
-    let effectiveQty : Soma.Core.Quantity :=
-      if autoErase then .zero else .omega
+          pure (kExpr, kVal, bname, bspan, Soma.Core.BinderInfo.instance_, .omega)
+    let effectiveQty : Soma.Core.Quantity ← match userQty with
+      | .zero => pure .zero
+      | .one => pure .one
+      | .omega =>
+        let autoErase ← shouldAutoEraseBinder domVal
+        pure (if autoErase then .zero else .omega)
     let bindingId ← TCM.freshLocalId name
     TCM.recordLocalBindingType span domVal
     let (_, restExpr) ← TCM.withBinding name bindingId domVal

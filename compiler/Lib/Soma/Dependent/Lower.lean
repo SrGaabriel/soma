@@ -288,10 +288,10 @@ private partial def unfoldKindTelescope (e : Syntax.Expr) (defaultSpan : Span)
   match e with
   | .arrow from_ to _ =>
     let head : Syntax.TypeVarBinder :=
-      .mk ⟨#[], "_", defaultSpan⟩ (some from_)
+      .mk ⟨#[], "_", defaultSpan⟩ (some from_) .omega
     #[head] ++ unfoldKindTelescope to defaultSpan
-  | .pi _qty _binder name dom cod _ =>
-    let head : Syntax.TypeVarBinder := .mk name (some dom)
+  | .pi qty _binder name dom cod _ =>
+    let head : Syntax.TypeVarBinder := .mk name (some dom) qty
     #[head] ++ unfoldKindTelescope cod defaultSpan
   | .parens inner _ => unfoldKindTelescope inner defaultSpan
   | _ => #[]

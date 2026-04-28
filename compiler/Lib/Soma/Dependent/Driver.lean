@@ -468,9 +468,11 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
       resultExpr (N + M)
   termination_by fieldTypeSyntax.size - i
 
-  let wrapped ← bindings.zip paramKinds |>.foldrM (init := processFields 0)
-    (fun ((uid, name), kindVal) acc =>
-      pure (TCM.withBinding name uid kindVal .omega .implicit Span.uninhabited acc))
+  let paramQty (i : Nat) : Soma.Core.Quantity :=
+    if h : i < typeVarBinders.size then typeVarBinders[i].quantity else .omega
+  let wrapped ← (bindings.zip paramKinds).zipIdx.foldrM (init := processFields 0)
+    (fun (((uid, name), kindVal), i) acc =>
+      pure (TCM.withBinding name uid kindVal (paramQty i) .implicit Span.uninhabited acc))
   let innerBody ← wrapped
 
   let mut piExpr : Soma.Core.Expr := innerBody
@@ -478,7 +480,7 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
     let idx := N - 1 - i
     let name := typeVarBinders[idx]!.name.name
     let kindExpr := paramKindExprs[idx]!
-    piExpr := .pi .omega .implicit name kindExpr piExpr
+    piExpr := .pi (paramQty idx) .implicit name kindExpr piExpr
   TCM.evalExprInEnv Soma.Core.Env.empty piExpr
 
 /-- Elaborate an indexed constructor type from a full user-written signature -/
@@ -582,7 +584,12 @@ def elaborateTypeHeadKind
       let kind ← match binder.kind with
         | some k => elabTypeStandalone k
         | none   => pure (Value.vType Level.zero)
-      let qty ← if (← Soma.Dependent.shouldAutoEraseBinder kind) then pure .zero else pure .omega
+      let qty : Soma.Core.Quantity ← match binder.quantity with
+        | .zero => pure .zero
+        | .one => pure .one
+        | .omega =>
+          if (← Soma.Dependent.shouldAutoEraseBinder kind) then pure .zero
+          else pure .omega
       let acc' := acc.push (binder.name.name, kind, qty)
       let uid ← TCM.freshLocalId binder.name.name
       TCM.withBinding binder.name.name uid kind qty .explicit Span.uninhabited do
@@ -684,9 +691,13 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
     | .record _ recordName binders _ fields _ =>
       let typeQN := recordName
       let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders)
+      let runtimeFieldNames := fields.filterMap fun f =>
+        match f.quantity with
+        | .zero => none
+        | _ => f.name
       globals := globals.registerInductive typeQN .record
         (binders.map (·.name.name))
-        (fields.filterMap (·.name))
+        runtimeFieldNames
       let dataTypeInfo : GlobalInfo := {
         name := typeQN
         type := headKind
@@ -1055,7 +1066,11 @@ def buildGlobals
     | .algebraic _ typeName binders _ headSort _ =>
       globals ← registerDataType globals typeName .algebraic binders #[] headSort prevGlobals (isDirty typeName.display)
     | .record _ recordName binders _ fields _ =>
-      globals ← registerDataType globals recordName .record binders (fields.filterMap (·.name)) Soma.Core.Level.zero prevGlobals (isDirty recordName.display)
+      let runtimeFieldNames := fields.filterMap fun f =>
+        match f.quantity with
+        | .zero => none
+        | _ => f.name
+      globals ← registerDataType globals recordName .record binders runtimeFieldNames Soma.Core.Level.zero prevGlobals (isDirty recordName.display)
 
   for typeClass in module.typeClasses do
     globals ← registerTypeClassHead globals typeClass prevGlobals (isDirty typeClass.name.display)

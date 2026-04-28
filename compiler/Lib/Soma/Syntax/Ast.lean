@@ -92,8 +92,9 @@ structure Constraint where
 
 /-- A binder -/
 inductive TypeVarBinder : Type where
-  | mk (name : QualName)        (kind : Option Expr) : TypeVarBinder
-  | constraint (name : Option QualName) (cstr : Constraint)  : TypeVarBinder
+  | mk (name : QualName) (kind : Option Expr)
+       (quantity : Soma.Core.Quantity := .omega) : TypeVarBinder
+  | constraint (name : Option QualName) (cstr : Constraint) : TypeVarBinder
 
 /-- A match arm -/
 inductive MatchArm : Type where
@@ -177,14 +178,19 @@ namespace TypeVarBinder
 
 /-- The binder name -/
 def name : TypeVarBinder → QualName
-  | .mk n _ => n
+  | .mk n _ _ => n
   | .constraint (some n) _ => n
   | .constraint none cstr => ⟨#[], "_", cstr.span⟩
 
 /-- The kind/type annotation of a type-variable binder -/
 def kind : TypeVarBinder → Option Expr
-  | .mk _ k => k
+  | .mk _ k _ => k
   | .constraint .. => none
+
+/-- The QTT quantity of a type-variable binder -/
+def quantity : TypeVarBinder → Soma.Core.Quantity
+  | .mk _ _ q => q
+  | .constraint .. => .omega
 
 /-- The constraint of a `.constraint` binder -/
 def constraint? : TypeVarBinder → Option Constraint
@@ -198,17 +204,17 @@ def isConstraint : TypeVarBinder → Bool
 
 /-- Source span of the binder -/
 def span : TypeVarBinder → Span
-  | .mk n _ => n.span
+  | .mk n _ _ => n.span
   | .constraint (some n) _ => n.span
   | .constraint none cstr => cstr.span
 
 end TypeVarBinder
 
-instance : Inhabited TypeVarBinder := ⟨.mk ⟨#[], "_", Span.uninhabited⟩ none⟩
+instance : Inhabited TypeVarBinder := ⟨.mk ⟨#[], "_", Span.uninhabited⟩ none .omega⟩
 
 instance : Nonempty Pattern := ⟨.wildcard Span.uninhabited⟩
 instance : Nonempty Expr := ⟨.var ⟨#[], "_", Span.uninhabited⟩⟩
-instance : Nonempty TypeVarBinder := ⟨.mk ⟨#[], "_", Span.uninhabited⟩ none⟩
+instance : Nonempty TypeVarBinder := ⟨.mk ⟨#[], "_", Span.uninhabited⟩ none .omega⟩
 instance : Nonempty MatchArm :=
   ⟨.mk #[] none (.var ⟨#[], "_", Span.uninhabited⟩) Span.uninhabited⟩
 instance : Nonempty TypeAppArg := ⟨.label ⟨#[], "_", Span.uninhabited⟩⟩
@@ -301,8 +307,8 @@ instance : Repr Constraint where
     f!"Constraint.mk {Repr.reprPrec c.className 0} #[...{c.args.size}] {Repr.reprPrec c.span 0}"
 instance : Repr TypeVarBinder where
   reprPrec v _ := match v with
-    | .mk n k =>
-        f!"TypeVarBinder.mk {Repr.reprPrec n 0} {Repr.reprPrec k 0}"
+    | .mk n k q =>
+        f!"TypeVarBinder.mk {Repr.reprPrec n 0} {Repr.reprPrec k 0} {Repr.reprPrec q 0}"
     | .constraint n? c =>
         f!"TypeVarBinder.constraint {Repr.reprPrec n? 0} {Repr.reprPrec c 0}"
 instance : Repr MatchArm where
@@ -442,15 +448,15 @@ partial def freeVars : Expr → Array QualName
         (fun (state : Array QualName × Array String) v =>
           let (acc, bound) := state
           let domVars : Array QualName := match v with
-            | .mk _ (some k)     => k.freeVars
-            | .mk _ none         => #[]
+            | .mk _ (some k) _ => k.freeVars
+            | .mk _ none _ => #[]
             | .constraint _ cstr =>
                 cstr.args.foldl (fun a e => a ++ e.freeVars) #[]
           let newAcc := acc ++ domVars.filter fun q => !bound.contains q.name
           let bound' := match v with
-            | .mk n _              => bound.push n.name
+            | .mk n _ _ => bound.push n.name
             | .constraint (some n) _ => bound.push n.name
-            | .constraint none _   => bound
+            | .constraint none _ => bound
           (newAcc, bound'))
         (#[], #[])
       acc ++ body.freeVars.filter fun v => !bound.contains v.name
@@ -691,8 +697,15 @@ partial def ppPattern : Pattern → String
 
 /-- Pretty print a TypeVarBinder -/
 partial def ppTypeVarBinder : TypeVarBinder → String
-  | .mk n (some k) => s!"({n.name} :: {ppExpr k})"
-  | .mk n none => n.name
+  | .mk n (some k) q =>
+      let qStr := match q with
+        | .zero => "0 " | .one => "1 " | .omega => ""
+      s!"({qStr}{n.name} :: {ppExpr k})"
+  | .mk n none q =>
+      match q with
+      | .omega => n.name
+      | .zero => s!"(0 {n.name})"
+      | .one => s!"(1 {n.name})"
   | .constraint name? cstr =>
       let argsStr :=
         if cstr.args.isEmpty then ""
