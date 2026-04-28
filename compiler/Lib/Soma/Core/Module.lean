@@ -8,6 +8,8 @@ structure Constructor where
   name : QualifiedName
   tag : Nat
   fieldTypeSyntax : Array Syntax.Expr
+  fieldBinderInfos : Array BinderInfo := #[]
+  fieldQuantities : Array Quantity := #[]
   /-- Full type signature for indexed data types -/
   sigSyntax : Option Syntax.Expr := none
   /-- Attributes from the source declaration -/
@@ -18,7 +20,29 @@ namespace Constructor
 def qualifiedName (c : Constructor) : QualifiedName :=
   c.name
 
+/-- Binder info for the i-th field -/
+def fieldBinderInfo (c : Constructor) (i : Nat) : BinderInfo :=
+  c.fieldBinderInfos[i]?.getD .explicit
+
+/-- Quantity for the i-th field -/
+def fieldQuantity (c : Constructor) (i : Nat) : Quantity :=
+  c.fieldQuantities[i]?.getD .omega
+
 end Constructor
+
+/-- A record field declaration captured during lowering -/
+structure RecordFieldDef where
+  name : Option String
+  type : Syntax.Expr
+  binderInfo : BinderInfo := .explicit
+  quantity : Quantity := .omega
+
+namespace RecordFieldDef
+
+def mkExplicit (name : Option String) (type : Syntax.Expr) : RecordFieldDef :=
+  { name, type }
+
+end RecordFieldDef
 
 /-- A type definition -/
 inductive TypeDef where
@@ -27,7 +51,7 @@ inductive TypeDef where
       (headSort : Level) (span : Soma.Syntax.Span)
   | record (attrs : Array Syntax.Attribute) (name : QualifiedName)
       (typeVarBinders : Array Syntax.TypeVarBinder) (ctorName : QualifiedName)
-      (fields : Array (Option String × Syntax.Expr)) (span : Soma.Syntax.Span)
+      (fields : Array RecordFieldDef) (span : Soma.Syntax.Span)
 
 namespace TypeDef
 
@@ -55,7 +79,11 @@ def attrs : TypeDef → Array Syntax.Attribute
 
 def constructors : TypeDef → Array Constructor
   | .algebraic _ _ _ cs _ _ => cs
-  | .record _ _ _ cn fields _ => #[{ name := cn, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
+  | .record _ _ _ cn fields _ =>
+      #[{ name := cn, tag := 0,
+          fieldTypeSyntax := fields.map (·.type),
+          fieldBinderInfos := fields.map (·.binderInfo),
+          fieldQuantities := fields.map (·.quantity) }]
 
 /-- The universe the type itself lives in -/
 def headSort : TypeDef → Level

@@ -547,8 +547,14 @@ def hashTypeDef (td : Soma.Core.TypeDef) : UInt64 :=
           | none => 0
         combineHash (combineHash acc (hashString v.name.name)) kHash) 0
     let ctorHash := hashString ctorName.display
-    let fieldsHash := fields.foldl (fun acc (nameOpt, _) =>
-      combineHash acc (hashString (nameOpt.getD "_"))) 0
+    let fieldsHash := fields.foldl (fun acc f =>
+      let nameHash := hashString (f.name.getD "_")
+      let tyHash := hashSyntaxExpr f.type
+      let biHash : UInt64 := match f.binderInfo with
+        | .explicit => 0 | .implicit => 1 | .instance_ => 2 | .strictImplicit => 3
+      let qHash : UInt64 := match f.quantity with
+        | .zero => 0 | .one => 1 | .omega => 2
+      combineHashes #[acc, nameHash, tyHash, biHash, qHash]) 0
     combineHashes #[1, attrsHash, nameHash, varsHash, ctorHash, fieldsHash]  -- 1 = record tag
 
 /-- Hash all definitions in a module, returning a map from DefId to hash -/

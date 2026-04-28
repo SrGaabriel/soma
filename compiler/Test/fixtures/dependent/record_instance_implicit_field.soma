@@ -1,0 +1,13 @@
+// expect: success
+
+class Show (a : Type) where
+    show : a -> Bool
+
+instance : Show Int32 where
+    def show (x : Int32) : Bool := Bool::True
+
+record Boxed {a : Type} where
+    {{d : Show a}}
+    value : a
+
+def b : Boxed Int32 := Boxed::New 7

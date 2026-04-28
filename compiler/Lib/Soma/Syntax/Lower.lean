@@ -938,21 +938,43 @@ partial def lowerRecordField (green : GreenNode) (offset : Nat) : LowerM RecordF
   let span ← spanFor green offset
   let allKids := childrenWithOffsets green offset
 
-  -- Look for name token
+  let tokenKinds : Array TokenKind := green.children.filterMap getTokenKind
+  let binderInfo : Soma.Core.BinderInfo :=
+    match tokenKinds[0]?, tokenKinds[1]? with
+    | some TokenKind.leftBrace, some TokenKind.leftBrace => .instance_
+    | some TokenKind.leftBrace, _ => .implicit
+    | _, _ => .explicit
+
+  let quantity : Soma.Core.Quantity ← do
+    let qNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .typeQuantity
+    if h : qNodes.size > 0 then
+      let (qNode, qOff) := qNodes[0]
+      let qInner := firstGreenChild qNode |>.getD qNode
+      let qText ← getGreenTokenText qInner qOff
+      match qText with
+      | "0" => pure .zero
+      | "1" => pure .one
+      | "ω" => pure .omega
+      | other =>
+        lowerError s!"unexpected quantity '{other}' (parser should only emit 0, 1, or ω)" span
+        pure .omega
+    else pure .omega
+
   let nameTokens := green.children.filter fun c => isTokenKind c .lowerIdent
   let fname ← if nameTokens.isEmpty then pure none
     else match getTokenText nameTokens[0]! with
     | some text => pure (some ⟨#[], text, span⟩)
     | none => pure none
 
-  let syntaxKids := allKids.filter fun (c, _) => !c.isToken && isSemanticNode c
+  let syntaxKids := (allKids.filter fun (c, _) => !c.isToken && isSemanticNode c)
+    |>.filter fun (c, _) => c.syntaxKind? != some .typeQuantity
 
   if syntaxKids.size >= 1 then
     let ftype ← lowerTypeExpr syntaxKids[0]!.1 syntaxKids[0]!.2
-    pure ⟨fname, ftype, span⟩
+    pure { name := fname, type_ := ftype, binderInfo, quantity, span }
   else
     lowerError "record field missing type" span
-    pure ⟨none, .var ⟨#[], "_", span⟩, span⟩
+    pure { name := none, type_ := .var ⟨#[], "_", span⟩, binderInfo, quantity, span }
 
 /-- Lower a token to an expression -/
 def lowerExprToken (kind : TokenKind) (text : String) (span : Span) : LowerM Expr := do

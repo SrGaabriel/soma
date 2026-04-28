@@ -1,0 +1,17 @@
+// expect: success
+
+record Box {a : Type} where
+    value : a
+
+def box_int : Box Int32 := Box::New 42
+
+def get_int : Int32 := box_int.value
+
+record Pair2 {a : Type} {b : Type} where
+    fst : a
+    snd : b
+
+def pair_int_bool : Pair2 Int32 Bool := Pair2::New 7 True
+
+def project_fst : Int32 := pair_int_bool.fst
+def project_snd : Bool := pair_int_bool.snd

@@ -381,6 +381,28 @@ private def normalizeRecordLikeType (ty : Value) (span : Span := Span.uninhabite
   | _ =>
     return ty'
 
+/-- Walk a record constructor's Pi chain to find the type of the field at `fieldIdx` -/
+partial def fieldTypeFromCtor (ctorTy : Value) (typeArgs : List Value) (fieldIdx : Nat)
+    : TCM (Option Value) := do
+  let ty ← force ctorTy
+  match ty with
+  | .vPi _ binder _ dom cod =>
+    if binder.isImplicit && !typeArgs.isEmpty then
+      let (arg, restArgs) ← match typeArgs with
+        | a :: rest => pure (a, rest)
+        | [] => pure (← TCM.freshMetaVal dom, [])
+      let next ← applyClosure cod arg
+      fieldTypeFromCtor next restArgs fieldIdx
+    else
+      if fieldIdx == 0 then
+        return some dom
+      else
+        let lvl ← TCM.currentLevel
+        let placeholder := Value.vNeutral dom (.nVar ⟨"_field", lvl⟩)
+        let next ← applyClosure cod placeholder
+        fieldTypeFromCtor next typeArgs (fieldIdx - 1)
+  | _ => return none
+
 /-- Look up field type in a record type -/
 partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) : TCM Value := do
   let recTy' ← normalizeRecordLikeType recTy span
@@ -393,7 +415,7 @@ partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) :
     | none =>
       let available := fields.map (·.1) |>.toArray
       TCM.throw (.fieldNotFound fieldName recTy' span available none)
-  | .vDataType typeId _ =>
+  | .vDataType typeId args =>
     -- Check if this data type is a record with named fields
     let ctx ← TCM.getCtx
     match ctx.globals.lookupFieldIndex ⟨typeId⟩ fieldName with
@@ -403,15 +425,9 @@ partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) :
       | some indInfo =>
         if indInfo.ctors.size == 1 then
           let ctor := indInfo.ctors[0]!
-          -- Walk the constructor type (Pi chain) to find the field at fieldIdx
-          let mut ty := ctor.type
-          for _ in [:fieldIdx] do
-            match ty with
-            | .vPi _ _ _ _ cod => ty ← applyClosure cod (Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩))
-            | _ => break
-          match ty with
-          | .vPi _ _ _ dom _ => return dom
-          | _ => TCM.throw (.expectedRecord recTy' span #[])
+          match ← fieldTypeFromCtor ctor.type args fieldIdx with
+          | some fieldTy => return fieldTy
+          | none => TCM.throw (.expectedRecord recTy' span #[])
         else
           TCM.throw (.expectedRecord recTy' span #[])
       | none => TCM.throw (.expectedRecord recTy' span #[])
@@ -1017,8 +1033,12 @@ where
 
     -- Application: infer fn, then apply arg
     | .app fn arg span => do
-      let (fnTy, fnExpr) ← inferSyntax fn
-      inferSyntaxApp fnTy fnExpr arg span
+      match fn with
+      | .lambda #[(name, none)] body lamSpan =>
+        inferLetStyle name body arg lamSpan
+      | _ =>
+        let (fnTy, fnExpr) ← inferSyntax fn
+        inferSyntaxApp fnTy fnExpr arg span
 
     -- Infix operators: resolve op, apply to both args
     | .infix op left right span => do
@@ -1422,6 +1442,36 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
     let _ ← solveConstraints
     return (resultTy, appExpr)
 
+/-- Elaborate `(λ name → body) value` as a let binding -/
+partial def inferLetStyle (name : Soma.Syntax.QualName) (body : Soma.Syntax.Expr)
+    (value : Soma.Syntax.Expr) (lamSpan : Span)
+    : TCM (Value × Soma.Core.Expr) := do
+  let (valueTy, valueExpr) ← inferSyntax value
+  let bindingId ← TCM.freshLocalId name.name
+  TCM.recordLocalBindingType name.span valueTy
+  withCheckedBinding name.name bindingId valueTy .omega .explicit lamSpan do
+    let some entry ← TCM.lookupLocal name.name
+      | panic! s!"inferLetStyle: binding '{name.name}' missing immediately after withCheckedBinding"
+    let (bodyTy, bodyExpr) ← inferSyntax body
+    let domExpr ← quoteValueToExpr valueTy
+    let lamExpr := buildLambdas [(entry.fvarId, name.name, domExpr)] bodyExpr
+    return (bodyTy, .app lamExpr valueExpr)
+
+/-- Check-mode counterpart to `inferLetStyle` -/
+partial def checkLetStyle (name : Soma.Syntax.QualName) (body : Soma.Syntax.Expr)
+    (value : Soma.Syntax.Expr) (expected : Value) (lamSpan : Span)
+    : TCM Soma.Core.Expr := do
+  let (valueTy, valueExpr) ← inferSyntax value
+  let bindingId ← TCM.freshLocalId name.name
+  TCM.recordLocalBindingType name.span valueTy
+  withCheckedBinding name.name bindingId valueTy .omega .explicit lamSpan do
+    let some entry ← TCM.lookupLocal name.name
+      | panic! s!"checkLetStyle: binding '{name.name}' missing immediately after withCheckedBinding"
+    let bodyExpr ← checkSyntax body expected
+    let domExpr ← quoteValueToExpr valueTy
+    let lamExpr := buildLambdas [(entry.fvarId, name.name, domExpr)] bodyExpr
+    return .app lamExpr valueExpr
+
 /-- Infer lambda body from Syntax params, building nested Core.Expr lambdas -/
 partial def inferSyntaxLamBody
     (params : List (Soma.Syntax.QualName × Option Soma.Syntax.Expr))
@@ -1733,12 +1783,16 @@ where
 
     -- Application: use expected type to guide implicit solving
     | .app fn arg span, _ => do
-      let (fnTy, fnExpr) ← inferSyntax fn
-      let (fnTy', fnExpr') ← insertImplicitsWithExpected fnTy fnExpr (some expected') 1 span
-      let (resultTy, appExpr) ← inferSyntaxApp fnTy' fnExpr' arg span
-      let _ ← solveConstraints
-      subtypeUnify resultTy expected'
-      return appExpr
+      match fn with
+      | .lambda #[(name, none)] body lamSpan =>
+        checkLetStyle name body arg expected' lamSpan
+      | _ =>
+        let (fnTy, fnExpr) ← inferSyntax fn
+        let (fnTy', fnExpr') ← insertImplicitsWithExpected fnTy fnExpr (some expected') 1 span
+        let (resultTy, appExpr) ← inferSyntaxApp fnTy' fnExpr' arg span
+        let _ ← solveConstraints
+        subtypeUnify resultTy expected'
+        return appExpr
 
     -- List literal against List type
     | .list elems span, .vDataType unique (elemTy :: _) => do

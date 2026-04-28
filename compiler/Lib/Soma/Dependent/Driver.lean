@@ -413,7 +413,9 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
 /-- Elaborate a constructor type -/
 def elaborateCtorType (typeName : Soma.Core.QualifiedName)
     (typeVarBinders : Array Syntax.TypeVarBinder)
-    (fieldTypeSyntax : Array Syntax.Expr) : TCM Value := do
+    (fieldTypeSyntax : Array Syntax.Expr)
+    (fieldBinderInfos : Array Soma.Core.BinderInfo := #[])
+    (fieldQuantities : Array Soma.Core.Quantity := #[]) : TCM Value := do
   let N := typeVarBinders.size
 
   let mut paramKindExprs : Array Soma.Core.Expr := #[]
@@ -431,6 +433,14 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
     let uid ← TCM.freshLocalId binder.name.name
     bindings := bindings.push (uid, binder.name.name)
 
+  let paddedBinderInfos : Array Soma.Core.BinderInfo :=
+    Array.range fieldTypeSyntax.size |>.map fun i =>
+      fieldBinderInfos[i]?.getD .explicit
+  let paddedQuantities : Array Soma.Core.Quantity :=
+    Array.range fieldTypeSyntax.size |>.map fun i =>
+      fieldQuantities[i]?.getD .omega
+  let fieldEntries := fieldTypeSyntax.zip (paddedBinderInfos.zip paddedQuantities)
+
   let buildInner : TCM Soma.Core.Expr := do
     let mut typeVarVals : List Value := []
     for (_, name) in bindings do
@@ -440,10 +450,10 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
           [Value.vNeutral entry.type (Soma.Core.Neutral.nVar ⟨name, entry.level⟩)]
       | none => pure ()
     let mut ctorVal : Value := Value.vDataType typeName.id typeVarVals
-    for fieldTy in fieldTypeSyntax.reverse do
+    for (fieldTy, bi, qty) in fieldEntries.reverse do
       let fieldExpr ← Soma.Dependent.inferTypeExpr fieldTy
       let fieldVal ← TCM.evalExpr fieldExpr
-      ctorVal := Value.vPi .omega .explicit "_" fieldVal (Soma.Core.Closure.const "_" ctorVal)
+      ctorVal := Value.vPi qty bi "_" fieldVal (Soma.Core.Closure.const "_" ctorVal)
     pure (Soma.Core.quoteExpr ⟨N⟩ ctorVal)
 
   let wrapped ← bindings.zip paramKinds |>.foldrM (init := buildInner)
@@ -549,22 +559,30 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
           TCM.throw (.cannotInfer s!"unknown wired_in role '{roleName}' on function {fn.name.display}" fn.span none)
   pure g
 
-/-- Elaborate the type constructor kind for a type class head -/
-private def elaborateTypeClassHeadType
-    (typeClass : Soma.Core.TypeClassMeta)
-    : TCM Value := do
-  let mut paramKinds : Array (String × Value) := #[]
-  for param in typeClass.params do
-    let kind ← match param.kind with
-      | some k => elabTypeStandalone k
-      | none => pure (Value.vType Level.zero)
-    paramKinds := paramKinds.push (param.name.name, kind)
-
-  let mut classHeadTy : Value := Value.vType Level.zero
-  for (paramName, paramKind) in paramKinds.reverse do
-    classHeadTy := Value.vPi .omega .explicit paramName paramKind
-      (Soma.Core.Closure.const paramName classHeadTy)
-  return classHeadTy
+/-- Elaborate a type constructor's head kind from its parameter binders -/
+def elaborateTypeHeadKind
+    (binders : Array Syntax.TypeVarBinder)
+    (resultSort : Soma.Core.Level := Level.zero) : TCM Value := do
+  let rec loop (i : Nat) (acc : Array (String × Value × Soma.Core.Quantity))
+      : TCM (Array (String × Value × Soma.Core.Quantity)) := do
+    if h : i < binders.size then
+      let binder := binders[i]
+      let kind ← match binder.kind with
+        | some k => elabTypeStandalone k
+        | none   => pure (Value.vType Level.zero)
+      let qty ← if (← Soma.Dependent.shouldAutoEraseBinder kind) then pure .zero else pure .omega
+      let acc' := acc.push (binder.name.name, kind, qty)
+      let uid ← TCM.freshLocalId binder.name.name
+      TCM.withBinding binder.name.name uid kind qty .explicit Span.uninhabited do
+        loop (i + 1) acc'
+    else
+      pure acc
+  let paramKinds ← loop 0 #[]
+  let mut headKind : Value := Value.vType resultSort
+  for (paramName, paramKind, qty) in paramKinds.reverse do
+    headKind := Value.vPi qty .explicit paramName paramKind
+      (Soma.Core.Closure.const paramName headKind)
+  return headKind
 
 /-- Register or reuse a type class head symbol as a global type -/
 private def registerTypeClassHead
@@ -587,7 +605,7 @@ private def registerTypeClassHead
   let mut g := globals
 
   let classHeadTy ← TCM.recoverWithM
-    (TCM.withGlobals g (elaborateTypeClassHeadType typeClass))
+    (TCM.withGlobals g (elaborateTypeHeadKind typeClass.params))
     (TCM.typePlaceholder typeClass.span)
 
   let classInfo : GlobalInfo := {
@@ -631,31 +649,6 @@ where
       collectCtorPis nextTy (depth + 1) binders' explicit'
     | _ => (binders, explicitLevels, ty)
 
-/-- Elaborate a type constructor's head kind from its parameter binders -/
-def elaborateTypeHeadKind
-    (binders : Array Syntax.TypeVarBinder)
-    (resultSort : Soma.Core.Level := Level.zero) : TCM Value := do
-  let rec loop (i : Nat) (acc : Array (String × Value × Soma.Core.Quantity))
-      : TCM (Array (String × Value × Soma.Core.Quantity)) := do
-    if h : i < binders.size then
-      let binder := binders[i]
-      let kind ← match binder.kind with
-        | some k => elabTypeStandalone k
-        | none   => pure (Value.vType Level.zero)
-      let qty ← if (← Soma.Dependent.shouldAutoEraseBinder kind) then pure .zero else pure .omega
-      let acc' := acc.push (binder.name.name, kind, qty)
-      let uid ← TCM.freshLocalId binder.name.name
-      TCM.withBinding binder.name.name uid kind qty .explicit Span.uninhabited do
-        loop (i + 1) acc'
-    else
-      pure acc
-  let paramKinds ← loop 0 #[]
-  let mut headKind : Value := Value.vType resultSort
-  for (paramName, paramKind, qty) in paramKinds.reverse do
-    headKind := Value.vPi qty .explicit paramName paramKind
-      (Soma.Core.Closure.const paramName headKind)
-  return headKind
-
 /-- Pre-register all type names from a module -/
 def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
   let ctx ← TCM.getCtx
@@ -681,7 +674,7 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
       let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders)
       globals := globals.registerInductive typeQN .record
         (binders.map (·.name.name))
-        (fields.filterMap (·.1))
+        (fields.filterMap (·.name))
       let dataTypeInfo : GlobalInfo := {
         name := typeQN
         type := headKind
@@ -690,6 +683,18 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
         origin := .typeDecl
       }
       globals := globals.register ns recordName.display dataTypeInfo
+  for typeClass in module.typeClasses do
+    let classQN := typeClass.name
+    let headKind ← TCM.withGlobals globals
+      (elaborateTypeHeadKind typeClass.params)
+    let classInfo : GlobalInfo := {
+      name := classQN
+      type := headKind
+      value := some (Value.vDataType classQN.id [])
+      isConstructor := false
+      origin := .class_
+    }
+    globals := globals.register ns classQN.display classInfo
   return globals
 
 /-- After `buildInstanceEnv`, drain any instance-resolution constraints left and zonk metas -/
@@ -831,6 +836,8 @@ private def registerConstructorRaw
     (sigSyntax : Option Syntax.Expr)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
+    (fieldBinderInfos : Array Soma.Core.BinderInfo := #[])
+    (fieldQuantities : Array Soma.Core.Quantity := #[])
     : TCM Globals := do
   let ns ← TCM.getCurrentNamespace
   let typeNs := ns.push typeName.display
@@ -853,7 +860,9 @@ private def registerConstructorRaw
   let ctorType ← TCM.recoverWithM
     (match sigSyntax with
       | some sig => TCM.withGlobals globals (elaborateIndexedCtorType typeName typeVarNames sig)
-      | none => TCM.withGlobals globals (elaborateCtorType typeName typeVarBinders fieldTypes))
+      | none => TCM.withGlobals globals
+          (elaborateCtorType typeName typeVarBinders fieldTypes
+            fieldBinderInfos fieldQuantities))
     (TCM.typePlaceholder Span.uninhabited)
   let ctorValue := mkConstructorValue ctorQN ctorTag ctorType
   let info : GlobalInfo := {
@@ -891,7 +900,7 @@ private def registerConstructor
 private def registerRecordFieldAccessors
     (globals : Globals)
     (recordName : Soma.Core.QualifiedName)
-    (fields : Array (Option String × Syntax.Expr))
+    (fields : Array Soma.Core.RecordFieldDef)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
@@ -901,15 +910,15 @@ private def registerRecordFieldAccessors
 
   if !isDirty then
     if let some prev := prevGlobals then
-      for (fieldNameOpt, _) in fields do
-        if let some fieldName := fieldNameOpt then
+      for f in fields do
+        if let some fieldName := f.name then
           if let some accQN := prev.resolve ns #[recordName.display] fieldName then
             if let some accessorInfo := prev.getDef accQN then
               g := g.register typeNs fieldName accessorInfo
       return g
 
-  for (fieldNameOpt, _) in fields do
-    if let some fieldName := fieldNameOpt then
+  for f in fields do
+    if let some fieldName := f.name then
       let accessorUnique ← TCM.freshUnique fieldName
       let accessorType ← TCM.freshMetaVal (.vType .zero)
       let accessorInfo : GlobalInfo := {
@@ -928,12 +937,14 @@ private def registerRecordConstructor
     (recordName : Soma.Core.QualifiedName)
     (typeVarBinders : Array Syntax.TypeVarBinder)
     (ctorName : Soma.Core.QualifiedName)
-    (fields : Array (Option String × Syntax.Expr))
+    (fields : Array Soma.Core.RecordFieldDef)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
   let g ← registerConstructorRaw globals recordName typeVarBinders
-    ctorName "New" 0 (fields.map (·.2)) none prevGlobals isDirty
+    ctorName "New" 0 (fields.map (·.type)) none prevGlobals isDirty
+    (fieldBinderInfos := fields.map (·.binderInfo))
+    (fieldQuantities := fields.map (·.quantity))
   registerRecordFieldAccessors g recordName fields prevGlobals isDirty
 
 /-- Elaborate a type class method type -/
@@ -1027,7 +1038,10 @@ def buildGlobals
     | .algebraic _ typeName binders _ headSort _ =>
       globals ← registerDataType globals typeName .algebraic binders #[] headSort prevGlobals (isDirty typeName.display)
     | .record _ recordName binders _ fields _ =>
-      globals ← registerDataType globals recordName .record binders (fields.filterMap (·.1)) Soma.Core.Level.zero prevGlobals (isDirty recordName.display)
+      globals ← registerDataType globals recordName .record binders (fields.filterMap (·.name)) Soma.Core.Level.zero prevGlobals (isDirty recordName.display)
+
+  for typeClass in module.typeClasses do
+    globals ← registerTypeClassHead globals typeClass prevGlobals (isDirty typeClass.name.display)
 
   -- Second pass: Register constructors
   for typeDef in module.types do
@@ -1056,9 +1070,6 @@ def buildGlobals
     | .record _ _ _ _ _ _ => pure ()
 
   for typeClass in module.typeClasses do
-    globals ← registerTypeClassHead globals typeClass prevGlobals (isDirty typeClass.name.display)
-
-  for typeClass in module.typeClasses do
     let dirty := isDirty typeClass.name.display
     for (methodName, methodTypeSyntax) in typeClass.methodSignatures do
       globals ← registerMethod globals typeClass methodName methodTypeSyntax prevGlobals dirty
@@ -1070,7 +1081,9 @@ def buildGlobals
     let typeVarNames := typeClass.params.map (·.name.name)
     if let some classQN := globals.resolve ns #[] classNameStr then
       globals := globals.registerInductive classQN .record typeVarNames methodFieldNames
-      let fields := typeClass.methodSignatures.map (fun (name, ty) => (some name.display, ty))
+      let fields : Array Soma.Core.RecordFieldDef :=
+        typeClass.methodSignatures.map fun (name, ty) =>
+          { name := some name.display, type := ty }
       let ctorName ← do
         match prevGlobals with
         | some prev =>

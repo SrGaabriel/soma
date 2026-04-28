@@ -546,6 +546,8 @@ structure DataCon where
 structure RecordField where
   name : Option QualName
   type_ : Expr
+  binderInfo : Soma.Core.BinderInfo := .explicit
+  quantity : Soma.Core.Quantity := .omega
   span : Span
   deriving Repr
 
@@ -881,10 +883,17 @@ partial def ppDecl : Decl → String
       let attrStr := if attrs.isEmpty then ""
         else s!"@[{attrs.toList.map (·.name.name) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
+      let qtyStr (q : Quantity) : String :=
+        match q with | .omega => "" | .zero => "0 " | .one => "1 "
+      let wrap (bi : BinderInfo) (inner : String) : String :=
+        match bi with
+        | .explicit => s!"({inner})"
+        | .implicit => s!"\{{inner}}"
+        | .instance_ => s!"\{\{{inner}}}"
+        | .strictImplicit => s!"\{\{{inner}}}"
       let fieldsStr := fields.toList.map (fun f =>
-        match f.name with
-        | some n => s!"{n.name} :: {ppExpr f.type_}"
-        | none => ppExpr f.type_
+        let nameStr := match f.name with | some n => s!"{n.name} :: " | none => ""
+        wrap f.binderInfo s!"{qtyStr f.quantity}{nameStr}{ppExpr f.type_}"
       ) |> String.intercalate ", "
       s!"{attrStr}record " ++ name.name ++ paramsStr ++ " = " ++ con.name ++ " { " ++ fieldsStr ++ " }"
 

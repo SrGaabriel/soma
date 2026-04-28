@@ -344,9 +344,12 @@ private def lowerTypeDecl
     let typeName := registry.requireTopLevel name.name
     let (ctorUnique, supply'') := supply.fresh "New"
     let ctorQName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
-    let fieldsWithOptNames := fields.map fun field =>
-      (field.name.map (·.name), field.type_)
-    (some (.record attrs typeName params ctorQName fieldsWithOptNames span), #[], supply'')
+    let fieldDefs : Array Soma.Core.RecordFieldDef := fields.map fun field =>
+      { name := field.name.map (·.name)
+        type := field.type_
+        binderInfo := field.binderInfo
+        quantity := field.quantity }
+    (some (.record attrs typeName params ctorQName fieldDefs span), #[], supply'')
   | _ => (none, #[], supply)
 
 /-- Rewrite single-field record types in arrow-domain position -/

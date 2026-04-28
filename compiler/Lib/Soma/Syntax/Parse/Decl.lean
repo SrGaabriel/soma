@@ -301,29 +301,127 @@ partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) 
 partial def parseTheoremDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) :=
   parseDefOrTheoremDecl .kw_theorem "theorem" .declTheorem attrs
 
+/-- Parse a record field -/
 def parseConstructorField : ParserM (Option GreenNode) := do
-  match ← parseLowerIdent with
-  | some nameTok =>
-      let colonTok? ← do
-        match ← tryConsume .colon with
-        | some tok => pure (some tok)
-        | none => tryConsume .doubleColon
-      match colonTok? with
-      | some colonTok =>
-          match ← parseType with
-          | some ty => return some (GreenNode.mkNode .field #[nameTok, colonTok, ty])
+  if (← checkDoubleBrace) then
+    let lbrace1 ← consumeAny
+    let lbrace2 ← consumeAny
+    let quantityOpt ← Soma.Syntax.Parse.parseQuantity
+    match ← parseLowerIdent with
+    | some nameTok =>
+      if (← check .colon) then
+        let colonTok ← consumeAny
+        match ← parseType with
+        | some ty =>
+          match ← tryConsume .rightBrace with
+          | some rbrace1 =>
+            match ← tryConsume .rightBrace with
+            | some rbrace2 =>
+              let children := #[lbrace1, lbrace2] ++
+                (match quantityOpt with | some q => #[q] | none => #[]) ++
+                #[nameTok, colonTok, ty, rbrace1, rbrace2]
+              return some (GreenNode.mkNode .field children)
+            | none =>
+              recordError "expected '}}' after instance-implicit record field"
+              return some (GreenNode.mkError "unclosed instance-implicit field"
+                (#[lbrace1, lbrace2, nameTok, colonTok, ty, rbrace1]))
           | none =>
-              recordError "expected type after ':'"
-              return some (GreenNode.mkError "missing field type" #[nameTok, colonTok])
-      | none =>
-          -- Wrap the identifier as a type variable
-          let tyNode := GreenNode.mkNode .typeVar #[nameTok]
-          return some (GreenNode.mkNode .field #[tyNode])
-  | none =>
-      -- Try parsing an anonymous type field
-      match ← parseType with
-      | some ty => return some (GreenNode.mkNode .field #[ty])
-      | none => return none
+            recordError "expected '}}' after instance-implicit record field"
+            return some (GreenNode.mkError "unclosed instance-implicit field"
+              (#[lbrace1, lbrace2, nameTok, colonTok, ty]))
+        | none =>
+          recordError "expected type after ':' in instance-implicit record field"
+          return some (GreenNode.mkError "missing field type"
+            (#[lbrace1, lbrace2, nameTok, colonTok]))
+      else
+        recordError "expected ':' in instance-implicit record field"
+        return some (GreenNode.mkError "missing ':' in instance-implicit field"
+          (#[lbrace1, lbrace2, nameTok]))
+    | none =>
+      recordError "expected field name after '{{'"
+      return some (GreenNode.mkError "missing instance-implicit field name"
+        #[lbrace1, lbrace2])
+  else if (← check .leftBrace) then
+    let lbrace ← consumeAny
+    let quantityOpt ← Soma.Syntax.Parse.parseQuantity
+    match ← parseLowerIdent with
+    | some nameTok =>
+      if (← check .colon) then
+        let colonTok ← consumeAny
+        match ← parseType with
+        | some ty =>
+          match ← tryConsume .rightBrace with
+          | some rbrace =>
+            let children := #[lbrace] ++
+              (match quantityOpt with | some q => #[q] | none => #[]) ++
+              #[nameTok, colonTok, ty, rbrace]
+            return some (GreenNode.mkNode .field children)
+          | none =>
+            recordError "expected '}' after implicit record field"
+            return some (GreenNode.mkError "unclosed implicit field"
+              (#[lbrace, nameTok, colonTok, ty]))
+        | none =>
+          recordError "expected type after ':' in implicit record field"
+          return some (GreenNode.mkError "missing field type"
+            (#[lbrace, nameTok, colonTok]))
+      else
+        recordError "expected ':' in implicit record field"
+        return some (GreenNode.mkError "missing ':' in implicit field"
+          (#[lbrace, nameTok]))
+    | none =>
+      recordError "expected field name after '{'"
+      return some (GreenNode.mkError "missing implicit field name" #[lbrace])
+  else if (← check .leftParen) then
+    let lparen ← consumeAny
+    let quantityOpt ← Soma.Syntax.Parse.parseQuantity
+    match ← parseLowerIdent with
+    | some nameTok =>
+      if (← check .colon) then
+        let colonTok ← consumeAny
+        match ← parseType with
+        | some ty =>
+          match ← tryConsume .rightParen with
+          | some rparen =>
+            let children := #[lparen] ++
+              (match quantityOpt with | some q => #[q] | none => #[]) ++
+              #[nameTok, colonTok, ty, rparen]
+            return some (GreenNode.mkNode .field children)
+          | none =>
+            recordError "expected ')' after explicit record field"
+            return some (GreenNode.mkError "unclosed explicit field"
+              (#[lparen, nameTok, colonTok, ty]))
+        | none =>
+          recordError "expected type after ':' in record field"
+          return some (GreenNode.mkError "missing field type"
+            (#[lparen, nameTok, colonTok]))
+      else
+        recordError "expected ':' in record field"
+        return some (GreenNode.mkError "missing ':' in record field"
+          (#[lparen, nameTok]))
+    | none =>
+      recordError "expected field name after '('"
+      return some (GreenNode.mkError "missing field name" #[lparen])
+  else
+    match ← parseLowerIdent with
+    | some nameTok =>
+        let colonTok? ← do
+          match ← tryConsume .colon with
+          | some tok => pure (some tok)
+          | none => tryConsume .doubleColon
+        match colonTok? with
+        | some colonTok =>
+            match ← parseType with
+            | some ty => return some (GreenNode.mkNode .field #[nameTok, colonTok, ty])
+            | none =>
+                recordError "expected type after ':'"
+                return some (GreenNode.mkError "missing field type" #[nameTok, colonTok])
+        | none =>
+            let tyNode := GreenNode.mkNode .typeVar #[nameTok]
+            return some (GreenNode.mkNode .field #[tyNode])
+    | none =>
+        match ← parseType with
+        | some ty => return some (GreenNode.mkNode .field #[ty])
+        | none => return none
 
 def parseConstructorBinder : ParserM (Option GreenNode) := do
   if (← check .leftParen) then

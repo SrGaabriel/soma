@@ -39,9 +39,6 @@ alias CUIntPtr := Word64
 
 alias CString := Ptr Word8
 
-def to_cstring : String -> CString
-    | s => s.data
-
 @[intrinsic "ffi.from_cstring"]
 def from_cstring : CString -> String
 

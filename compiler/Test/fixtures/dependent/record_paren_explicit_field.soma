@@ -1,0 +1,10 @@
+// expect: success
+
+record P {a : Type} where
+    (x : a)
+    (y : a)
+
+def p : P Int32 := P::New 1 2
+
+def fst : Int32 := p.x
+def snd : Int32 := p.y

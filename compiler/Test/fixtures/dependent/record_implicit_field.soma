@@ -1,0 +1,9 @@
+// expect: success
+
+record Sized {a : Type} where
+    {n : Int32}
+    value : a
+
+def s : Sized Int32 := Sized::New 42
+
+def get : Int32 := s.value

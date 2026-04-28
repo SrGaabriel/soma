@@ -951,8 +951,8 @@ def extractPublicSymbols
         | none => pure ()
 
       -- Register field accessors
-      for (fieldNameOpt, _) in fields do
-        if let some fieldName := fieldNameOpt then
+      for f in fields do
+        if let some fieldName := f.name then
           let accessorName := s!"{recordNameStr}::{fieldName}"
           if shouldExport accessorName then
             match globals.resolve moduleNs #[recordNameStr] fieldName with
