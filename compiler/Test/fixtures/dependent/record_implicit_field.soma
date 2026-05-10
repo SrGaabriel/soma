@@ -1,6 +1,6 @@
 // expect: success
 
-record Sized {a : Type} where
+record Sized (a : Type) where
     {n : Int32}
     value : a
 

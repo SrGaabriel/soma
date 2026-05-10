@@ -1,6 +1,6 @@
 // expect: success
 
-record P {a : Type} where
+record P (a : Type) where
     (x : a)
     (y : a)
 

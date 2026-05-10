@@ -1,7 +1,7 @@
 // expect: success
 // Test: simple pair types with @[wired_in] attributes
 
-inductive Pair {a : Type} {b : Type} where
+inductive Pair (a : Type) (b : Type) where
     | MkPair (fst : a) (snd : b)
 
 def pair : Pair Int32 Int32 := Pair::MkPair 1 2

@@ -323,15 +323,28 @@ partial def lowerTypeVarBinder (v : GreenNode) (o : Nat) : LowerM TypeVarBinder 
           pure (TypeVarBinder.constraint none ⟨⟨#[], "_error", vspan⟩, #[], vspan⟩)
   | some .tyParamKinded =>
       let kids := childrenWithOffsets v o |>.filter (isSemanticNode ·.1)
-      -- Look for the type variable name: either a .typeVar wrapper node
-      -- or a raw .lowerIdent token (produced by parseInductiveBinders)
-      let varChild := kids.find? fun (c, _) =>
+      let varIdx := kids.findIdx? fun (c, _) =>
         c.syntaxKind? == some .typeVar || isTokenKind c .lowerIdent
-      let kindChildren := kids.filter fun (c, _) =>
-        c.syntaxKind? != some .typeVar
-        && !(isTokenKind c .lowerIdent)
-        && c.syntaxKind? != some .typeQuantity
+      let varChild := varIdx.bind fun i => kids[i]?
+      let kindChildren : Array (GreenNode × Nat) := match varIdx with
+        | some idx =>
+          let pairs := kids.zipIdx
+          pairs.filterMap fun (kid, j) =>
+            let (c, _) := kid
+            if j > idx && c.syntaxKind? != some Soma.Syntax.SyntaxKind.typeQuantity then some kid
+            else none
+        | none =>
+          kids.filter fun (c, _) =>
+            c.syntaxKind? != some Soma.Syntax.SyntaxKind.typeVar
+            && !(isTokenKind c TokenKind.lowerIdent)
+            && c.syntaxKind? != some Soma.Syntax.SyntaxKind.typeQuantity
       let vspan ← spanFor v o
+      let bracketKinds : Array TokenKind := v.children.filterMap getTokenKind
+      let binderInfo : Soma.Core.BinderInfo :=
+        match bracketKinds[0]?, bracketKinds[1]? with
+        | some TokenKind.leftBrace, some TokenKind.leftBrace => .instance_
+        | some TokenKind.leftBrace, _                        => .implicit
+        | _,                        _                        => .explicit
       let quantity ← do
         let qNodes := kids.filter fun (c, _) => c.syntaxKind? == some .typeQuantity
         if h : qNodes.size > 0 then
@@ -356,18 +369,18 @@ partial def lowerTypeVarBinder (v : GreenNode) (o : Nat) : LowerM TypeVarBinder 
           let nspan ← spanFor varNode varOff
           let kindExpr ← if kindChildren.isEmpty then pure none
             else some <$> lowerTypeExpr kindChildren[0]!.1 kindChildren[0]!.2
-          pure (TypeVarBinder.mk ⟨#[], text, nspan⟩ kindExpr quantity)
+          pure (TypeVarBinder.mk ⟨#[], text, nspan⟩ kindExpr quantity binderInfo)
       | none =>
-          pure (TypeVarBinder.mk ⟨#[], "_", vspan⟩ none quantity)
+          pure (TypeVarBinder.mk ⟨#[], "_", vspan⟩ none quantity binderInfo)
   | _ =>
       match firstGreenChild v with
       | some child =>
           let text ← getGreenTokenText child o
           let vspan ← spanFor v o
-          pure (TypeVarBinder.mk ⟨#[], text, vspan⟩ none .omega)
+          pure (TypeVarBinder.mk ⟨#[], text, vspan⟩ none .omega .implicit)
       | none =>
           let vspan ← spanFor v o
-          pure (TypeVarBinder.mk ⟨#[], "_", vspan⟩ none .omega)
+          pure (TypeVarBinder.mk ⟨#[], "_", vspan⟩ none .omega .implicit)
 
 /-- Lower type parameters from a tyParamList node -/
 partial def lowerTypeParams (plist : GreenNode) (plistOffset : Nat) : LowerM (Array TypeVarBinder) := do
@@ -935,7 +948,7 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
               | none => pure "_"
             let fnameSpan ← spanFor f fo
             if isImplicit then
-              let binder := TypeVarBinder.mk ⟨#[], fname, fnameSpan⟩ (some ftype) .omega
+              let binder := TypeVarBinder.mk ⟨#[], fname, fnameSpan⟩ (some ftype) .omega .implicit
               sig := .forall_ #[binder] sig span
             else
               sig := .pi .omega .explicit ⟨#[], fname, fnameSpan⟩ ftype sig span

@@ -231,7 +231,8 @@ private partial def fuseChildren (ctx : FusionCtx) (e : Expr) : Expr :=
   | .projSnd x => .projSnd (fuseExpr ctx x)
   | .fieldAccess x f i => .fieldAccess (fuseExpr ctx x) f i
   | .inject l args rty => .inject l (args.map (fuseExpr ctx)) (fuseExpr ctx rty)
-  | .closure name caps => .closure name (caps.map (fuseExpr ctx))
+  | .closure name caps ty =>
+    .closure name (caps.map (fuseExpr ctx)) (fuseExpr ctx ty)
   | .array es ety => .array (es.map (fuseExpr ctx)) (fuseExpr ctx ety)
   | .tuple es => .tuple (es.map (fuseExpr ctx))
   | .ann x t => .ann (fuseExpr ctx x) (fuseExpr ctx t)

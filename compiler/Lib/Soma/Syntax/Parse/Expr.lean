@@ -681,22 +681,26 @@ partial def parseExprAtom : ParserM (Option GreenNode) := do
   return none
 
 partial def parseExprApp : ParserM (Option GreenNode) := do
-  match ← parseExprAtom with
+  let parseAtomWithFieldAccesses : ParserM (Option GreenNode) := do
+    match ← parseExprAtom with
+    | none => return none
+    | some atom =>
+      let mut result := atom
+      while (← current).kind == some .dot do
+        let dotTok ← consumeAny
+        match ← parseLowerIdent with
+        | some fieldTok =>
+            result := GreenNode.mkNode .exprFieldAccess #[result, dotTok, fieldTok]
+        | none =>
+            recordError "expected field name after '.'"
+            break
+      return some result
+  match ← parseAtomWithFieldAccesses with
   | some first =>
       let mut result := first
       while true do
         let tok ← current
-        -- Check for field access: expr.field
-        if tok.kind == some .dot then
-          let dotTok ← consumeAny
-          -- After dot, expect a lower-case identifier (field name)
-          match ← parseLowerIdent with
-          | some fieldTok =>
-              result := GreenNode.mkNode .exprFieldAccess #[result, dotTok, fieldTok]
-          | none =>
-              recordError "expected field name after '.'"
-              break
-        else if tok.kind == some .varSymbol || tok.kind == some .rightParen ||
+        if tok.kind == some .varSymbol || tok.kind == some .rightParen ||
            tok.kind == some .rightBracket || tok.kind == some .rightBrace ||
            tok.kind == some .comma || tok.kind == some .pipe ||
            tok.kind == some .fatArrow || tok.kind == some .equals ||
@@ -707,7 +711,7 @@ partial def parseExprApp : ParserM (Option GreenNode) := do
            tok.kind == some .layoutEnd || tok.kind == some .eof then
           break
         else
-          match ← parseExprAtom with
+          match ← parseAtomWithFieldAccesses with
           | some arg =>
               result := GreenNode.mkNode .exprApp #[result, arg]
           | none => break

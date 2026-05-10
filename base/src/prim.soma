@@ -48,12 +48,12 @@ record Float
 record Double
 
 @[wired_in "type.pair"]
-inductive Pair {a : Type} {b : Type} where
+inductive Pair (a : Type) (b : Type) where
     @[wired_in "pair"]
     | Mk (fst : a) (snd : b)
 
 @[wired_in "type.list"]
-inductive List {a : Type} where
+inductive List (a : Type) where
     @[wired_in "nil"]
     | Nil
     @[wired_in "cons"]
@@ -61,7 +61,7 @@ inductive List {a : Type} where
 
 @[wired_in "type.ptr"]
 @[intrinsic]
-record Ptr {a : Type}
+record Ptr (a : Type)
 
 @[wired_in "type.world"]
 @[intrinsic]

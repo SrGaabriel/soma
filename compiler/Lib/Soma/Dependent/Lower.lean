@@ -288,10 +288,10 @@ private partial def unfoldKindTelescope (e : Syntax.Expr) (defaultSpan : Span)
   match e with
   | .arrow from_ to _ =>
     let head : Syntax.TypeVarBinder :=
-      .mk ⟨#[], "_", defaultSpan⟩ (some from_) .omega
+      .mk ⟨#[], "_", defaultSpan⟩ (some from_) .omega .explicit
     #[head] ++ unfoldKindTelescope to defaultSpan
-  | .pi qty _binder name dom cod _ =>
-    let head : Syntax.TypeVarBinder := .mk name (some dom) qty
+  | .pi qty binder name dom cod _ =>
+    let head : Syntax.TypeVarBinder := .mk name (some dom) qty binder
     #[head] ++ unfoldKindTelescope cod defaultSpan
   | .parens inner _ => unfoldKindTelescope inner defaultSpan
   | _ => #[]
@@ -344,7 +344,7 @@ private def lowerTypeDecl
           acc := acc.push lowered
       acc
     let headSort := headSortOfKind kindAnnot
-    (some (.algebraic attrs typeName fullParams ctors headSort span), diags, supply)
+    (some (.algebraic attrs typeName fullParams params.size ctors headSort span), diags, supply)
   | .record attrs name params _ctorName fields span =>
     let typeName := registry.requireTopLevel name.name
     let (ctorUnique, supply'') := supply.fresh "New"

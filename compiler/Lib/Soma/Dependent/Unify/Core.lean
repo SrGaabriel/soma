@@ -140,7 +140,7 @@ where
     | .fieldAccess e _ _ => occursInExpr m e
     | .construct _ _ args _ => args.any (occursInExpr m)
     | .inject _ args _ => args.any (occursInExpr m)
-    | .closure _ caps => caps.any (occursInExpr m)
+    | .closure _ caps ty => caps.any (occursInExpr m) || occursInExpr m ty
     | .array es _ => es.any (occursInExpr m)
     | .tuple es => es.any (occursInExpr m)
     | .dataTy _ ps => ps.any (occursInExpr m)

@@ -83,6 +83,8 @@ structure Definition where
   ty : Value
   /-- How the reducer and downstream passes treat this definition -/
   reducibility : Reducibility := .reducible
+  /-- Whether the definition consumes or produces a linear world token -/
+  effectful : Bool := false
   deriving Inhabited
 
 /-- The interaction net graph -/
@@ -262,9 +264,9 @@ def isFullyConnected (g : Graph) : Bool :=
 
 /-- Add a definition to the book -/
 def addDefinition (g : Graph) (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (reducibility : Reducibility := .reducible) : Nat × Graph :=
+    (reducibility : Reducibility := .reducible) (effectful : Bool := false) : Nat × Graph :=
   let idx := g.book.size
-  let def_ : Definition := { name, root, arity, ty, reducibility }
+  let def_ : Definition := { name, root, arity, ty, reducibility, effectful }
   (idx, { g with book := g.book.push def_ })
 
 /-- Look up a definition by index -/
@@ -456,9 +458,9 @@ def wireToAux (n1 : NodeId) (p1 : PortIdx) (n2 : NodeId) (auxIdx : Nat) : GraphM
 
 /-- Add a definition to the book -/
 def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (reducibility : Reducibility := .reducible) : GraphM Nat := do
+    (reducibility : Reducibility := .reducible) (effectful : Bool := false) : GraphM Nat := do
   let g ← get
-  let (idx, g') := g.addDefinition name root arity ty reducibility
+  let (idx, g') := g.addDefinition name root arity ty reducibility effectful
   set g'
   return idx
 

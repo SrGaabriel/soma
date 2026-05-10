@@ -111,7 +111,7 @@ private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) :
   let mut stats : Stats := {}
   for i in order do
     if let some def_ := g.book[i]? then
-      if def_.reducibility == .reducible then
+      if def_.reducibility == .reducible && !def_.effectful then
         let (result, state) ← ReduceM.run (do
           let era ← ReduceM.addNode .era
           ReduceM.connect (PortId.principal era) (PortId.principal def_.root)

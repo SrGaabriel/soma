@@ -130,7 +130,8 @@ def loadPackage (path : System.FilePath) : IO (Except String LoadedPackage) := d
     let mut alloyModules : Array (String × Alloy.Module) := #[]
 
     for modName in manifest.modules do
-      let binPath := alloyDir / (modName ++ ".alloybin")
+      let relPath := modName.replace "::" "/"
+      let binPath := alloyDir / (relPath ++ ".alloybin")
       match ← Alloy.Serialize.readAlloyBin binPath with
       | .ok alloyMod => alloyModules := alloyModules.push (modName, alloyMod)
       | .error e =>

@@ -1,5 +1,5 @@
 // expect: success
-inductive Maybe {a : Type} where
+inductive Maybe (a : Type) where
     | Just (value : a)
     | Nothing
 

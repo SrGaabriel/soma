@@ -1,7 +1,7 @@
 // expect: success
 // Test: basic class instance
 
-inductive Maybe {a : Type} where
+inductive Maybe (a : Type) where
     | Nothing
     | Just (value : a)
 

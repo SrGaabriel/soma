@@ -3,7 +3,7 @@
 @[intrinsic "primop.add"]
 def {+} : Int32 -> Int32 -> Int32
 
-inductive Maybe {a : Type} where
+inductive Maybe (a : Type) where
     | Nothing
     | Just (value : a)
 

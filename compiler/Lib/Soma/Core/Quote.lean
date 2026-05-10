@@ -207,6 +207,138 @@ partial def neutralEq (n1 n2 : Neutral) : Bool :=
 
 end
 
+private def maxOpt? : Option Nat → Option Nat → Option Nat
+  | none, b => b
+  | a, none => a
+  | some a, some b => some (max a b)
+
+mutual
+
+/-- The largest De Bruijn level referenced by any `hVar` head reachable -/
+partial def valueMaxBoundLvl? (v : Value) : Option Nat :=
+  match v with
+  | .vType _ | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
+  | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => none
+  | .vPi _ _ _ dom cod =>
+    maxOpt? (valueMaxBoundLvl? dom) (closureMaxBoundLvl? cod)
+  | .vLam _ body => closureMaxBoundLvl? body
+  | .vSigma _ _ fst snd =>
+    maxOpt? (valueMaxBoundLvl? fst) (closureMaxBoundLvl? snd)
+  | .vPair a b => maxOpt? (valueMaxBoundLvl? a) (valueMaxBoundLvl? b)
+  | .vRowExtend l t tail =>
+    maxOpt? (valueMaxBoundLvl? l)
+      (maxOpt? (valueMaxBoundLvl? t) (valueMaxBoundLvl? tail))
+  | .vRecord r => valueMaxBoundLvl? r
+  | .vVariant r => valueMaxBoundLvl? r
+  | .vRecordVal fields =>
+    fields.foldl (init := none) fun acc (_, fv) =>
+      maxOpt? acc (valueMaxBoundLvl? fv)
+  | .vDataType _ params =>
+    params.foldl (init := none) fun acc p =>
+      maxOpt? acc (valueMaxBoundLvl? p)
+  | .vConstructor _ _ args rty =>
+    let argsMax := args.foldl (init := none) fun acc a =>
+      maxOpt? acc (valueMaxBoundLvl? a)
+    maxOpt? argsMax (valueMaxBoundLvl? rty)
+  | .vEq _ ty lhs rhs =>
+    maxOpt? (valueMaxBoundLvl? ty)
+      (maxOpt? (valueMaxBoundLvl? lhs) (valueMaxBoundLvl? rhs))
+  | .vRefl ty x =>
+    maxOpt? (valueMaxBoundLvl? ty) (valueMaxBoundLvl? x)
+  | .vTransport _ ty motive lhs rhs eq body =>
+    let m1 := maxOpt? (valueMaxBoundLvl? ty) (valueMaxBoundLvl? motive)
+    let m2 := maxOpt? (valueMaxBoundLvl? lhs) (valueMaxBoundLvl? rhs)
+    let m3 := maxOpt? (valueMaxBoundLvl? eq) (valueMaxBoundLvl? body)
+    maxOpt? m1 (maxOpt? m2 m3)
+  | .vNeutral ty neu =>
+    maxOpt? (valueMaxBoundLvl? ty) (neutralMaxBoundLvl? neu)
+
+partial def neutralMaxBoundLvl? (n : Neutral) : Option Nat :=
+  let headMax := match n.head with
+    | .hVar bv => some bv.level.lvl
+    | .hMeta _ | .hErrored => none
+    | .hConst _ ty => valueMaxBoundLvl? ty
+    | .hCase scruts motive arms =>
+      let scrutsMax := scruts.foldl (init := none) fun acc s =>
+        maxOpt? acc (valueMaxBoundLvl? s)
+      let motiveMax := valueMaxBoundLvl? motive
+      let armsMax := arms.foldl (init := none) fun acc a =>
+        maxOpt? acc (closureMaxBoundLvl? a.closure)
+      maxOpt? (maxOpt? scrutsMax motiveMax) armsMax
+  let spineMax := n.spine.foldl (init := none) fun acc e =>
+    match e with
+    | .eApp arg => maxOpt? acc (valueMaxBoundLvl? arg)
+    | .eFst | .eSnd | .eField _ => acc
+  maxOpt? headMax spineMax
+
+partial def closureMaxBoundLvl? : Closure → Option Nat
+  | .const _ v => valueMaxBoundLvl? v
+  | .term _ env _ => envMaxBoundLvl? env
+
+partial def envMaxBoundLvl? (env : Env) : Option Nat :=
+  env.values.foldl (init := none) fun acc (_, v) =>
+    maxOpt? acc (valueMaxBoundLvl? v)
+
+end
+
+/-- Substitute closure-env bvar references in an arm body Core with their replacement expressions -/
+partial def substituteEnvBvarsInArmBody
+    (body : Expr) (binds : Nat) (replacements : Array Expr) : Expr :=
+  go body 0
+where
+  goArm (arm : Arm) (d : Nat) : Arm :=
+    let armBinds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
+    Arm.mk arm.patterns (go arm.body (d + armBinds))
+  go (e : Expr) (d : Nat) : Expr :=
+    match e with
+    | .bvar j =>
+      if j < d then e
+      else
+        let staticIdx := j - d
+        if staticIdx < binds then
+          e
+        else
+          let i := staticIdx - binds
+          if i < replacements.size then
+            replacements[i]!.shift (Int.ofNat (binds + d)) 0
+          else
+            .bvar (j - replacements.size)
+    | .fvar id ty => .fvar id (go ty d)
+    | .const name ty => .const name (go ty d)
+    | .mvar _ | .sort _ | .primTy _ | .rowSort
+    | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
+    | .lit _ | .tyvar _ _ => e
+    | .app f a => .app (go f d) (go a d)
+    | .lam info n dom b => .lam info n (go dom d) (go b (d + 1))
+    | .let_ n t v b => .let_ n (go t d) (go v d) (go b (d + 1))
+    | .pi q info n dom c => .pi q info n (go dom d) (go c (d + 1))
+    | .sigma q info n f s => .sigma q info n (go f d) (go s (d + 1))
+    | .pair f s => .pair (go f d) (go s d)
+    | .projFst x => .projFst (go x d)
+    | .projSnd x => .projSnd (go x d)
+    | .construct n t args rty => .construct n t (args.map (go · d)) (go rty d)
+    | .«case» scruts motive arms =>
+      .«case» (scruts.map (go · d)) (go motive d)
+        (arms.map (goArm · d))
+    | .record fields => .record (fields.map fun (n, e) => (n, go e d))
+    | .recordUpdate b us =>
+      .recordUpdate (go b d) (us.map fun (n, e) => (n, go e d))
+    | .fieldAccess x f i => .fieldAccess (go x d) f i
+    | .inject l args rty => .inject l (args.map (go · d)) (go rty d)
+    | .if_ c t el => .if_ (go c d) (go t d) (go el d)
+    | .closure n caps ty => .closure n (caps.map (go · d)) (go ty d)
+    | .array es ety => .array (es.map (go · d)) (go ety d)
+    | .tuple es => .tuple (es.map (go · d))
+    | .rowExtend l f t => .rowExtend (go l d) (go f d) (go t d)
+    | .recordTy r => .recordTy (go r d)
+    | .variantTy r => .variantTy (go r d)
+    | .dataTy id ps => .dataTy id (ps.map (go · d))
+    | .eqTy lv t l r => .eqTy lv (go t d) (go l d) (go r d)
+    | .refl t x => .refl (go t d) (go x d)
+    | .transport lv t m l r ep b =>
+      .transport lv (go t d) (go m d) (go l d) (go r d) (go ep d) (go b d)
+    | .ann x t => .ann (go x d) (go t d)
+
 mutual
 
 /-- Quote a value to an Expr at a given De Bruijn depth.
@@ -278,22 +410,33 @@ partial def quoteHeadExpr (depth : DeBruijnLvl) : Head → Expr
       (quoteExpr depth motive)
       (arms.map (fun ac =>
         let binds := ac.patterns.foldl (fun a p => a + p.bindingCount) 0
-        let bodyDepth : DeBruijnLvl := ⟨depth.lvl + binds⟩
         if binds == 0 then
           let bodyVal := ac.closure.applyPure
             (Value.vNeutral Value.type0 (Neutral.nVar ⟨ac.pattern, depth⟩))
           Arm.mk ac.patterns (quoteExpr depth bodyVal)
         else
-          let bodyVal := match ac.closure with
-            | .const _ v => v
-            | .term _ env body =>
+          let bodyDepth : DeBruijnLvl := ⟨depth.lvl + binds⟩
+          match ac.closure with
+          | .const _ v => Arm.mk ac.patterns (quoteExpr bodyDepth v)
+          | .term _ env body =>
+            let collisionPossible : Bool :=
+              match envMaxBoundLvl? env with
+              | some envMax => envMax >= depth.lvl
+              | none => false
+            if collisionPossible then
+              let replacements : Array Expr :=
+                env.values.toArray.map (fun (_, v) => quoteExpr depth v)
+              let substituted :=
+                substituteEnvBvarsInArmBody body binds replacements
+              Arm.mk ac.patterns substituted.betaReduce
+            else
               let env' := (List.range binds).foldl (fun e i =>
                 let lvl : DeBruijnLvl := ⟨depth.lvl + i⟩
                 e.extend s!"pat_{i}" (Value.vNeutral Value.type0
                   (Neutral.nVar ⟨s!"pat_{i}", lvl⟩))
               ) env
-              evalExprPure env' body
-          Arm.mk ac.patterns (quoteExpr bodyDepth bodyVal)
+              let bodyVal := evalExprPure env' body
+              Arm.mk ac.patterns (quoteExpr bodyDepth bodyVal)
       ) |>.toArray)
   | .hErrored => .panic "{errored}"
 

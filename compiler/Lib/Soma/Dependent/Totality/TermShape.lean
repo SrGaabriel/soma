@@ -87,7 +87,7 @@ partial def collectExprVars : Expr → List String
   | .recordTy r => collectExprVars r
   | .variantTy r => collectExprVars r
   | .dataTy _ ps => ps.toList.flatMap collectExprVars
-  | .closure _ caps => caps.toList.flatMap collectExprVars
+  | .closure _ caps ty => caps.toList.flatMap collectExprVars ++ collectExprVars ty
   | .array es _ => es.toList.flatMap collectExprVars
   | .tuple es => es.toList.flatMap collectExprVars
   | .ann e _ => collectExprVars e

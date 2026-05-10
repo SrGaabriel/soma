@@ -1,7 +1,7 @@
 // expect: success
 // Test: recursive data type - REF/ALO node lowering
 
-inductive List {a : Type} where
+inductive List (a : Type) where
     | Nil
     | Cons (head : a) (tail : List a)
 

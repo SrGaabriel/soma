@@ -377,7 +377,6 @@ def fromString? : String → Option WiredRole
 def primType? : WiredRole → Option Soma.Core.PrimType
   | .typeInt => some .int
   | .typeBool => some .bool
-  | .typeString => none
   | .typeFloat => some .float
   | .typeDouble => some .double
   | .typeUnit => some .unit
@@ -394,6 +393,31 @@ def primType? : WiredRole → Option Soma.Core.PrimType
   | .typeRef => some .ref
   | .typePtr => some .ptr
   | _ => none
+
+/-- Roles whose declaration's inductive uid backs an alternate `vPrimTy` representation is not normalized (TODO: remove) -/
+def primTyAlias? : WiredRole → Option Soma.Core.PrimType
+  | .typeString => some .string
+  | _ => none
+
+/-- The full `vPrimTy ↔ wired role` correspondence -/
+def primTyOfRole? (r : WiredRole) : Option Soma.Core.PrimType :=
+  match primType? r with
+  | some p => some p
+  | none => primTyAlias? r
+
+/-- Every `WiredRole` value, in declaration order -/
+def all : Array WiredRole := #[
+  .pair, .typePair, .cons, .nil,
+  .typeInt, .typeBool, .typeString, .typeFloat, .typeDouble,
+  .typeUnit, .typeInt8, .typeInt16, .typeInt64,
+  .typeWord, .typeWord8, .typeWord16, .typeWord64, .typeNat,
+  .typeList, .typeArray, .typeRef, .typeWorld, .typePtr,
+  .pureIO, .bindIO,
+  .sortType, .sortType0, .sortType1, .sortRow, .sortLabel,
+  .listMap, .listFilter, .listFoldl, .listFoldr,
+  .listSum, .listProduct, .listLength, .listAny, .listAll, .listReverse,
+  .typeEq, .refl
+]
 
 end WiredRole
 
@@ -696,10 +720,20 @@ def allDecls (g : Globals) : List (Soma.Core.QualifiedName × GlobalInfo) :=
 
 /-- Convert Globals to GlobalEnv (for evaluation context) -/
 def toGlobalEnv (g : Globals) : GlobalEnv :=
-  g.defs.fold (init := GlobalEnv.empty) fun acc qn info =>
+  let withDefs : GlobalEnv := g.defs.fold (init := GlobalEnv.empty) fun acc qn info =>
     match info.value with
     | some v => acc.insert qn v
     | none => acc
+  let withRecords := g.inductives.fold (init := withDefs) fun acc typeQN indMeta =>
+    if indMeta.fieldNames.isEmpty then acc
+    else
+      match indMeta.ctors[0]? with
+      | some ctor => acc.insertRecordCtorInfo typeQN.id ctor.type indMeta.fieldNames
+      | none => acc
+  WiredRole.all.foldl (init := withRecords) fun acc role =>
+    match WiredRole.primTyOfRole? role, g.wiredIn.getUnique? role with
+    | some p, some info => acc.insertPrimTyInductive p info.name.id
+    | _, _ => acc
 
 end Globals
 
@@ -993,6 +1027,24 @@ def addInstanceWithId (env : InstanceEnv) (info : InstanceInfo) : InstanceEnv :=
   { env with
     instances := env.instances.insert info.classId (existing.push info)
     indices := env.indices.insert info.classId (existingIdx.insert info) }
+
+/-- Replace an existing instance (matched by `instanceId`) with a new `InstanceInfo` -/
+def replaceInstanceWithId (env : InstanceEnv) (info : InstanceInfo) : InstanceEnv := Id.run do
+  let existing := env.instances.getD info.classId #[]
+  let mut found := false
+  let mut updated : Array InstanceInfo := Array.mkEmpty existing.size
+  for inst in existing do
+    if inst.instanceId == info.instanceId then
+      updated := updated.push info
+      found := true
+    else
+      updated := updated.push inst
+  if !found then
+    return env.addInstanceWithId info
+  let newTree := updated.foldl (init := DiscrTree.empty) DiscrTree.insert
+  return { env with
+    instances := env.instances.insert info.classId updated
+    indices := env.indices.insert info.classId newTree }
 
 /-- Register a new instance, generating a unique if not provided -/
 def addInstance (env : InstanceEnv) (classId : Unique) (args : Array Value)

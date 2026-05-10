@@ -257,7 +257,7 @@ where
       checkTerm eq
       checkTerm body
 
-    | .closure _ caps =>
+    | .closure _ caps _ =>
       for cap in caps do
         checkTerm cap
 

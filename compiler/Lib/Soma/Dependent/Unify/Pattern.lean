@@ -47,6 +47,11 @@ def lift (ren : PartialRenaming) : PartialRenaming :=
     cod := ren.cod + 1
     dom := ren.dom + 1 }
 
+/-- Extend the renaming by `n` newly-bound pattern variables -/
+def liftN (ren : PartialRenaming) : Nat → PartialRenaming
+  | 0 => ren
+  | n + 1 => (ren.liftN n).lift
+
 end PartialRenaming
 
 /-- Why a rename failed -/
@@ -57,6 +62,22 @@ inductive RenameFailure where
 
 /-- Result of applying a partial renaming to a value -/
 abbrev RenameResult := Except RenameFailure Soma.Core.Expr
+
+private def freshPatternRenameArg (ren : PartialRenaming) (idx : Nat) : Value :=
+  Value.vNeutral .type0 (.nVar ⟨s!"_case_arg_{idx}", ⟨ren.dom + idx⟩⟩)
+
+private def freshPatternRenameArgs (ren : PartialRenaming) (patterns : Array Soma.Core.Pattern)
+    : Array Value :=
+  let arity := patterns.foldl (fun acc p => acc + p.bindingCount) 0
+  Array.ofFn (n := arity) fun i => freshPatternRenameArg ren i.val
+
+/-- Open an arm closure with one fresh value per pattern binding -/
+private def applyArmClosureForRename (clos : Closure) (args : Array Value) : Value :=
+  match clos with
+  | .const _ value => value
+  | .term _ env body =>
+    let env' := args.foldl (fun acc arg => acc.extend "_" arg) env
+    evalCoreExpr { EvalCtx.empty with env := env' } body
 
 mutual
 
@@ -165,10 +186,10 @@ partial def renameHead (ren : PartialRenaming) : Head → RenameResult
     let scrutExprs ← scrutinees.mapM (rename ren)
     let motiveE ← rename ren motive
     let armExprs ← arms.mapM fun arm => do
-      let argVal := Value.vNeutral .type0 (.nVar ⟨arm.pattern, ⟨ren.dom⟩⟩)
-      let bodyVal := Closure.applyPure arm.closure argVal
-      let bodyE ← rename ren.lift bodyVal
-      pure (Soma.Core.Arm.mk #[Soma.Core.Pattern.wildcard] bodyE)
+      let args := freshPatternRenameArgs ren arm.patterns
+      let bodyVal := applyArmClosureForRename arm.closure args
+      let bodyE ← rename (ren.liftN args.size) bodyVal
+      pure (Soma.Core.Arm.mk arm.patterns bodyE)
     .ok (.«case» scrutExprs motiveE armExprs.toArray)
 
 partial def renameElim (ren : PartialRenaming) (acc : Soma.Core.Expr) : Elim → RenameResult
@@ -188,9 +209,10 @@ partial def renameNeutral (ren : PartialRenaming) (n : Neutral) : RenameResult :
 end
 
 /-- Build nested lambdas from the spine -/
-def buildLambdaSolution (spineLevels : List DeBruijnLvl) (body : Soma.Core.Expr) : Soma.Core.Expr :=
-  spineLevels.foldr (fun lvl acc =>
-    Soma.Core.Expr.lam .explicit s!"x{lvl.lvl}" (.sort Level.zero) acc) body
+def buildLambdaSolution (binders : List (DeBruijnLvl × Soma.Core.Expr))
+    (body : Soma.Core.Expr) : Soma.Core.Expr :=
+  binders.foldr (fun (lvl, dom) acc =>
+    Soma.Core.Expr.lam .explicit s!"x{lvl.lvl}" dom acc) body
 
 /-- Evaluate a solution Expr to a Value -/
 def evalSolutionTerm (t : Soma.Core.Expr) : TCM Value := do
@@ -205,7 +227,13 @@ def evalSolutionTerm (t : Soma.Core.Expr) : TCM Value := do
 
 /-- Build and install a meta solution from a partial renaming result -/
 def installSolution (m : MetaId) (spineLevels : List DeBruijnLvl) (body : Soma.Core.Expr) : TCM Unit := do
-  let solution := buildLambdaSolution spineLevels body
+  let ctx ← TCM.getCtx
+  let binders : List (DeBruijnLvl × Soma.Core.Expr) := spineLevels.map fun lvl =>
+    let domExpr : Soma.Core.Expr := match ctx.lookupLevel lvl with
+      | some entry => Soma.Core.quoteExpr ⟨0⟩ entry.type
+      | none => .sort Level.zero
+    (lvl, domExpr)
+  let solution := buildLambdaSolution binders body
   let solutionVal ← evalSolutionTerm solution
   TCM.solveMeta m solutionVal (callerTag := "Pattern.installSolution")
 

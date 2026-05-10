@@ -8,5 +8,10 @@ inductive Eq {a : Type} (x : a) : a -> Prop where
     @[wired_in "refl"]
     | Refl : Eq x x
 
-// Ex falso quodlibet: from a proof of falsehood, anything follows
 theorem ex_falso (a : Type) : Never -> a
+
+theorem cong {a : Type} {b : Type} {x : a} {y : a} (f : a -> b) : Eq x y -> Eq (f x) (f y)
+    | Eq::Refl => Eq::Refl
+
+theorem sym {a : Type} {x : a} {y : a} : Eq x y -> Eq y x
+    | Eq::Refl => Eq::Refl

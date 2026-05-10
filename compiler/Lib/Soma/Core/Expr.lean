@@ -159,7 +159,7 @@ inductive Expr where
   | panic (msg : String)
 
   -- Post lambda-lift
-  | closure (name : QualifiedName) (captures : Array Expr)
+  | closure (name : QualifiedName) (captures : Array Expr) (ty : Expr)
 
   -- Arrays and tuples
   | array (elements : Array Expr) (resultTy : Expr)
@@ -216,7 +216,8 @@ partial def Expr.replaceMvar (e : Expr) (metaId : MetaId) (replacement : Expr) :
     .inject l (args.map (·.replaceMvar metaId replacement)) (rty.replaceMvar metaId replacement)
   | .if_ c t el =>
     .if_ (c.replaceMvar metaId replacement) (t.replaceMvar metaId replacement) (el.replaceMvar metaId replacement)
-  | .closure n caps => .closure n (caps.map (·.replaceMvar metaId replacement))
+  | .closure n caps ty =>
+    .closure n (caps.map (·.replaceMvar metaId replacement)) (ty.replaceMvar metaId replacement)
   | .array es ety => .array (es.map (·.replaceMvar metaId replacement)) (ety.replaceMvar metaId replacement)
   | .tuple es => .tuple (es.map (·.replaceMvar metaId replacement))
   | .rowExtend l f t =>
@@ -242,9 +243,76 @@ partial def Expr.containsPairExpr : Expr → Bool
   | .lam _ _ _ b => b.containsPairExpr
   | .let_ _ _ v b => v.containsPairExpr || b.containsPairExpr
   | .«case» scruts _ arms => scruts.any (·.containsPairExpr) || arms.any (·.body.containsPairExpr)
-  | .closure _ caps => caps.any (·.containsPairExpr)
+  | .closure _ caps _ => caps.any (·.containsPairExpr)
   | .projFst e | .projSnd e => e.containsPairExpr
   | _ => false
+
+partial def Expr.toDebugString : Expr → String
+  | .bvar i => s!"#{i}"
+  | .fvar id _ => s!"&{id.original}"
+  | .mvar i => s!"?{i.id}"
+  | .const name _ => s!"@{name.display}"
+  | .tyvar _ name => s!"τ{name}"
+  | .app f a => s!"({f.toDebugString} {a.toDebugString})"
+  | .lam _ name _ b => s!"(λ{name}. {b.toDebugString})"
+  | .let_ name _ v b => s!"(let {name} := {v.toDebugString} in {b.toDebugString})"
+  | .lit (.string s) => s!"\"{s}\""
+  | .lit (.int n) => s!"{n}"
+  | .lit (.float f) => s!"{f}"
+  | .lit (.bool b) => s!"{b}"
+  | .sort _ => "Sort"
+  | .pi _ _ name d c => s!"((${name} : {d.toDebugString}) → {c.toDebugString})"
+  | .sigma _ _ name f s => s!"((${name} : {f.toDebugString}) × {s.toDebugString})"
+  | .pair f s => s!"({f.toDebugString}, {s.toDebugString})"
+  | .projFst e => s!"{e.toDebugString}.1"
+  | .projSnd e => s!"{e.toDebugString}.2"
+  | .construct n _ args _ =>
+    let argsStr := args.map (·.toDebugString) |>.toList |> String.intercalate ", "
+    s!"{n.display}<{argsStr}>"
+  | .case scruts _ arms =>
+    let scrutsStr := scruts.map (·.toDebugString) |>.toList |> String.intercalate ", "
+    let armsStr := arms.map (fun arm => s!"… => {arm.body.toDebugString}")
+      |>.toList |> String.intercalate " ; "
+    s!"case {scrutsStr} of [{armsStr}]"
+  | .record fields =>
+    let fieldsStr := (fields.map (fun (n, e) => s!"{n} = {e.toDebugString}")).toList
+    "{ " ++ String.intercalate ", " fieldsStr ++ " }"
+  | .recordUpdate base updates =>
+    let updatesStr := (updates.map (fun (n, e) => s!"{n} := {e.toDebugString}")).toList
+    base.toDebugString ++ " with { " ++ String.intercalate ", " updatesStr ++ " }"
+  | .fieldAccess e f _ => s!"{e.toDebugString}.{f}"
+  | .inject l args _ =>
+    let argsStr := args.map (·.toDebugString) |>.toList |> String.intercalate ", "
+    s!".{l}<{argsStr}>"
+  | .primTy p => p.name
+  | .rowSort => "Row"
+  | .labelSort => "Label"
+  | .rowEmpty => "{}"
+  | .rowExtend l f t => "rowext(" ++ l.toDebugString ++ "," ++ f.toDebugString ++ "," ++ t.toDebugString ++ ")"
+  | .recordTy r => "RecTy(" ++ r.toDebugString ++ ")"
+  | .variantTy r => s!"<Var {r.toDebugString}>"
+  | .labelLit n => s!"'{n}"
+  | .dataTy id ps =>
+    let psStr := ps.map (·.toDebugString) |>.toList |> String.intercalate ", "
+    s!"Data<{id.original}, {psStr}>"
+  | .eqTy _ _ l r => s!"({l.toDebugString} = {r.toDebugString})"
+  | .refl _ x => s!"refl({x.toDebugString})"
+  | .transport _ _ _ _ _ _ _ => "<transport>"
+  | .if_ c t e => s!"(if {c.toDebugString} then {t.toDebugString} else {e.toDebugString})"
+  | .panic msg => s!"panic({msg})"
+  | .closure n caps _ =>
+    let capsStr := caps.map (·.toDebugString) |>.toList |> String.intercalate ", "
+    s!"{n.display}#[{capsStr}]"
+  | .array es _ =>
+    let esStr := es.map (·.toDebugString) |>.toList |> String.intercalate ", "
+    s!"[{esStr}]"
+  | .tuple es =>
+    let esStr := es.map (·.toDebugString) |>.toList |> String.intercalate ", "
+    s!"({esStr})"
+  | .proj t f _ => s!"proj{t.display}::{f}"
+  | .ann e _ => e.toDebugString
+
+instance : ToString Expr := ⟨Expr.toDebugString⟩
 
 /-- Short constructor name for diagnostic messages -/
 def Expr.ctorName : Expr → String
@@ -262,7 +330,7 @@ def Expr.ctorName : Expr → String
   | .labelLit _ => "labelLit" | .dataTy _ _ => "dataTy"
   | .eqTy _ _ _ _ => "eqTy" | .refl _ _ => "refl" | .transport _ _ _ _ _ _ _ => "transport"
   | .if_ _ _ _ => "if" | .panic _ => "panic"
-  | .closure _ _ => "closure" | .array _ _ => "array" | .tuple _ => "tuple"
+  | .closure _ _ _ => "closure" | .array _ _ => "array" | .tuple _ => "tuple"
   | .proj _ _ _ => "proj" | .ann _ _ => "ann"
 
 deriving instance Serialize, Deserialize for Expr
@@ -322,7 +390,8 @@ partial def shift (e : Expr) (amount : Int) (cutoff : Nat) : Expr :=
   | .inject l args rty => .inject l (args.map (·.shift amount cutoff)) (rty.shift amount cutoff)
   | .if_ c t el =>
     .if_ (c.shift amount cutoff) (t.shift amount cutoff) (el.shift amount cutoff)
-  | .closure n caps => .closure n (caps.map (·.shift amount cutoff))
+  | .closure n caps ty =>
+    .closure n (caps.map (·.shift amount cutoff)) (ty.shift amount cutoff)
   | .array es ety => .array (es.map (·.shift amount cutoff)) (ety.shift amount cutoff)
   | .tuple es => .tuple (es.map (·.shift amount cutoff))
   | .rowExtend l f t =>
@@ -373,7 +442,7 @@ where
     | .fieldAccess x f i => .fieldAccess (go x depth) f i
     | .inject l args rty => .inject l (args.map (go · depth)) (go rty depth)
     | .if_ c t el => .if_ (go c depth) (go t depth) (go el depth)
-    | .closure n caps => .closure n (caps.map (go · depth))
+    | .closure n caps ty => .closure n (caps.map (go · depth)) (go ty depth)
     | .array es ety => .array (es.map (go · depth)) (go ety depth)
     | .tuple es => .tuple (es.map (go · depth))
     | .rowExtend l f t => .rowExtend (go l depth) (go f depth) (go t depth)
@@ -417,7 +486,7 @@ where
     | .fieldAccess x f i => .fieldAccess (go x depth) f i
     | .inject l args rty => .inject l (args.map (go · depth)) (go rty depth)
     | .if_ c t el => .if_ (go c depth) (go t depth) (go el depth)
-    | .closure n caps => .closure n (caps.map (go · depth))
+    | .closure n caps ty => .closure n (caps.map (go · depth)) (go ty depth)
     | .array es ety => .array (es.map (go · depth)) (go ety depth)
     | .tuple es => .tuple (es.map (go · depth))
     | .rowExtend l f t => .rowExtend (go l depth) (go f depth) (go t depth)
@@ -465,7 +534,7 @@ where
     | .fieldAccess x f i => .fieldAccess (go x depth) f i
     | .inject l args rty => .inject l (args.map (go · depth)) (go rty depth)
     | .if_ c t el => .if_ (go c depth) (go t depth) (go el depth)
-    | .closure n caps => .closure n (caps.map (go · depth))
+    | .closure n caps ty => .closure n (caps.map (go · depth)) (go ty depth)
     | .array es ety => .array (es.map (go · depth)) (go ety depth)
     | .tuple es => .tuple (es.map (go · depth))
     | .rowExtend l f t => .rowExtend (go l depth) (go f depth) (go t depth)
@@ -518,7 +587,8 @@ partial def replaceFVar (e : Expr) (fvar : Unique) (replacement : Expr) : Expr :
   | .if_ c t el =>
     .if_ (c.replaceFVar fvar replacement)
          (t.replaceFVar fvar replacement) (el.replaceFVar fvar replacement)
-  | .closure n caps => .closure n (caps.map (·.replaceFVar fvar replacement))
+  | .closure n caps ty =>
+    .closure n (caps.map (·.replaceFVar fvar replacement)) (ty.replaceFVar fvar replacement)
   | .array es ety => .array (es.map (·.replaceFVar fvar replacement)) (ety.replaceFVar fvar replacement)
   | .tuple es => .tuple (es.map (·.replaceFVar fvar replacement))
   | .rowExtend l f t =>
@@ -570,7 +640,7 @@ where
     | .fieldAccess x _ _ => go x acc
     | .inject _ args rty => go rty (args.foldl (fun a e => go e a) acc)
     | .if_ c t el => go el (go t (go c acc))
-    | .closure _ caps => caps.foldl (fun a e => go e a) acc
+    | .closure _ caps ty => go ty (caps.foldl (fun a e => go e a) acc)
     | .array es ety => go ety (es.foldl (fun a e => go e a) acc)
     | .tuple es => es.foldl (fun a e => go e a) acc
     | .rowExtend l f t => go t (go f (go l acc))
@@ -614,7 +684,7 @@ where
     | .fieldAccess x _ _ => go x acc
     | .inject _ args rty => go rty (args.foldl (fun a e => go e a) acc)
     | .if_ c t el => go el (go t (go c acc))
-    | .closure _ caps => caps.foldl (fun a e => go e a) acc
+    | .closure _ caps ty => go ty (caps.foldl (fun a e => go e a) acc)
     | .array es ety => go ety (es.foldl (fun a e => go e a) acc)
     | .tuple es => es.foldl (fun a e => go e a) acc
     | .rowExtend l f t => go t (go f (go l acc))
@@ -652,7 +722,7 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
   | .fieldAccess x _ _ => x.hasFVar fvar
   | .inject _ args rty => args.any (·.hasFVar fvar) || rty.hasFVar fvar
   | .if_ c t el => c.hasFVar fvar || t.hasFVar fvar || el.hasFVar fvar
-  | .closure _ caps => caps.any (·.hasFVar fvar)
+  | .closure _ caps ty => caps.any (·.hasFVar fvar) || ty.hasFVar fvar
   | .array es ety => es.any (·.hasFVar fvar) || ety.hasFVar fvar
   | .tuple es => es.any (·.hasFVar fvar)
   | .rowExtend l f t => l.hasFVar fvar || f.hasFVar fvar || t.hasFVar fvar
@@ -666,13 +736,24 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
     r.hasFVar fvar || ep.hasFVar fvar || b.hasFVar fvar
   | .ann x t => x.hasFVar fvar || t.hasFVar fvar
 
-/-- Check if an expression is type-level (will be erased at runtime) -/
-def isTypeLevelExpr : Expr → Bool
+/-- Is the type expression `ty` itself a universe -/
+private partial def isTypeUniverse : Expr → Bool
+  | .sort _ => true
+  | .pi _ _ _ _ codomain => isTypeUniverse codomain
+  | .ann e _ => isTypeUniverse e
+  | _ => false
+
+/-- An expression is type-level when it inhabits the universe of types and has no runtime content -/
+partial def isTypeLevelExpr : Expr → Bool
   | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
   | .mvar _ | .tyvar _ _ => true
+  | .const _ ty => isTypeUniverse ty
+  | .fvar _ ty => isTypeUniverse ty
+  | .ann e _ => isTypeLevelExpr e
+  | .app fn _ => isTypeLevelExpr fn
   | _ => false
 
 /-- Collect an application spine: `f a b c` → `(f, #[a, b, c])` -/
@@ -708,7 +789,8 @@ partial def countBVar (e : Expr) (depth : Nat := 0) : Nat :=
   | .projFst x => countBVar x depth
   | .projSnd x => countBVar x depth
   | .fieldAccess x _ _ => countBVar x depth
-  | .closure _ caps => caps.foldl (fun acc e => acc + countBVar e depth) 0
+  | .closure _ caps ty =>
+    caps.foldl (fun acc e => acc + countBVar e depth) 0 + countBVar ty depth
   | .fvar _ _ => 0
   | .const _ _ => 0
   | _ => 0
@@ -758,7 +840,8 @@ partial def betaReduce (e : Expr) (stripTypeArgs : Bool := false) : Expr :=
   | .recordUpdate base updates =>
     .recordUpdate (betaReduce base stripTypeArgs) (updates.map fun (n, x) => (n, betaReduce x stripTypeArgs))
   | .inject label args resultTy => .inject label (args.map (betaReduce · stripTypeArgs)) (betaReduce resultTy stripTypeArgs)
-  | .closure name captures => .closure name (captures.map (betaReduce · stripTypeArgs))
+  | .closure name captures ty =>
+    .closure name (captures.map (betaReduce · stripTypeArgs)) (betaReduce ty stripTypeArgs)
   | .array es ety => .array (es.map (betaReduce · stripTypeArgs)) (betaReduce ety stripTypeArgs)
   | .tuple es => .tuple (es.map (betaReduce · stripTypeArgs))
   | .ann x t => .ann (betaReduce x stripTypeArgs) (betaReduce t stripTypeArgs)
@@ -792,7 +875,8 @@ partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   | .inject _ args rty => args.foldl (fun acc a => acc + a.countFVar fvar) 0 + rty.countFVar fvar
   | .if_ c t el =>
     c.countFVar fvar + t.countFVar fvar + el.countFVar fvar
-  | .closure _ caps => caps.foldl (fun acc e => acc + e.countFVar fvar) 0
+  | .closure _ caps ty =>
+    caps.foldl (fun acc e => acc + e.countFVar fvar) 0 + ty.countFVar fvar
   | .array es ety => es.foldl (fun acc e => acc + e.countFVar fvar) 0 + ety.countFVar fvar
   | .tuple es => es.foldl (fun acc e => acc + e.countFVar fvar) 0
   | .rowExtend l f t => l.countFVar fvar + f.countFVar fvar + t.countFVar fvar
@@ -835,7 +919,8 @@ partial def collectMetas : Expr → Array MetaId
   | .fieldAccess e _ _ => collectMetas e
   | .construct _ _ args _ => args.foldl (fun acc a => acc ++ collectMetas a) #[]
   | .inject _ args _ => args.foldl (fun acc a => acc ++ collectMetas a) #[]
-  | .closure _ caps => caps.foldl (fun acc c => acc ++ collectMetas c) #[]
+  | .closure _ caps ty =>
+    caps.foldl (fun acc c => acc ++ collectMetas c) #[] ++ collectMetas ty
   | .array es _ => es.foldl (fun acc e => acc ++ collectMetas e) #[]
   | .tuple es => es.foldl (fun acc e => acc ++ collectMetas e) #[]
   | .dataTy _ ps => ps.foldl (fun acc p => acc ++ collectMetas p) #[]

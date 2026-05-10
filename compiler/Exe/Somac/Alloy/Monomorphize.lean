@@ -104,12 +104,6 @@ def collectModuleRequests (m : Module) : Array SpecKey :=
     | some f => acc ++ collectFuncRequests f
     | none => acc
 
-/-- Check if a type is pointer-like -/
-private def isPointerLikeTy : ClosedTy → Bool
-  | .rawPtr => true
-  | .ptr _ => true
-  | _ => false
-
 /-- Rewrite a closed instruction, replacing polymorphic calls -/
 def rewriteInst (inst : ClosedInst) (specMap : Std.HashMap SpecKey FuncId) : ClosedInst :=
   match inst with
@@ -117,15 +111,7 @@ def rewriteInst (inst : ClosedInst) (specMap : Std.HashMap SpecKey FuncId) : Clo
       let key : SpecKey := ⟨funcId, typeArgs⟩
       match specMap.get? key with
       | some newFuncId => .call newFuncId args retTy
-      | none =>
-        let fallback := specMap.toArray.find? fun (k, _) =>
-          k.funcId == funcId && k.typeArgs.size == typeArgs.size &&
-          (List.zip k.typeArgs.toList typeArgs.toList).all fun (specTy, callTy) =>
-            Ty.beq specTy callTy ||
-            (isPointerLikeTy specTy && isPointerLikeTy callTy)
-        match fallback with
-        | some (_, newFuncId) => .call newFuncId args retTy
-        | none => inst
+      | none => inst
   | .callExternPoly _ _ _ _ =>
       inst
   | .makeClosurePoly funcRef typeArgs env =>

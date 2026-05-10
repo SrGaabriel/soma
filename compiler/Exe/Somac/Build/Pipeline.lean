@@ -26,6 +26,28 @@ def loadExternalDependencies (deps : Array (String × System.FilePath))
   else
     Metadata.loadMetadataFiles deps
 
+/-- Keep one Alloy module per module name and reject conflicting duplicates -/
+def dedupeAlloyModules (modules : Array (String × Alloy.Module))
+    : Except String (Array (String × Alloy.Module)) := Id.run do
+  let mut seen : Std.HashMap String ByteArray := {}
+  let mut result : Array (String × Alloy.Module) := #[]
+  for (name, alloyMod) in modules do
+    let bytes := Alloy.Serialize.serializeModule alloyMod
+    match seen.get? name with
+    | none =>
+      seen := seen.insert name bytes
+      result := result.push (name, alloyMod)
+    | some existing =>
+      if existing != bytes then
+        return .error s!"Conflicting Alloy module `{name}` appears in the dependency graph"
+  return .ok result
+
+def dedupeAlloyModulesIO (modules : Array (String × Alloy.Module))
+    : IO (Array (String × Alloy.Module)) := do
+  match dedupeAlloyModules modules with
+  | .ok deduped => pure deduped
+  | .error e => throw <| IO.userError e
+
 /-- Load Alloy IR modules from a .toria package file -/
 def loadAlloyModulesFromToria (path : System.FilePath) : IO (Except String (Array (String × Alloy.Module))) := do
   let tmpDir := path.withExtension "alloy.extract.tmp"
@@ -99,7 +121,7 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
         | .error e =>
           return .error s!"Failed to load Alloy IR from '{depName}': {e}"
       | _ => pure ()
-    pure (.ok allModules)
+    pure (dedupeAlloyModules allModules)
 
 /-- Lower a single checked module to Alloy IR -/
 def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
@@ -111,12 +133,18 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
   let pairCtorTag := pairCtorInfo?.map (·.ctorTag) |>.getD 0
   let worldUnique? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id)
   let pairUnique? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id)
+  let ctorTypes := globals.inductives.fold (init := ({} : Soma.Core.LambdaLift.ConstructorTypeRegistry))
+    fun reg typeQN indInfo =>
+      indInfo.ctors.foldl (init := reg) fun reg ctor =>
+        reg.register typeQN.id ctor.tag
+          (Soma.Core.LambdaLift.constructorTypeInfoFromElaboratedType ctor.type)
   let liveTypedFunctions := cm.typedFunctions.fold (init := {}) fun acc name fn =>
     if fn.errored then acc else acc.insert name fn
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll liveTypedFunctions cm.name
-    cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv)
-    (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv) cm.metas ioBindName? pureIOName?
-    worldUnique? pairCtorName? pairCtorTag pairUnique?
+  let liftedTypedFunctions :=
+    Soma.Core.LambdaLift.liftAll liveTypedFunctions cm.name
+      cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv)
+      (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv) cm.metas ioBindName? pureIOName?
+      worldUnique? pairCtorName? pairCtorTag pairUnique? ctorTypes
 
   -- Lower to Circuit IR
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas) (abbrevEnv := cm.abbrevEnv)
@@ -144,6 +172,11 @@ structure CompileResult where
   constructors : Std.HashMap String Nat
   /-- Pre-merge Alloy modules -/
   alloyModules : Array (String × Alloy.Module)
+
+private def dumpAlloyStageIf (envName label : String) (m : Alloy.Module) : IO Unit := do
+  if (← IO.getEnv envName).isSome then
+    IO.println s!"\n=== {label} ==="
+    IO.println (Somac.Alloy.Pretty.pp m)
 
 /-- Lower checked modules to Alloy IR and merge with dependencies -/
 def lowerAndMerge
@@ -176,7 +209,7 @@ def lowerAndMerge
   IO.println s!"  Generated {localAlloyModules.size} local Alloy module(s)"
 
   -- Combine local modules with dependency modules for merging
-  let allAlloyModules := dependencyAlloyModules ++ localAlloyModules
+  let allAlloyModules ← dedupeAlloyModulesIO (dependencyAlloyModules ++ localAlloyModules)
 
   if dependencyAlloyModules.size > 0 then
     IO.println s!"  Including {dependencyAlloyModules.size} dependency Alloy module(s)"
@@ -225,6 +258,7 @@ def compileModules
   -- Monomorphize
   IO.println "  Monomorphizing..."
   let mono := (Alloy.Monomorphize.monomorphize merged).rebuildWiredFuncIndex
+  dumpAlloyStageIf "SOMA_DUMP_MONO_ALLOY" "Monomorphized Alloy module" mono
 
   IO.println s!"  Monomorphized module has {mono.funcs.size} function(s)"
 
@@ -242,6 +276,7 @@ def compileModules
     IO.println s!"  Element size refinement: {elemSizeCount} function(s) refined to exact element sizes"
 
   optimized := Alloy.ClosureSpec.closureSpec optimized
+  dumpAlloyStageIf "SOMA_DUMP_CLOSURE_ALLOY" "Closure-specialized Alloy module" optimized
 
   if runSomaPasses then
     let (accumOptimized, accumCount) := Alloy.AccumIntro.accumIntro optimized

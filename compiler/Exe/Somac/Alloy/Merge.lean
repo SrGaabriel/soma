@@ -225,12 +225,39 @@ structure MergeState where
   seenTypes : Std.HashMap String TypeDef := {}
   /-- Original function name → new qualified name (for finding main) -/
   funcNames : Std.HashMap String String := {}
+  /-- Original function names that are not globally unique after merge -/
+  ambiguousFuncAliases : Std.HashSet String := {}
   deriving Inhabited
 
 namespace MergeState
 
 def init (name : String) : MergeState :=
   { result := Module.empty name, remap := IdRemap.empty }
+
+/-- Insert a canonical function name and reject duplicate canonical names -/
+def insertCanonicalFuncName (index : Std.HashMap String FuncId) (name : String) (id : FuncId)
+    : Std.HashMap String FuncId :=
+  match index.get? name with
+  | none => index.insert name id
+  | some existing =>
+    if existing == id then
+      index
+    else
+      panic! s!"Alloy merge: canonical function name `{name}` refers to both {existing} and {id}"
+
+/-- Insert an original-name alias when it uniquely identifies a merged function -/
+def insertFuncAlias (index : Std.HashMap String FuncId) (ambiguous : Std.HashSet String)
+    (name : String) (id : FuncId) : Std.HashMap String FuncId × Std.HashSet String :=
+  if ambiguous.contains name then
+    (index, ambiguous)
+  else
+    match index.get? name with
+    | none => (index.insert name id, ambiguous)
+    | some existing =>
+      if existing == id then
+        (index, ambiguous)
+      else
+        (index.erase name, ambiguous.insert name)
 
 /-- Add a function to the merged module -/
 def addFunc (s : MergeState) (moduleName : String) (sf : SomeFunc) : MergeState :=
@@ -244,15 +271,19 @@ def addFunc (s : MergeState) (moduleName : String) (sf : SomeFunc) : MergeState 
 
   -- Will remap references after all functions are registered
   let newFunc : Func n := { func with id := ⟨newId⟩, sig := { func.sig with name := qualifiedName } }
+  let funcIndex := insertCanonicalFuncName s.result.funcIndex qualifiedName ⟨newId⟩
+  let (funcIndex, ambiguousFuncAliases) :=
+    insertFuncAlias funcIndex s.ambiguousFuncAliases func.sig.name ⟨newId⟩
 
   { s with
     result := { s.result with
       funcs := s.result.funcs.push ⟨n, newFunc⟩
-      funcIndex := s.result.funcIndex.insert qualifiedName ⟨newId⟩
+      funcIndex := funcIndex
     }
     remap := remap'
     nextFuncId := newId + 1
     funcNames := s.funcNames.insert func.sig.name qualifiedName
+    ambiguousFuncAliases := ambiguousFuncAliases
   }
 
 /-- Add a global to the merged module -/
@@ -348,16 +379,9 @@ def collectUnresolvedRefs (mod : Module) : Std.HashSet WrapperNeeded := Id.run d
 
 /-- Build the name→FuncId mapping from all functions in the module -/
 def buildNameTable (mod : Module) : Std.HashMap String FuncId := Id.run do
-  let mut table : Std.HashMap String FuncId := {}
+  let mut table : Std.HashMap String FuncId := mod.funcIndex
   for ⟨_, func⟩ in mod.funcs do
-    -- Add mapping for the full qualified name
-    table := table.insert func.sig.name func.id
-    let parts := func.sig.name.splitOn "$$"
-    if parts.length >= 2 then
-      -- todo: dont use this bullshit
-      let simpleName := String.intercalate "$$" (parts.drop 1)
-      if not (table.contains simpleName) then
-        table := table.insert simpleName func.id
+    table := MergeState.insertCanonicalFuncName table func.sig.name func.id
   table
 
 /-- Resolve FuncRef in an instruction using the resolver -/

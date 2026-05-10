@@ -16,6 +16,159 @@ def convertLevel (l1 l2 : Level) : TCM Bool := do
   let l2' := l2.simplify
   return l1' == l2'
 
+def patternBindingCount (p : Pattern) : Nat :=
+  p.bindingCount
+
+def patternsBindingCount (ps : Array Pattern) : Nat :=
+  ps.foldl (fun acc p => acc + patternBindingCount p) 0
+
+mutual
+
+partial def patternAlphaEq : Pattern → Pattern → Bool
+  | .var (some _), .var (some _) => true
+  | .var none, .var none => true
+  | .var none, .wildcard => true
+  | .wildcard, .var none => true
+  | .wildcard, .wildcard => true
+  | .ctor n1 t1 fs1, .ctor n2 t2 fs2 =>
+    n1 == n2 && t1 == t2 && patternsAlphaEq fs1 fs2
+  | .lit l1, .lit l2 => l1 == l2
+  | .inject l1 a1, .inject l2 a2 =>
+    l1 == l2 &&
+      match a1, a2 with
+      | none, none => true
+      | some p1, some p2 => patternAlphaEq p1 p2
+      | _, _ => false
+  | _, _ => false
+
+partial def patternsAlphaEq (ps1 ps2 : Array Pattern) : Bool := Id.run do
+  if ps1.size != ps2.size then return false
+  for _h : i in [:ps1.size] do
+    if !patternAlphaEq ps1[i]! ps2[i]! then return false
+  return true
+
+end
+
+def patternPrefixEq (small big : Array Pattern) : Bool := Id.run do
+  if small.size > big.size then return false
+  for _h : i in [:small.size] do
+    if !patternAlphaEq small[i]! big[i]! then return false
+  return true
+
+def freshCasePatternArg (baseLvl : DeBruijnLvl) (idx : Nat) : Value :=
+  Value.vNeutral .type0 (.nVar ⟨s!"_arm_arg_{idx}", ⟨baseLvl.lvl + idx⟩⟩)
+
+partial def freshPatternBindingArgsFrom
+    (p : Pattern) (baseLvl : DeBruijnLvl) (next : Nat) : Array Value × Nat :=
+  match p with
+  | .var (some _) => (#[freshCasePatternArg baseLvl next], next + 1)
+  | .var none | .lit _ | .wildcard | .inject _ none => (#[], next)
+  | .ctor _ _ fields =>
+    fields.foldl
+      (fun (acc, n) field =>
+        let (args, n') := freshPatternBindingArgsFrom field baseLvl n
+        (acc ++ args, n'))
+      (#[], next)
+  | .inject _ (some p) => freshPatternBindingArgsFrom p baseLvl next
+
+partial def alignPatternBindings
+    (small big : Pattern) (baseLvl : DeBruijnLvl) (next : Nat)
+    : Option (Array Value × Array Value × Nat) :=
+  match small, big with
+  | .var (some _), .var (some _) =>
+    let v := freshCasePatternArg baseLvl next
+    some (#[v], #[v], next + 1)
+  | .var none, _
+  | .wildcard, _ =>
+    let (bigArgs, next') := freshPatternBindingArgsFrom big baseLvl next
+    some (#[], bigArgs, next')
+  | .lit l1, .lit l2 =>
+    if l1 == l2 then some (#[], #[], next) else none
+  | .ctor n1 t1 fs1, .ctor n2 t2 fs2 =>
+    if n1 != n2 || t1 != t2 || fs1.size != fs2.size then none
+    else
+      fs1.zip fs2 |>.foldl
+        (fun acc? (p1, p2) =>
+          match acc? with
+          | none => none
+          | some (smallAcc, bigAcc, n) =>
+            match alignPatternBindings p1 p2 baseLvl n with
+            | none => none
+            | some (smallArgs, bigArgs, n') =>
+              some (smallAcc ++ smallArgs, bigAcc ++ bigArgs, n'))
+        (some (#[], #[], next))
+  | .inject l1 a1, .inject l2 a2 =>
+    if l1 != l2 then none
+    else
+      match a1, a2 with
+      | none, none => some (#[], #[], next)
+      | some p1, some p2 => alignPatternBindings p1 p2 baseLvl next
+      | _, _ => none
+  | _, _ => none
+
+partial def alignPatternArrayBindings
+    (small big : Array Pattern) (baseLvl : DeBruijnLvl)
+    : Option (Array Value × Array Value) := Id.run do
+  if small.size != big.size then return none
+  let mut smallArgs : Array Value := #[]
+  let mut bigArgs : Array Value := #[]
+  let mut next := 0
+  for _h : i in [:small.size] do
+    match alignPatternBindings small[i]! big[i]! baseLvl next with
+    | none => return none
+    | some (sArgs, bArgs, next') =>
+      smallArgs := smallArgs ++ sArgs
+      bigArgs := bigArgs ++ bArgs
+      next := next'
+  return some (smallArgs, bigArgs)
+
+def trivialExtraPatternArgs
+    (patterns : Array Pattern) (scruts : Array Value) (start : Nat)
+    : Option (Array Value) := Id.run do
+  if patterns.size != scruts.size then return none
+  let mut args : Array Value := #[]
+  for i in [start:patterns.size] do
+    match patterns[i]! with
+    | .wildcard => pure ()
+    | .var none => pure ()
+    | .var (some _) => args := args.push scruts[i]!
+    | _ => return none
+  return some args
+
+/-- Apply an arm closure to a spine of pattern bindings -/
+partial def applyArmClosureSpine (clos : Closure) (args : Array Value) : TCM Value := do
+  match clos with
+  | .const _ v => return v
+  | .term _ env body =>
+    let mut env' := env
+    for arg in args do
+      env' := env'.extend "_" arg
+    let state ← TCM.getState
+    let ctx ← TCM.getCtx
+    let evalCtx : EvalCtx := {
+      env := env'
+      globals := ctx.globals.toGlobalEnvWithClasses ctx.instanceEnv
+      metas := state.metas
+    }
+    return Soma.Core.evalCoreExpr evalCtx body
+
+/-- Apply an arm closure for structural comparison of arm bodies -/
+partial def applyArmClosureSpineOpaque (clos : Closure) (args : Array Value)
+    : TCM Value := do
+  match clos with
+  | .const _ v => return v
+  | .term _ env body =>
+    let mut env' := env
+    for arg in args do
+      env' := env'.extend "_" arg
+    let state ← TCM.getState
+    let evalCtx : EvalCtx := {
+      env := env'
+      globals := .empty
+      metas := state.metas
+    }
+    return Soma.Core.evalCoreExpr evalCtx body
+
 mutual
 
 /-- Apply a single eliminator to a value, performing canonical reduction -/
@@ -44,7 +197,7 @@ partial def applySpine (v : Value) (spine : Array Elim) : TCM Value := do
 /-- Force a value to weak head normal form -/
 partial def force (v : Value) : TCM Value := do
   match v with
-  | .vNeutral _ neu =>
+  | .vNeutral ty neu =>
     match neu.head with
     | .hMeta id =>
       let info? ← TCM.lookupMeta id
@@ -80,9 +233,29 @@ partial def force (v : Value) : TCM Value := do
         match info.value with
         | some bodyVal =>
           let result ← applySpine bodyVal neu.spine
-          force result
+          let forced ← force result
+          match forced with
+          | .vNeutral _ ⟨.hCase _ _ _, _⟩ => return v
+          | _ => return forced
         | none => return v
       | none => return v
+    | .hCase scruts motive arms =>
+      let scruts' ← scruts.mapM force
+      let rec findArm : List ArmClosure → TCM (Option Value)
+        | [] => pure none
+        | arm :: rest => do
+          match matchPatternArrays arm.patterns scruts' with
+          | .matched bindings => do
+            let reduced ← applyArmClosureSpine arm.closure bindings
+            pure (some reduced)
+          | .mismatch => findArm rest
+          | .stuck => pure none
+      match ← findArm arms with
+      | some reduced => do
+        let result ← applySpine reduced neu.spine
+        force result
+      | none =>
+        return .vNeutral ty (.mk (.hCase scruts' motive arms) neu.spine)
     | _ => return v
   | .vDataType dId params =>
     let abbrev? ← TCM.lookupAbbrev ⟨dId⟩
@@ -250,22 +423,193 @@ partial def substClosure (σ : LevelSubst) (c : Closure) : TCM Closure := do
 
 end
 
-/-- Apply an arm closure to a spine of fresh neutrals, one per pattern binding -/
-partial def applyArmClosureSpine (clos : Closure) (args : Array Value) : TCM Value := do
-  match clos with
-  | .const _ v => return v
-  | .term _ env body =>
-    let mut env' := env
-    for arg in args do
-      env' := env'.extend "_" arg
-    let state ← TCM.getState
-    let ctx ← TCM.getCtx
-    let evalCtx : EvalCtx := {
-      env := env'
-      globals := ctx.globals.toGlobalEnvWithClasses ctx.instanceEnv
-      metas := state.metas
-    }
-    return Soma.Core.evalCoreExpr evalCtx body
+private def scrutineeTypeOf (v : Value) : Value :=
+  match v with
+  | .vNeutral ty _ => ty
+  | .vConstructor _ _ _ ty => ty
+  | .vIntLit _ => .vPrimTy .int
+  | .vFloatLit _ => .vPrimTy .double
+  | .vStringLit _ => .vPrimTy .string
+  | _ => .type0
+
+private def literalPatternValue? : Literal → Option Value
+  | .int n => some (.vIntLit n)
+  | .float f => some (.vFloatLit f)
+  | .string s => some (.vStringLit s)
+  | .bool _ => none
+
+mutual
+
+private partial def refinedPatternValue
+    (p : Pattern) (scrutTy : Value) (baseLvl : DeBruijnLvl) (next : Nat)
+    : Option (Value × Array Value × Nat) :=
+  match p with
+  | .var (some _) =>
+    let v := freshCasePatternArg baseLvl next
+    some (v, #[v], next + 1)
+  | .var none | .wildcard =>
+    let v := freshCasePatternArg baseLvl next
+    some (v, #[], next + 1)
+  | .lit lit =>
+    match literalPatternValue? lit with
+    | some v => some (v, #[], next)
+    | none => none
+  | .ctor name tag fields =>
+    match refinedPatternValues fields baseLvl next with
+    | none => none
+    | some (fieldVals, bindingArgs, next') =>
+      some (.vConstructor name tag fieldVals.toList scrutTy, bindingArgs, next')
+  | .inject _ _ =>
+    none
+
+private partial def refinedPatternValues
+    (ps : Array Pattern) (baseLvl : DeBruijnLvl) (next : Nat)
+    : Option (Array Value × Array Value × Nat) := Id.run do
+  let mut vals : Array Value := #[]
+  let mut args : Array Value := #[]
+  let mut cur := next
+  for _h : i in [:ps.size] do
+    match refinedPatternValue ps[i]! .type0 baseLvl cur with
+    | none => return none
+    | some (v, bindingArgs, next') =>
+      vals := vals.push v
+      args := args ++ bindingArgs
+      cur := next'
+  return some (vals, args, cur)
+
+end
+
+private def bareScrutineeLevel? (v : Value) : Option DeBruijnLvl :=
+  match v with
+  | .vNeutral _ neu =>
+    if neu.isBareHead then
+      match neu.head with
+      | .hVar bv => some bv.level
+      | _ => none
+    else none
+  | _ => none
+
+mutual
+
+partial def alignPatternBindingsWithRefinement
+    (small big : Pattern) (scrutTy : Value) (scrutVal? : Option Value)
+    (baseLvl : DeBruijnLvl) (next : Nat)
+    : Option (Array Value × Array Value × Value × Nat) :=
+  match small, big with
+  | .var (some _), .var (some _) =>
+    match scrutVal? with
+    | some v => some (#[v], #[v], v, next)
+    | none =>
+      let v := freshCasePatternArg baseLvl next
+      some (#[v], #[v], v, next + 1)
+  | .var (some _), .var none
+  | .var (some _), .wildcard =>
+    match scrutVal? with
+    | some v => some (#[v], #[], v, next)
+    | none =>
+      let v := freshCasePatternArg baseLvl next
+      some (#[v], #[], v, next + 1)
+  | .var none, .var (some _)
+  | .wildcard, .var (some _) =>
+    match scrutVal? with
+    | some v => some (#[], #[v], v, next)
+    | none =>
+      let v := freshCasePatternArg baseLvl next
+      some (#[], #[v], v, next + 1)
+  | .var none, .var none
+  | .var none, .wildcard
+  | .wildcard, .var none
+  | .wildcard, .wildcard =>
+    match scrutVal? with
+    | some v => some (#[], #[], v, next)
+    | none =>
+      let v := freshCasePatternArg baseLvl next
+      some (#[], #[], v, next + 1)
+  | .var (some _), _ =>
+    match refinedPatternValue big scrutTy baseLvl next with
+    | none => none
+    | some (bigVal, bigArgs, next') => some (#[bigVal], bigArgs, bigVal, next')
+  | .var none, _
+  | .wildcard, _ =>
+    match refinedPatternValue big scrutTy baseLvl next with
+    | none => none
+    | some (bigVal, bigArgs, next') => some (#[], bigArgs, bigVal, next')
+  | .lit l1, .lit l2 =>
+    if l1 != l2 then none
+    else
+      match literalPatternValue? l2 with
+      | some v => some (#[], #[], v, next)
+      | none => none
+  | .ctor n1 t1 fs1, .ctor n2 t2 fs2 =>
+    if n1 != n2 || t1 != t2 || fs1.size != fs2.size then none
+    else
+      let fieldScruts :=
+        match scrutVal? with
+        | some (.vConstructor _ _ args _) => args.toArray
+        | _ => #[]
+      match alignPatternArraysWithRefinement fs1 fs2 fieldScruts baseLvl next with
+      | none => none
+      | some (smallArgs, bigArgs, fieldVals, next') =>
+        some (smallArgs, bigArgs, .vConstructor n2 t2 fieldVals.toList scrutTy, next')
+  | .inject _ _, .inject _ _ =>
+    none
+  | _, _ => none
+
+partial def alignPatternArraysWithRefinement
+    (small big : Array Pattern) (scruts : Array Value) (baseLvl : DeBruijnLvl) (next : Nat)
+    : Option (Array Value × Array Value × Array Value × Nat) := Id.run do
+  if small.size != big.size then return none
+  let mut smallArgs : Array Value := #[]
+  let mut bigArgs : Array Value := #[]
+  let mut refinedVals : Array Value := #[]
+  let mut cur := next
+  for _h : i in [:small.size] do
+    let scrutTy :=
+      match scruts[i]? with
+      | some scrut => scrutineeTypeOf scrut
+      | none => .type0
+    match alignPatternBindingsWithRefinement small[i]! big[i]! scrutTy scruts[i]? baseLvl cur with
+    | none => return none
+    | some (sArgs, bArgs, refinedVal, next') =>
+      smallArgs := smallArgs ++ sArgs
+      bigArgs := bigArgs ++ bArgs
+      refinedVals := refinedVals.push refinedVal
+      cur := next'
+  return some (smallArgs, bigArgs, refinedVals, cur)
+
+end
+
+def refinementSubstForScruts
+    (scruts refinedVals : Array Value) : LevelSubst := Id.run do
+  let mut σ := LevelSubst.empty
+  for _h : i in [:scruts.size] do
+    if let some refined := refinedVals[i]? then
+      if let some lvl := bareScrutineeLevel? scruts[i]! then
+        σ := σ.extend lvl refined
+  return σ
+
+/-- Apply a value to a sequence of ordinary arguments -/
+partial def applyValueArgs (v : Value) (args : Array Value) : TCM Value := do
+  let mut result := v
+  for arg in args do
+    result ← applyElim result (.eApp arg)
+  return result
+
+/-- Apply arguments only when the current value is visibly function-typed -/
+partial def applyValueArgsAsFunction? (v : Value) (args : Array Value) : TCM (Option Value) := do
+  let mut result := v
+  for arg in args do
+    let fn ← force result
+    match fn with
+    | .vLam _ _ =>
+      result ← applyElim fn (.eApp arg)
+    | .vNeutral ty _ =>
+      match ← force ty with
+      | .vPi _ _ _ _ _ =>
+        result ← applyElim fn (.eApp arg)
+      | _ => return none
+    | _ => return none
+  return some result
 
 /-- Eta-expand a value to a lambda if checking against a Pi type
     For a value v and Pi type (x : A) -> B, we create λx. v x -/
@@ -523,6 +867,34 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     if !lhsEq then return false
     convert b1 b2
 
+  | .vEq _ t1 a1 b1, .vDataType id2 ps2 =>
+    match ← TCM.lookupWiredIn .typeEq with
+    | some info =>
+      if info.name.id != id2 then return false
+      match ps2 with
+      | [t2, a2, b2] =>
+        let tyEq ← convert t1 t2
+        if !tyEq then return false
+        let lhsEq ← convert a1 a2
+        if !lhsEq then return false
+        convert b1 b2
+      | _ => return false
+    | none => return false
+
+  | .vDataType id1 ps1, .vEq _ t2 a2 b2 =>
+    match ← TCM.lookupWiredIn .typeEq with
+    | some info =>
+      if info.name.id != id1 then return false
+      match ps1 with
+      | [t1, a1, b1] =>
+        let tyEq ← convert t1 t2
+        if !tyEq then return false
+        let lhsEq ← convert a1 a2
+        if !lhsEq then return false
+        convert b1 b2
+      | _ => return false
+    | none => return false
+
   -- Refl
   | .vRefl t1 x1, .vRefl t2 x2 =>
     let tyEq ← convert t1 t2
@@ -582,31 +954,119 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
   -- Different constructors
   | _, _ => return false
 
+/-- Compare equal-length scrutinee prefixes -/
+partial def convertScrutPrefix (ss1 ss2 : Array Value) (count : Nat) : TCM Bool := do
+  if ss1.size < count || ss2.size < count then return false
+  for _h : i in [:count] do
+    let eq ← convert ss1[i]! ss2[i]!
+    if !eq then return false
+  return true
+
+/-- Compare two values via syntactic-quote equality -/
+partial def convertBodies (body1 body2 : Value) : TCM Bool := do
+  let lvl ← TCM.currentLevel
+  if Soma.Core.quoteExpr lvl body1 == Soma.Core.quoteExpr lvl body2 then
+    pure true
+  else
+    convert body1 body2
+
+/-- Same-shape stuck-case comparison -/
+partial def compareHCaseSameShape
+    (ss1 : Array Value) (as1 : List ArmClosure)
+    (ss2 : Array Value) (as2 : List ArmClosure)
+    (compareBodies : Value → Value → TCM Bool)
+    : TCM Bool := do
+  if ss1.size != ss2.size then return false
+  let scrutsEq ← convertScrutPrefix ss1 ss2 ss1.size
+  if !scrutsEq then return false
+  if as1.length != as2.length then return false
+  for (arm1, arm2) in as1.zip as2 do
+    if arm1.patterns.size != arm2.patterns.size then return false
+    let baseLvl ← TCM.currentLevel
+    let aligned? :=
+      alignPatternArraysWithRefinement arm1.patterns arm2.patterns ss1 baseLvl 0
+    match aligned? with
+    | none => return false
+    | some (args1, args2, refinedVals, _) =>
+      let body1 ← applyArmClosureSpineOpaque arm1.closure args1
+      let body2 ← applyArmClosureSpineOpaque arm2.closure args2
+      let body1 ← substValue (refinementSubstForScruts ss1 refinedVals) body1
+      let body2 ← substValue (refinementSubstForScruts ss2 refinedVals) body2
+      let bodiesEq ← compareBodies body1 body2
+      if !bodiesEq then return false
+  return true
+
+/-- Commuting-conversion stuck-case comparison -/
+partial def compareHCasePrefixExpansion
+    (smallScruts : Array Value) (smallArms : List ArmClosure)
+    (bigScruts : Array Value) (bigArms : List ArmClosure)
+    (compareBodies : Value → Value → TCM Bool)
+    : TCM Bool := do
+  if smallArms.length != bigArms.length then return false
+  for (smallArm, bigArm) in smallArms.zip bigArms do
+    let prefixPatterns := smallArm.patterns.size
+    if prefixPatterns >= bigArm.patterns.size then return false
+    if bigArm.patterns.size != bigScruts.size then return false
+    let bigPrefix := bigArm.patterns.extract 0 prefixPatterns
+    let smallShapeOk :=
+      smallScruts.size == prefixPatterns || smallScruts.size == bigScruts.size
+    if !smallShapeOk then return false
+    let scrutsEq ← convertScrutPrefix smallScruts bigScruts prefixPatterns
+    if !scrutsEq then return false
+    let extraArgs? := trivialExtraPatternArgs bigArm.patterns bigScruts prefixPatterns
+    match extraArgs? with
+    | none => return false
+    | some extraPatternArgs =>
+      let baseLvl ← TCM.currentLevel
+      let prefixScruts := bigScruts.extract 0 prefixPatterns
+      let aligned? := alignPatternArraysWithRefinement
+        smallArm.patterns bigPrefix prefixScruts baseLvl 0
+      match aligned? with
+      | none => return false
+      | some (smallPatternArgs, bigPrefixArgs, refinedVals, _) =>
+        let extraScruts := bigScruts.extract prefixPatterns bigScruts.size
+        let smallBody ← applyArmClosureSpineOpaque smallArm.closure smallPatternArgs
+        let smallBody ← substValue (refinementSubstForScruts prefixScruts refinedVals) smallBody
+        let smallBodyAdjusted? ←
+          if smallScruts.size == bigScruts.size then
+            pure (some smallBody)
+          else
+            applyValueArgsAsFunction? smallBody extraScruts
+        match smallBodyAdjusted? with
+        | none => return false
+        | some smallBodyApplied =>
+          let bigBody ← applyArmClosureSpineOpaque bigArm.closure (bigPrefixArgs ++ extraPatternArgs)
+          let bigBody ← substValue (refinementSubstForScruts prefixScruts refinedVals) bigBody
+          let bodiesEq ← compareBodies smallBodyApplied bigBody
+          if !bodiesEq then return false
+  return true
+
+/-- Stuck-case structural comparison -/
+partial def compareHCase
+    (ss1 : Array Value) (as1 : List ArmClosure)
+    (ss2 : Array Value) (as2 : List ArmClosure)
+    (compareBodies : Value → Value → TCM Bool)
+    : TCM Bool := do
+  let same ← compareHCaseSameShape ss1 as1 ss2 as2 compareBodies
+  if same then return true
+  let leftSmall ← compareHCasePrefixExpansion ss1 as1 ss2 as2 compareBodies
+  if leftSmall then return true
+  compareHCasePrefixExpansion ss2 as2 ss1 as1 compareBodies
+
+/-- Stuck-case definitional convertibility -/
+partial def convertHCase
+    (ss1 : Array Value) (as1 : List ArmClosure)
+    (ss2 : Array Value) (as2 : List ArmClosure) : TCM Bool := do
+  compareHCase ss1 as1 ss2 as2 convertBodies
+
 /-- Check if two neutral heads are convertible -/
 partial def convertHead (h1 h2 : Head) : TCM Bool := do
   match h1, h2 with
   | .hVar v1, .hVar v2 => return v1.level == v2.level
   | .hMeta m1, .hMeta m2 => return m1 == m2
   | .hConst c1 _, .hConst c2 _ => return c1 == c2
-  | .hCase ss1 m1 as1, .hCase ss2 m2 as2 =>
-    if ss1.size != ss2.size then return false
-    for (s1, s2) in ss1.zip ss2 do
-      let eq ← convert s1 s2
-      if !eq then return false
-    let motiveEq ← convert m1 m2
-    if !motiveEq then return false
-    if as1.length != as2.length then return false
-    for (arm1, arm2) in as1.zip as2 do
-      if arm1.patterns.size != arm2.patterns.size then return false
-      let baseLvl ← TCM.currentLevel
-      let arity := arm1.patterns.foldl (fun acc p => acc + p.bindingCount) 0
-      let freshArgs : Array Value := Array.ofFn (n := arity) fun i =>
-        Value.vNeutral .type0 (.nVar ⟨s!"_arm_arg_{i.val}", ⟨baseLvl.lvl + i.val⟩⟩)
-      let body1 ← applyArmClosureSpine arm1.closure freshArgs
-      let body2 ← applyArmClosureSpine arm2.closure freshArgs
-      let bodiesEq ← convert body1 body2
-      if !bodiesEq then return false
-    return true
+  | .hCase ss1 _m1 as1, .hCase ss2 _m2 as2 =>
+    convertHCase ss1 as1 ss2 as2
   | _, _ => return false
 
 /-- Check if two eliminators are convertible -/

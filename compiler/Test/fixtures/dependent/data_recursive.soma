@@ -1,7 +1,7 @@
 // expect: success
 // Test: recursive algebraic data type
 
-inductive List {a : Type} where
+inductive List (a : Type) where
     | Nil
     | Cons (front : a) (tail : List a)
 

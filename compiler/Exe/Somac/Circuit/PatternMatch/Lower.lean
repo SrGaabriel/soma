@@ -390,18 +390,19 @@ partial def lowerMATChain {M : Type → Type} [Monad M] [MonadGraph M]
         pure (PortId.principal era)
 
     | [(tag, subtree)], [currentScrut] =>
-      let hitPort ← lowerTree subtree lowerArm usageCounts
-      let missPort ← match default with
-        | some d => lowerTree d lowerArm usageCounts
-        | none =>
-          let era ← LowerT.addEra
-          pure (PortId.principal era)
-
-      let mat ← LowerT.addMat tag resultTy
-      LowerT.connect ⟨mat, ⟨1⟩⟩ currentScrut
-      LowerT.connect ⟨mat, ⟨2⟩⟩ hitPort
-      LowerT.connect ⟨mat, ⟨3⟩⟩ missPort
-      pure (PortId.principal mat)
+      match default with
+      | some d =>
+        let hitPort ← lowerTree subtree lowerArm usageCounts
+        let missPort ← lowerTree d lowerArm usageCounts
+        let mat ← LowerT.addMat tag resultTy
+        LowerT.connect ⟨mat, ⟨1⟩⟩ currentScrut
+        LowerT.connect ⟨mat, ⟨2⟩⟩ hitPort
+        LowerT.connect ⟨mat, ⟨3⟩⟩ missPort
+        pure (PortId.principal mat)
+      | none =>
+        let era ← LowerT.addEra
+        LowerT.connect (PortId.principal era) currentScrut
+        lowerTree subtree lowerArm usageCounts
 
     | (tag, subtree) :: rest, currentScrut :: restScruts =>
       let hitPort ← lowerTree subtree lowerArm usageCounts

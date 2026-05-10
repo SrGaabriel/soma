@@ -140,6 +140,10 @@ structure LowerCtx where
   pairCtorTag? : Option Nat := none
   /-- The current "World" port for the IO function being lowered -/
   currentWorld? : Option PortId := none
+  /-- Types of de Bruijn-bound variables in scope, ordered outermost first -/
+  bvarCtx : Array Value := #[]
+  /-- Evaluation environment paired with `bvarCtx` -/
+  bvarEnv : Soma.Core.Env := .empty
   deriving Inhabited
 
 namespace LowerCtx
@@ -204,6 +208,13 @@ def withUsageMap (usageMap : UsageMap) : LowerCtx :=
 def freshSyntheticUnique (ctx : LowerCtx) (name : String) : Unique × LowerCtx :=
   let unique : Unique := { id := ctx.nextSyntheticId, module := "$lam", original := name }
   (unique, { ctx with nextSyntheticId := ctx.nextSyntheticId + 1 })
+
+/-- Push a new binder onto the bvar context -/
+def pushBvar (ctx : LowerCtx) (name : String) (ty : Value) : LowerCtx :=
+  let neutral : Value := .vNeutral ty (.nVar ⟨name, ctx.bvarEnv.level⟩)
+  { ctx with
+    bvarCtx := ctx.bvarCtx.push ty
+    bvarEnv := ctx.bvarEnv.extend name neutral }
 
 end LowerCtx
 
@@ -283,6 +294,39 @@ partial def isIOPairTy (ctx : LowerCtx) (v : Value) : Bool :=
       | _ => false
   | _ => false
 
+/-- True iff a type mentions the wired-in world token -/
+partial def mentionsWorldTy (ctx : LowerCtx) (v : Value) : Bool :=
+  let v := unfoldValue v ctx.abbrevEnv
+  if ctx.isWorldTy v then true else
+  match v with
+  | .vPi _ _ name dom cod =>
+    ctx.mentionsWorldTy dom ||
+      let neutral := Value.vNeutral dom (.nVar ⟨name, cod.level?.getD ⟨0⟩⟩)
+      ctx.mentionsWorldTy (cod.applyPure neutral)
+  | .vLam _ body =>
+    let argTy := Value.vType .zero
+    ctx.mentionsWorldTy (body.applyPure (Value.vNeutral argTy (.nVar ⟨"_", body.level?.getD ⟨0⟩⟩)))
+  | .vSigma _ name fst snd =>
+    ctx.mentionsWorldTy fst ||
+      let neutral := Value.vNeutral fst (.nVar ⟨name, snd.level?.getD ⟨0⟩⟩)
+      ctx.mentionsWorldTy (snd.applyPure neutral)
+  | .vPair fst snd => ctx.mentionsWorldTy fst || ctx.mentionsWorldTy snd
+  | .vNeutral ty _ => ctx.mentionsWorldTy ty
+  | .vRowExtend label fieldTy tail =>
+    ctx.mentionsWorldTy label || ctx.mentionsWorldTy fieldTy || ctx.mentionsWorldTy tail
+  | .vRecord row | .vVariant row => ctx.mentionsWorldTy row
+  | .vRecordVal fields => fields.any (fun (_, v) => ctx.mentionsWorldTy v)
+  | .vDataType _ params => params.any ctx.mentionsWorldTy
+  | .vConstructor _ _ args resultTy =>
+    args.any ctx.mentionsWorldTy || ctx.mentionsWorldTy resultTy
+  | .vEq _ ty lhs rhs =>
+    ctx.mentionsWorldTy ty || ctx.mentionsWorldTy lhs || ctx.mentionsWorldTy rhs
+  | .vRefl ty x => ctx.mentionsWorldTy ty || ctx.mentionsWorldTy x
+  | .vTransport _ ty motive lhs rhs eq body =>
+    ctx.mentionsWorldTy ty || ctx.mentionsWorldTy motive || ctx.mentionsWorldTy lhs ||
+      ctx.mentionsWorldTy rhs || ctx.mentionsWorldTy eq || ctx.mentionsWorldTy body
+  | _ => false
+
 /-- Is this qualified name `io_bind` -/
 def isIOBindName (ctx : LowerCtx) (qn : QualifiedName) : Bool :=
   ctx.ioBindName?.any (· == qn)
@@ -354,8 +398,8 @@ def recordTypeArgs (nodeId : NodeId) (typeArgs : Array Value) : LowerM Unit :=
 
 /-- Add a definition to the book -/
 def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (reducibility : Reducibility := .reducible) : LowerM Nat :=
-  liftGraph (GraphM.addDefinition name root arity ty reducibility)
+    (reducibility : Reducibility := .reducible) (effectful : Bool := false) : LowerM Nat :=
+  liftGraph (GraphM.addDefinition name root arity ty reducibility effectful)
 
 /-- Resolve a variant label to a collision-free tag -/
 def resolveVariantTag (label : String) : LowerM Nat := do
@@ -450,7 +494,7 @@ partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
   | .tuple elems =>
     elems.foldl (init := {}) fun acc expr => usageAdd acc (countUsesExpr expr)
   | .pair fst snd => usageAdd (countUsesExpr fst) (countUsesExpr snd)
-  | .closure _ captures =>
+  | .closure _ captures _ =>
     captures.foldl (init := {}) fun acc cap => usageAdd acc (countUsesExpr cap)
   | .let_ _ _ val body => usageAdd (countUsesExpr val) (countUsesExpr body)
   | .panic _
@@ -490,6 +534,16 @@ def consumeVar (id : Unique) : LowerM (Option (PortId × Value)) := do
       }
       setCtx { ctx with bindings := ctx.bindings.insert id updated }
       pure (some (usePort, alloc.ty))
+
+/-- Produce an erased runtime placeholder for a computationally absent term -/
+def erasedRuntimePort : LowerM PortId := do
+  let era ← addNode .era unitTy
+  pure (PortId.principal era)
+
+/-- Explicitly consume an unused lambda parameter slot -/
+def eraseParamPort (port : PortId) : LowerM Unit := do
+  let era ← addNode .era unitTy
+  connect (PortId.principal era) port
 
 /-- Split a source value into N owned outputs at the current control-flow split site -/
 def splitOwnedSource (source : PortId) (n : Nat) (ty : Value) : LowerM (Array PortId) := do
@@ -720,23 +774,38 @@ private def isTypeSort (v : Value) : Bool :=
   | .vType _ | .vRowSort | .vLabelSort => true
   | _ => false
 
-/-- Is this Core.Expr a **type-level argument** in call-spine position? -/
+/-- Runtime erasure for an application argument derived from the elaborated Pi binder -/
+private def isRuntimeErasedBinder (ctx : LowerCtx) (qty : Quantity)
+    (_binder : Soma.Core.BinderInfo) (dom : Value) : Bool :=
+  qty == .zero || isTypeSort (unfoldValue dom ctx.abbrevEnv)
+
+/-- Count binders that survive into runtime calling convention -/
+private partial def runtimeArityFull (ctx : LowerCtx) (ty : Value) : Nat :=
+  let ty := unfoldValue ty ctx.abbrevEnv
+  match ty with
+  | .vPi qty binder name dom cod =>
+    let next := match cod with
+      | .const _ body => body
+      | .term _ env _ =>
+        let neutral := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
+        cod.applyPure neutral
+    let rest := runtimeArityFull ctx next
+    if isRuntimeErasedBinder ctx qty binder dom then rest else rest + 1
+  | _ => 0
+
+/-- Is this Core.Expr a type-level argument in call-spine position? -/
 private def isCoreTypeLevelArg (ctx : LowerCtx) : Soma.Core.Expr → Bool
-  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
-  | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
-  | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
-  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
-  | .bvar _ => true
   | .mvar id =>
     match ctx.metaState.lookup id with
     | some info => isTypeSort info.type
     | none => false
-  | _ => false
+  | e => Soma.Core.Expr.isTypeLevelExpr e
 
 /-- Compute the type of a Core expression -/
 def getExprType (e : Soma.Core.Expr) : LowerM Value := do
   let ctx ← LowerM.getCtx
-  let ty := e.typeOf ctx.evalGlobalEnv (unfoldValue · ctx.abbrevEnv) ctx.metaState
+  let ty := Soma.Core.Expr.typeOfWith ctx.bvarCtx ctx.evalGlobalEnv
+    (unfoldValue · ctx.abbrevEnv) ctx.bvarEnv ctx.metaState e
   let resolved := resolveMetas ty ctx.metaState
   pure resolved
 
@@ -744,7 +813,7 @@ def getExprType (e : Soma.Core.Expr) : LowerM Value := do
 def evalExprToValue (e : Soma.Core.Expr) : LowerM Value := do
   let ctx ← LowerM.getCtx
   let evalCtx : Soma.Core.EvalCtx := {
-    env := .empty
+    env := ctx.bvarEnv
     globals := ctx.evalGlobalEnv
     metas := ctx.metaState
   }
@@ -813,7 +882,9 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   | .ann expr _ty => lowerCoreExpr expr ty
 
-  | .closure qn captures => lowerCoreClosure qn captures ty
+  | .closure qn captures closureTyExpr =>
+    let nodeTy ← evalExprToValue closureTyExpr
+    lowerCoreClosure qn captures nodeTy
 
   | .array elems _ => lowerCoreArray elems (← getExprType e)
 
@@ -824,6 +895,21 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
     lowerCoreInject label args injectTy
 
   | .recordUpdate base updates => lowerCoreRecordUpdate base updates ty
+
+  | .mvar id =>
+    let ctx ← LowerM.getCtx
+    match ctx.metaState.lookup id with
+    | some info =>
+      match info.solution with
+      | some sol =>
+        lowerCoreExpr (Soma.Core.quoteExpr0 sol) ty
+      | none =>
+        if isTypeSort (unfoldValue info.type ctx.abbrevEnv) then
+          pure none
+        else
+          panic! s!"Circuit lowering found unsolved runtime metavariable ?{id.id} : {Soma.Core.valueToString info.type}"
+    | none =>
+      panic! s!"Circuit lowering found unknown runtime metavariable ?{id.id}"
 
   | .let_ _name _ty val body => do
     -- Open the body by replacing bvar(0) with an fvar, then lower as a bound variable
@@ -866,7 +952,7 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
   | .rowExtend _ _ _ | .recordTy _ | .variantTy _
   | .labelLit _ | .dataTy _ _ | .eqTy _ _ _ _
   | .refl _ _ | .transport _ _ _ _ _ _ _
-  | .mvar _ | .bvar _ | .tyvar _ _ =>
+  | .bvar _ | .tyvar _ _ =>
     pure none
 
 /-- Lower a Core.Expr function application -/
@@ -988,15 +1074,13 @@ partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
   let effectiveFnTy := match fnTy.piDomain? with
     | some _ => fnTy
     | none => unfoldValue fnTy ctx.abbrevEnv
-  match effectiveFnTy.piDomain? with
-  | none =>
-    -- Type-level or erased application
-    pure none
-  | some argTy =>
+  match effectiveFnTy with
+  | .vPi qty binder _ argTy codomain =>
     -- Compute the actual result type from the Pi codomain
-    let resultTy := match effectiveFnTy.piApply (dummyNeutralForPi effectiveFnTy argTy) with
-      | some codTy => codTy
-      | none => ty
+    let resultTy := codomain.applyPure (dummyNeutralForPi effectiveFnTy argTy)
+    if isRuntimeErasedBinder ctx qty binder argTy then
+      lowerCoreExpr fn resultTy
+    else
     let fnPort? ← lowerCoreExpr fn fnTy
     match fnPort? with
     | none => pure none
@@ -1005,6 +1089,21 @@ partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
       match argPort? with
       | some argPort =>
         let app ← LowerM.addNode .app resultTy
+        LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
+        LowerM.connect ⟨app, ⟨2⟩⟩ argPort
+        pure (some (PortId.principal app))
+      | none =>
+        pure (some fnPort)
+  | _ =>
+    let fnPort? ← lowerCoreExpr fn fnTy
+    match fnPort? with
+    | none => pure none
+    | some fnPort =>
+      let argTy ← getExprType arg
+      let argPort? ← lowerCoreExpr arg argTy
+      match argPort? with
+      | some argPort =>
+        let app ← LowerM.addNode .app ty
         LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
         LowerM.connect ⟨app, ⟨2⟩⟩ argPort
         pure (some (PortId.principal app))
@@ -1030,15 +1129,19 @@ partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
     | some t => t
     | none => panic! s!"lowerCoreLam: expected Pi type for codomain, got {ty}"
 
-  let usageCount := openBody.countFVar paramUnique
+  let usageCount := (countUsesExpr openBody).getD paramUnique 0
   let erased := usageCount == 0
   let lam ← LowerM.addNode (.lam erased) ty
   let varPort : PortId := ⟨lam, ⟨1⟩⟩
   LowerM.modifyCtx fun ctx =>
     ctx.bindVarOwned paramUnique name varPort usageCount paramTy erased
+  if erased then
+    LowerM.eraseParamPort varPort
 
   let bodyPort? ← lowerCoreExpr openBody codomainTy
-  let bodyPort := bodyPort?.getD ⟨lam, ⟨1⟩⟩
+  let bodyPort ← match bodyPort? with
+    | some port => pure port
+    | none => LowerM.erasedRuntimePort
   LowerM.connect ⟨lam, ⟨2⟩⟩ bodyPort
 
   pure (PortId.principal lam)
@@ -1444,18 +1547,18 @@ private partial def skipImplicitTypeParams (ctx : LowerCtx) (ty : Value) : Value
 def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
   LowerM.modifyCtx fun ctx => { ctx with currentFn := some fn.name }
 
-  let ctx0 ← LowerM.getCtx
   let paramList := fn.params.toList
   let mut lamNodes : Array NodeId := #[]
   let mut currentTy := fn.fnType
   let bodyUses := countUsesExpr fn.body
 
   for param in paramList do
-    currentTy := unfoldValue currentTy ctx0.abbrevEnv
+    let ctx ← LowerM.getCtx
+    currentTy := skipImplicitTypeParams ctx (unfoldValue currentTy ctx.abbrevEnv)
     let (bindingId, name) := param
     let paramTy := match currentTy.piDomain? with
       | some d => d
-      | none => panic! s!"lowerFunction: expected Pi type for param '{name}', got {currentTy}"
+      | none => panic! s!"lowerFunction: expected Pi type for param '{name}' (fn={fn.name.id.module}::{fn.name.id.original}#{fn.name.id.id}, params={fn.params.size}, valueParams={fn.valueParams.size}, paramNames={fn.params.map (·.2)}), got {currentTy}"
     let paramNeutral := Value.vNeutral paramTy (.nVar ⟨name, ⟨bindingId.id⟩⟩)
     let nextTy := match currentTy.piApply paramNeutral with
       | some c => c
@@ -1468,16 +1571,49 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
     let varPort : PortId := ⟨lam, ⟨1⟩⟩
     LowerM.modifyCtx fun ctx =>
       ctx.bindVarOwned bindingId name varPort usageCount paramTy erased
+    if erased then
+      LowerM.eraseParamPort varPort
 
     currentTy := nextTy
 
-  -- Wire LAMs together
-  for i in [:lamNodes.size - 1] do
-    let outer := lamNodes[i]!
-    let inner := lamNodes[i + 1]!
-    LowerM.connect ⟨outer, ⟨2⟩⟩ (PortId.principal inner)
+  let ctxAfterParams ← LowerM.getCtx
+  currentTy := skipImplicitTypeParams ctxAfterParams
+    (unfoldValue currentTy ctxAfterParams.abbrevEnv)
+  let bodyTy := currentTy
+  let mut etaApps : Array (PortId × Value) := #[]
 
-  let bodyPort? ← lowerCoreExpr fn.body currentTy
+  let mut etaTy := currentTy
+  repeat
+    let ctx ← LowerM.getCtx
+    let unfolded := unfoldValue etaTy ctx.abbrevEnv
+    match unfolded with
+    | .vPi qty binder name dom cod =>
+      let neutral := Value.vNeutral dom (.nVar ⟨name, cod.level?.getD ⟨0⟩⟩)
+      let nextTy := cod.applyPure neutral
+      if isRuntimeErasedBinder ctx qty binder dom then
+        etaTy := nextTy
+      else
+        let lam ← LowerM.addNode (.lam false) etaTy
+        lamNodes := lamNodes.push lam
+        etaApps := etaApps.push (⟨lam, ⟨1⟩⟩, nextTy)
+        etaTy := nextTy
+    | _ => break
+
+  if lamNodes.size > 1 then
+    for i in [:lamNodes.size - 1] do
+      let outer := lamNodes[i]!
+      let inner := lamNodes[i + 1]!
+      LowerM.connect ⟨outer, ⟨2⟩⟩ (PortId.principal inner)
+
+  let bodyPort? ← lowerCoreExpr fn.body bodyTy
+  let bodyPort? ← etaApps.foldlM (init := bodyPort?) fun acc (argPort, resultTy) => do
+    match acc with
+    | none => pure none
+    | some fnPort =>
+      let app ← LowerM.addNode .app resultTy
+      LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
+      LowerM.connect ⟨app, ⟨2⟩⟩ argPort
+      pure (some (PortId.principal app))
 
   if lamNodes.isEmpty then
     match bodyPort? with
@@ -1487,9 +1623,9 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
       pure era
   else
     let innermost := lamNodes[lamNodes.size - 1]!
-    let bodyPort := match bodyPort? with
-      | some port => port
-      | none => ⟨innermost, ⟨1⟩⟩
+    let bodyPort ← match bodyPort? with
+      | some port => pure port
+      | none => LowerM.erasedRuntimePort
     LowerM.connect ⟨innermost, ⟨2⟩⟩ bodyPort
     pure lamNodes[0]!
 
@@ -1498,7 +1634,7 @@ def registerTypes (types : Array Soma.Core.TypeDef)
     (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
   for typeDef in types do
     match typeDef with
-    | .algebraic _attrs typeName _tvars ctors _ _ =>
+    | .algebraic _attrs typeName _tvars _paramCount ctors _ _ =>
       let mut usedMetadata := false
       if let some g := globals then
         if let some typeQN := g.resolve #[] #[] typeName.display then
@@ -1676,10 +1812,13 @@ def lowerModule (types : Array Soma.Core.TypeDef)
 
   -- Fourth pass: lower each function body and add to book
   for (_, fn) in functions do
+    let ctx ← LowerM.getCtx
     let root ← lowerFunction fn
     let arity ← countLamChainArity root
     let red := if fn.attrs.irreducible then Reducibility.irreducible else .reducible
-    let _ ← LowerM.addDefinition fn.name root arity fn.fnType (reducibility := red)
+    let effectful := ctx.mentionsWorldTy fn.fnType
+    let _ ← LowerM.addDefinition fn.name root arity fn.fnType
+      (reducibility := red) (effectful := effectful)
 
   -- Fifth pass: add definitions for intrinsic/extern functions from current module
   for (_, fn) in intrinsics do
@@ -1688,11 +1827,12 @@ def lowerModule (types : Array Soma.Core.TypeDef)
     | some (.primOp op) =>
       let (root, arity) ← generatePrimOpBody op fn.fnType
       let _ ← LowerM.addDefinition fn.name root arity fn.fnType
+        (effectful := ctx.mentionsWorldTy fn.fnType)
     | _ =>
       let era ← LowerM.addNode .era unitTy
-      let arity := fn.fnType.explicitArityFull (some (unfoldValue · abbrevEnv))
+      let arity := runtimeArityFull ctx fn.fnType
       let _ ← LowerM.addDefinition fn.name era arity fn.fnType
-        (reducibility := .external)
+        (reducibility := .external) (effectful := ctx.mentionsWorldTy fn.fnType)
 
   -- Sixth pass: add placeholder definitions for external functions from dependencies
   if let some g := globals then
@@ -1704,10 +1844,11 @@ def lowerModule (types : Array Soma.Core.TypeDef)
       !isLocalOrIntrinsic && !info.isConstructor
         && info.origin != .typeDecl && info.origin != .projection
     for (_, info) in externals do
+      let ctx ← LowerM.getCtx
       let era ← LowerM.addNode .era unitTy
-      let arity := info.type.explicitArityFull (some (unfoldValue · abbrevEnv))
+      let arity := runtimeArityFull ctx info.type
       let _ ← LowerM.addDefinition info.name era arity info.type
-        (reducibility := .external)
+        (reducibility := .external) (effectful := ctx.mentionsWorldTy info.type)
 
   -- Set root to main function if it exists
   -- Wire an ERA demand node to the root ALO so demand-driven evaluation can proceed
@@ -1734,7 +1875,9 @@ def lower (types : Array Soma.Core.TypeDef)
     (instanceEnv : Soma.Dependent.InstanceEnv := .empty)
     (metas : Soma.Core.MetaState := .empty)
     (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Graph :=
-  LowerM.build (lowerModule types typedFunctions globals instanceEnv metas abbrevEnv) usageMap
+  LowerM.build
+    (lowerModule types typedFunctions globals instanceEnv metas abbrevEnv)
+    usageMap
 
 /-- Resolve all metavariables in a Circuit graph's node types and definition types -/
 def resolveGraphMetas (g : Graph) (metas : Soma.Core.MetaState) : Graph := Id.run do

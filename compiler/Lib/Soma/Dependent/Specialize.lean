@@ -76,9 +76,9 @@ private def inlineFieldAccess (dictExpr : Expr) (methodName : String) (fieldIdx 
 
 
 /-- Find the index of the dictionary argument in a class method application spine -/
-private def findDictArgIdx (args : Array Expr) : Option Nat :=
+private def findDictArgIdx (args : Array Expr) (methodName : String) : Option Nat :=
   args.findIdx? fun
-    | .record _ => true
+    | .record fields => fields.any (fun (n, _) => n == methodName)
     | _ => false
 
 
@@ -91,7 +91,7 @@ private partial def specializeExpr (registry : ClassMethodRegistry) (e : Expr) :
   | .const qn _ =>
     match registry.get? qn with
     | some info =>
-      match findDictArgIdx args with
+      match findDictArgIdx args info.methodName with
       | some idx =>
         -- Specialize the dict and remaining args, but not the spine itself
         let dictExpr := specializeExpr registry args[idx]!
@@ -99,11 +99,9 @@ private partial def specializeExpr (registry : ClassMethodRegistry) (e : Expr) :
         let specialized := match implOpt with
           | some impl => specializeExpr registry impl
           | none => Expr.fieldAccess dictExpr info.methodName info.fieldIdx
-          -- Keep only non-type-level args after the dict, recursively specialized
-          let remainingArgs := (args.extract (idx + 1) args.size)
-            |>.filter (!·.isTypeLevelExpr)
-            |>.map (specializeExpr registry)
-          Expr.rebuildAppSpine specialized remainingArgs
+        let remainingArgs := (args.extract (idx + 1) args.size)
+          |>.map (specializeExpr registry)
+        Expr.rebuildAppSpine specialized remainingArgs
       | none =>
         Expr.rebuildAppSpine head (args.map (specializeExpr registry))
     | none =>
@@ -153,8 +151,8 @@ private partial def specializeChildren (registry : ClassMethodRegistry) (e : Exp
     .array (elems.map (specializeExpr registry)) (specializeExpr registry resultTy)
   | .inject label args resultTy =>
     .inject label (args.map (specializeExpr registry)) (specializeExpr registry resultTy)
-  | .closure name captures =>
-    .closure name (captures.map (specializeExpr registry))
+  | .closure name captures ty =>
+    .closure name (captures.map (specializeExpr registry)) (specializeExpr registry ty)
   | .ann expr ty => .ann (specializeExpr registry expr) (specializeExpr registry ty)
   | .bvar _ | .fvar _ _ | .mvar _ | .const _ _ | .lit _ | .sort _
   | .primTy _ | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
@@ -164,7 +162,35 @@ private partial def specializeChildren (registry : ClassMethodRegistry) (e : Exp
 
 end
 
-/-- Specialize all class method calls in a TypedFunction body -/
+/-- Collect all `.const` references and their qualified names from an Expr -/
+private partial def collectConstRefs (e : Expr) : Array String :=
+  go e #[]
+where
+  go (e : Expr) (acc : Array String) : Array String :=
+    match e with
+    | .const qn _ => acc.push qn.id.original
+    | .app f a => go a (go f acc)
+    | .lam _ _ d b => go b (go d acc)
+    | .let_ _ t v b => go b (go v (go t acc))
+    | .pi _ _ _ d c => go c (go d acc)
+    | .sigma _ _ _ f s => go s (go f acc)
+    | .pair f s => go s (go f acc)
+    | .projFst x | .projSnd x | .ann x _ => go x acc
+    | .construct _ _ args _ => args.foldl (fun a e => go e a) acc
+    | .case scruts m arms =>
+      let acc := scruts.foldl (fun a e => go e a) acc
+      let acc := go m acc
+      arms.foldl (fun a arm => go arm.body a) acc
+    | .if_ c t el => go el (go t (go c acc))
+    | .record fs => fs.foldl (fun a (_, e) => go e a) acc
+    | .recordUpdate b us => us.foldl (fun a (_, e) => go e a) (go b acc)
+    | .fieldAccess x _ _ => go x acc
+    | .inject _ args _ => args.foldl (fun a e => go e a) acc
+    | .closure _ caps ty => go ty (caps.foldl (fun a e => go e a) acc)
+    | .array es _ | .tuple es => es.foldl (fun a e => go e a) acc
+    | .rowExtend l f t => go t (go f (go l acc))
+    | _ => acc
+
 def specializeFunction (registry : ClassMethodRegistry) (fn : Soma.Core.TypedFunction)
     : Soma.Core.TypedFunction :=
   if registry.isEmpty then fn

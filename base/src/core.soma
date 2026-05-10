@@ -1,16 +1,24 @@
 use base::prim::{Int32}
+use base::prop::{Eq, cong}
 use base::string::{String}
+use base::list::{list_append, list_append_assoc}
 
-@[extern "soma_strcat"]
-def strcat : String -> String -> String
 @[extern "soma_int_to_string"]
 def int_to_string : Int32 -> String
 
-inductive Option {a : Type} where
+@[inline]
+def strcat (s1 : String) (s2 : String) : String :=
+    String::New (list_append s1.bytes s2.bytes)
+
+theorem strcat_assoc (x : String) (y : String) (z : String) : Eq (strcat x (strcat y z)) (strcat (strcat x y) z) :=
+    let append := list_append_assoc x.bytes y.bytes z.bytes
+    cong (String::New) (append)
+
+inductive Option (a : Type) where
     | Some (value : a)
     | None
 
-inductive Either {err : Type} {ok : Type} where
+inductive Either (err : Type) (ok : Type) where
     | Err (error : err)
     | Ok (value : ok)
 
@@ -58,6 +66,10 @@ instance : Magma String where
     @[inline]
     def {<>} (s1 : String) (s2 : String) : String :=
         strcat s1 s2
+
+instance : Semigroup String where
+    def associative : (x : String) -> (y : String) -> (z : String) -> (x <> (y <> z) = (x <> y) <> z)
+        | x, y, z => cong String::New (list_append_assoc x.bytes y.bytes z.bytes)
 
 instance {a : Type} {{d : Display a}} : Display (Option a) where
     def display : Option a -> String

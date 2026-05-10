@@ -1,0 +1,10 @@
+use base::prim::{List}
+use base::prop::{Eq, cong}
+
+def list_append {a : Type} : List a -> List a -> List a
+    | List::Nil, ys => ys
+    | List::Cons x xs,  ys => List::Cons x (list_append xs ys)
+
+theorem list_append_assoc {a : Type} : (xs : List a) -> (ys : List a) -> (zs : List a) -> Eq (list_append xs (list_append ys zs)) (list_append (list_append xs ys) zs)
+    | List::Nil, _, _ => Eq::Refl
+    | List::Cons x xs, ys, zs => cong (\rest -> List::Cons x rest) (list_append_assoc xs ys zs)

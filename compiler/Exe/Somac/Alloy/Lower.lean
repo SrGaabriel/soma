@@ -91,6 +91,14 @@ def isListValue (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Bool :=
   | .vDataType uid _ => primTypes.get? uid == some .list
   | _ => false
 
+/-- Check if a Core Value type is a String type via the primitive type registry -/
+def isStringValue (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Bool :=
+  match v with
+  | .vDataType uid _ => primTypes.get? uid == some .string
+  | .vPrimTy .string => true
+  | .vStringLit _ => true
+  | _ => false
+
 /-- Extract the element type parameter from a List Core Value type -/
 def listElemValueType (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Option Soma.Core.Value :=
   match v with
@@ -112,7 +120,7 @@ structure TypeConvCtx (n : Nat) where
 /-- Build the primitive type registry from the wired-in type registry -/
 def buildPrimTypeRegistry (wiredIn : Soma.Dependent.WiredIn) : PrimTypeRegistry :=
   wiredIn.roles.fold (init := {}) fun acc role infos =>
-    match Soma.Dependent.WiredRole.primType? role with
+    match Soma.Dependent.WiredRole.primTyOfRole? role with
     | some prim => infos.foldl (init := acc) fun acc info =>
         acc.insert info.name.id prim
     | none => acc
@@ -501,7 +509,7 @@ where
     | _ => none
 
 /-- Convert a PrimType to an Alloy Ty -/
-partial def convertPrimToAlloyTy (prim : PrimType) (params : List Value) (ctx : TypeConvCtx n) : Ty n :=
+partial def convertPrimToAlloyTy (prim : PrimType) (_params : List Value) (ctx : TypeConvCtx n) : Ty n :=
   match prim with
   | .int => .prim .i32
   | .int64 => .prim .i64
@@ -1077,6 +1085,10 @@ def buildSignatureFromType (name : QualifiedName) (ty : Value) (arity : Nat)
   let retTy := extractReturnTypeWithMapping ty ctx
   { name := name.symbolName, typeParamNames, params, retTy }
 
+/-- Runtime arity under the same type conversion rules used to build signatures -/
+def runtimeArityOfDefinition (def_ : CDefinition) (ctx : TypeConvCtx n) : Nat :=
+  (extractParamsUsingMapping def_.ty ctx).2.size
+
 /-- Get node type with type conversion context -/
 def getNodeTypeWithMapping (entry : CNodeEntry) (ctx : TypeConvCtx n) : Ty n :=
   convertValueTypeWithMapping entry.ty ctx
@@ -1622,7 +1634,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             match fnResolved with
             | some bookIdx =>
               let def_? := graph.getDefinition bookIdx
-              let defArity := match def_? with | some d => d.arity | none => 0
+              let defArity := match def_? with | some d => runtimeArityOfDefinition d ctx | none => 0
               -- Lower the closure's env from CTOR port 2 (if non-ERA), then chain args
               let mut argVals : Array LocalId := #[]
               if !envIsTrivial then
@@ -1768,7 +1780,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         | .ref refId | .alo refId =>
           match graph.getDefinition refId with
           | some def_ =>
-            let isSaturated := def_.arity == chain.argPorts.size
+            let defArity := runtimeArityOfDefinition def_ ctx
+            let isSaturated := defArity == chain.argPorts.size
             if isSaturated then
               -- Saturated call, let's lower all arguments
               let mut argVals : Array LocalId := #[]
@@ -1844,15 +1857,15 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 for intermediateId in chain.intermediateAppNodes do
                   modify fun s => { s with results := s.results.insert intermediateId.id result }
                 pure (some result)
-            else if chain.argPorts.size > def_.arity && def_.arity > 0 then
+            else if chain.argPorts.size > defArity && defArity > 0 then
               -- Over-saturated: call with defArity args, then apply extra args.
               let mut argVals : Array LocalId := #[]
               for argPort in chain.argPorts do
                 let val ← lowerOperandWithMap graph argPort funcIdMap
                 argVals := argVals.push val
               let argOps := argVals.map fun v => Operand.local v
-              let directArgs := argOps.extract 0 def_.arity
-              let extraArgs := argOps.extract def_.arity argOps.size
+              let directArgs := argOps.extract 0 defArity
+              let extraArgs := argOps.extract defArity argOps.size
               let callRetTy := extractReturnTypeWithMapping chain.baseEntry.ty ctx
               let ls ← StateT.lift get
               let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
@@ -2003,7 +2016,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   let funcRef := buildFuncRefFromBookRef graph bookIdx (some funcIdMap) ls.ctxIntrinsics
                   -- Single-arg call to the extracted lambda
                   let def_? := graph.getDefinition bookIdx
-                  let defArity := match def_? with | some d => d.arity | none => 1
+                  let defArity := match def_? with | some d => runtimeArityOfDefinition d ctx | none => 1
                   if defArity == 1 then
                     let callRetTy := match def_? with
                       | some d => extractReturnTypeWithMapping d.ty ctx
@@ -2023,7 +2036,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | .ref refId | .alo refId =>
               let def_? := graph.getDefinition refId
               let defArity := match def_? with
-                | some def_ => def_.arity
+                | some def_ => runtimeArityOfDefinition def_ ctx
                 | none => 1
               let ls ← StateT.lift get
               let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
@@ -2088,7 +2101,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 match fnResolved with
                 | some bookIdx =>
                   let def_? := graph.getDefinition bookIdx
-                  let defArity := match def_? with | some d => d.arity | none => 1
+                  let defArity := match def_? with | some d => runtimeArityOfDefinition d ctx | none => 1
                   let ls ← StateT.lift get
                   let funcRef := buildFuncRefFromBookRef graph bookIdx (some funcIdMap) ls.ctxIntrinsics
                   let callRetTy := match def_? with
@@ -2213,7 +2226,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) .rawPtr)
           -- ERA env + arity 0 signals an IO thunk that must be demanded here
           let wrappedArity := match graph.getDefinition refId with
-            | some def_ => def_.arity
+            | some def_ => runtimeArityOfDefinition def_ ctx
             | none => 1
           if isEraEnv && wrappedArity == 0 then
             StateT.lift (LowerM.emitInst (.callClosure (.local closureVal) #[.local envVal] nodeTy) nodeTy)
@@ -2238,7 +2251,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           -- If the env port connects to a real value (not ERA), partially apply it.
           -- ERA env + arity 0 marks an IO thunk that must be demanded now
           let wrappedArity := match graph.getDefinition bookIdx with
-            | some def_ => def_.arity
+            | some def_ => runtimeArityOfDefinition def_ ctx
             | none => 1
           if !isEraEnv || (isEraEnv && wrappedArity == 0) then
             StateT.lift (LowerM.emitInst (.callClosure (.local closureVal) #[.local envVal] nodeTy) nodeTy)
@@ -2254,7 +2267,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             let funcRef := buildFuncRefFromBookRef graph bookIdx (some funcIdMap) ls.ctxIntrinsics
             let closureVal ← StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) .rawPtr)
             let wrappedArity' := match graph.getDefinition bookIdx with
-              | some def_ => def_.arity
+              | some def_ => runtimeArityOfDefinition def_ ctx
               | none => 1
             if isEraEnv && wrappedArity' == 0 then
               StateT.lift (LowerM.emitInst (.callClosure (.local closureVal) #[.local envVal] nodeTy) nodeTy)
@@ -2273,8 +2286,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       else
         let headVal ← lowerPort 1
         let tailVal ← lowerPort 2
-        let headTy := getPortType 1 (.prim .i64)
-        let elemSz := listElemSize headTy (← get).ptrBytes
+        let elemSz := listElemSizeFromValueType entry.ty ctx (← get).ptrBytes
+        let headTy := match listElemValueType entry.ty ctx.primTypes with
+          | some elemVal => convertValueTypeWithMapping elemVal ctx
+          | none => getPortType 1 (.prim .i64)
         let headAlloca ← StateT.lift (LowerM.emitInst (.alloca headTy) (.ptr headTy))
         StateT.lift (LowerM.emitVoid (.store (.local headAlloca) (.local headVal)))
         let elemSizeConst ← StateT.lift (LowerM.emitInst
@@ -2376,17 +2391,39 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           else fieldIdx
         | none => fieldIdx
       | _ => fieldIdx
-    if Ty.isZeroWidth nodeTy then
+    let sourceVariantIdx : Nat := match entry.getPort ⟨1⟩ with
+      | some targetPort => match graph.getNode targetPort.node with
+        | some targetEntry => match targetEntry.node with
+          | .mat tag => tag
+          | _ => 0
+        | none => 0
+      | none => 0
+    let projectedTy := match recordTy with
+      | .tagged _ variants =>
+        match variants.find? (fun (idx, _) => idx == sourceVariantIdx) with
+        | some (_, fields) =>
+          match fields[runtimeFieldIdx]? with
+          | some fieldTy => fieldTy
+          | none => nodeTy
+        | none => nodeTy
+      | _ => nodeTy
+    if Ty.isZeroWidth projectedTy then
       StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .u8))) (.prim .unit))
-    else if recordTy == nodeTy then
+    else if recordTy == projectedTy then
       pure recordVal
     else
       match recordTy with
       | .struct fields =>
-        let fieldTy := if h : runtimeFieldIdx < fields.size then fields[runtimeFieldIdx].snd else nodeTy
+        let fieldTy := if h : runtimeFieldIdx < fields.size then fields[runtimeFieldIdx].snd else projectedTy
         StateT.lift (LowerM.emitInst (.extractField (.local recordVal) runtimeFieldIdx) fieldTy)
+      | .closure _ _ =>
+        if runtimeFieldIdx == 0 then
+          pure recordVal
+        else
+          StateT.lift (LowerM.emitPanic projectedTy)
       | _ =>
-        StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 runtimeFieldIdx nodeTy) nodeTy)
+        StateT.lift (LowerM.emitInst
+          (.getPayload (.local recordVal) sourceVariantIdx runtimeFieldIdx projectedTy) projectedTy)
 
   | .record numFields => do
     let mut fieldVals : Array LocalId := #[]
@@ -2431,7 +2468,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       | .struct _ => true
       | .tagged _ variants => variants.size == 1
       | .prim _ => scrutSourceIsSingleCtor
-      | _ => scrutSourceIsSingleCtor || true
+      | _ => scrutSourceIsSingleCtor
 
     let (_, _thenBlock, elseBlock) ← if scrutIsArray then
       -- Array-backed list: check list.len field (index 1) for Nil/Cons
@@ -2547,7 +2584,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                      |>.insert (nodeId.id * 1000 + 2) copy1
         }
         pure inputVal
-      else if nodeTy == (← get).stringTy.embed then
+      else if isStringValue entry.ty (← get).primTypes then
         let (copy0, copy1) ← emitStringDup inputVal
         modify fun ns => { ns with
           results := ns.results.insert (nodeId.id * 1000 + 1) copy0
@@ -2585,14 +2622,23 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | none => false
         let isListSource := isListValue entry.ty ns.primTypes ||
           traceDupSource (entry.getPort ⟨0⟩) 10
+        let inputAlTy := (← StateT.lift get).func.getLocalType inputVal
+        let inputIsFlat : Bool := match inputAlTy with
+          | some t => t != .rawPtr && (t.dupTier == .flat)
+          | none => false
         let (copy0, copy1) ←
           if isListSource then
             let srcTy := (← StateT.lift get).func.getLocalType inputVal |>.getD .rawPtr
             let dupElemSz := listElemSizeFromValueType entry.ty ctx (← get).ptrBytes
             emitListDup inputVal srcTy label.id graph nodeId dupElemSz
-            else
-              let clone ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) .rawPtr label.id) .rawPtr)
-              pure (inputVal, clone)
+          else if inputIsFlat then
+            let copyTy := inputAlTy.getD .rawPtr
+            let copy0 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) copyTy)
+            let copy1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) copyTy)
+            pure (copy0, copy1)
+          else
+            let clone ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) .rawPtr label.id) .rawPtr)
+            pure (inputVal, clone)
         modify fun ns => { ns with
           results := ns.results.insert (nodeId.id * 1000 + 1) copy0
                      |>.insert (nodeId.id * 1000 + 2) copy1

@@ -9,6 +9,7 @@ import Soma.Dependent.Zonk
 import Soma.Dependent.Usage
 import Soma.Dependent.Level
 import Soma.Dependent.Instance
+import Soma.Dependent.Telescope
 import Soma.Dependent.Elaborate
 import Soma.Dependent.Driver
 import Soma.Dependent.Equality

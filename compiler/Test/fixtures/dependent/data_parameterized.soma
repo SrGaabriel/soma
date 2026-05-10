@@ -1,7 +1,7 @@
 // expect: success
 // Test: parameterized algebraic data type
 
-inductive Maybe {a : Type} where
+inductive Maybe (a : Type) where
     | Nothing
     | Just (value : a)
 

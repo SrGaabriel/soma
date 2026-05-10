@@ -52,7 +52,8 @@ end RecordFieldDef
 /-- A type definition -/
 inductive TypeDef where
   | algebraic (attrs : Array Syntax.Attribute) (name : QualifiedName)
-      (typeVarBinders : Array Syntax.TypeVarBinder) (ctors : Array Constructor)
+      (typeVarBinders : Array Syntax.TypeVarBinder) (paramCount : Nat)
+      (ctors : Array Constructor)
       (headSort : Level) (span : Soma.Syntax.Span)
   | record (attrs : Array Syntax.Attribute) (name : QualifiedName)
       (typeVarBinders : Array Syntax.TypeVarBinder) (ctorName : QualifiedName)
@@ -61,29 +62,34 @@ inductive TypeDef where
 namespace TypeDef
 
 def name : TypeDef → QualifiedName
-  | .algebraic _ n _ _ _ _ => n
+  | .algebraic _ n _ _ _ _ _ => n
   | .record _ n _ _ _ _ => n
 
 def qualifiedName (td : TypeDef) : QualifiedName :=
   td.name
 
 def typeVarBinders : TypeDef → Array Syntax.TypeVarBinder
-  | .algebraic _ _ vs _ _ _ => vs
+  | .algebraic _ _ vs _ _ _ _ => vs
   | .record _ _ vs _ _ _ => vs
 
 def typeVarNames (td : TypeDef) : Array String :=
   td.typeVarBinders.map (·.name.name)
 
 def typeVarCount : TypeDef → Nat
-  | .algebraic _ _ vs _ _ _ => vs.size
+  | .algebraic _ _ vs _ _ _ _ => vs.size
+  | .record _ _ vs _ _ _ => vs.size
+
+/-- Number of parameter binders -/
+def paramCount : TypeDef → Nat
+  | .algebraic _ _ _ p _ _ _ => p
   | .record _ _ vs _ _ _ => vs.size
 
 def attrs : TypeDef → Array Syntax.Attribute
-  | .algebraic attrs _ _ _ _ _ => attrs
+  | .algebraic attrs _ _ _ _ _ _ => attrs
   | .record attrs _ _ _ _ _ => attrs
 
 def constructors : TypeDef → Array Constructor
-  | .algebraic _ _ _ cs _ _ => cs
+  | .algebraic _ _ _ _ cs _ _ => cs
   | .record _ _ _ cn fields _ =>
       #[{ name := cn, tag := 0,
           fieldTypeSyntax := fields.map (·.type),
@@ -93,14 +99,14 @@ def constructors : TypeDef → Array Constructor
 
 /-- The universe the type itself lives in -/
 def headSort : TypeDef → Level
-  | .algebraic _ _ _ _ s _ => s
+  | .algebraic _ _ _ _ _ s _ => s
   | .record _ _ _ _ _ _ => .lit 0
 
 /-- Is this an `inductive … : Prop` declaration? -/
 def isProp (td : TypeDef) : Bool := td.headSort.isProp
 
 def span : TypeDef → Soma.Syntax.Span
-  | .algebraic _ _ _ _ _ s => s
+  | .algebraic _ _ _ _ _ _ s => s
   | .record _ _ _ _ _ s => s
 
 end TypeDef

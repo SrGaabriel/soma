@@ -50,6 +50,23 @@ open Soma.Core
 open Soma.Syntax (Span)
 open Soma.Dependent.Unify (SolveResult ConstraintGraph)
 
+/-- Structured result for a solver boundary -/
+structure SolveReport where
+  mode : String
+  remaining : Array TrackedConstraint
+  deriving Inhabited
+
+namespace SolveReport
+
+def unsolvedCount (r : SolveReport) : Nat :=
+  r.remaining.size
+
+/-- Explicitly accept constraints that are still blocked at a soft boundary -/
+def allowPostponed (_r : SolveReport) : TCM Unit :=
+  pure ()
+
+end SolveReport
+
 /-- Collect every UNSOLVED metavariable referenced inside a value -/
 private def unsolvedMetasIn (v : Value) : TCM (Array MetaId) := do
   let mut out : Array MetaId := #[]
@@ -137,15 +154,44 @@ private def trySolveSoftConstraint (c : Constraint) : TCM SolveResult := do
   | .deferredInstance metaId _ _, .failed _ => return .blocked #[metaId] #[]
   | _, _ => return result
 
+/-- Report constraints that survive a hard solver drain -/
+private def reportStuckDrainConstraint (tc : TrackedConstraint) : TCM Unit := do
+  match tc.constraint with
+  | .resolveInstance _ classId args span =>
+    let forcedArgs ← args.mapM deepForceValue
+    let deps ← forcedArgs.foldlM (init := #[]) fun acc arg => do
+      pure (acc ++ (← unsolvedMetasIn arg))
+    if deps.isEmpty then
+      TCM.addError (.noInstance classId forcedArgs span #[] #[])
+    else
+      let renderedArgs :=
+        String.intercalate ", " (forcedArgs.toList.map Soma.Core.valueToString)
+      TCM.addError (.cannotInfer
+        s!"could not resolve instance `{classId.original} {renderedArgs}` because its type arguments remain unsolved"
+        span (some tc.origin))
+  | .deferredInstance _ domTy span =>
+    let forcedDom ← deepForceValue domTy
+    TCM.addError (.cannotInfer
+      s!"could not resolve deferred instance `{Soma.Core.valueToString forcedDom}`"
+      span (some tc.origin))
+  | other =>
+    TCM.addError (.cannotInfer
+      s!"unsolved constraint after final solver drain: {other.describe}"
+      other.span (some tc.origin))
+
 /-- Incremental driver -/
 def solveConstraints : TCM Nat := do
   let unsolved ← Unify.solveConstraintGraph trySolveIncrementalConstraint
   return unsolved.size
 
 /-- Silent-drain driver -/
-def solveConstraintsSilently : TCM Nat := do
+def solveConstraintsSoft : TCM SolveReport := do
   let unsolved ← Unify.solveConstraintGraph trySolveSoftConstraint
-  return unsolved.size
+  return { mode := "soft", remaining := unsolved }
+
+/-- Silent-drain driver -/
+def solveConstraintsSilently : TCM Nat := do
+  return (← solveConstraintsSoft).unsolvedCount
 
 /-- Final-pass driver -/
 partial def drainConstraints : TCM Unit := do
@@ -164,6 +210,9 @@ partial def drainConstraints : TCM Unit := do
     solvedLevelsAfter > solvedLevelsBefore ||
     postponedAfter < postponedBefore
   if progress then drainConstraints
+  else
+    for tc in unsolved do
+      reportStuckDrainConstraint tc
 where
   countSolvedMetas (s : TCState) : TCM Nat := do
     let mut n : Nat := 0

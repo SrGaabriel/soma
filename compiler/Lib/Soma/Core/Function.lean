@@ -66,6 +66,7 @@ abbrev UntypedClosureInfo := ClosureInfo
 structure TypedFunction where
   name : QualifiedName
   params : Array (Soma.Unique × String)
+  valueParams : Array (Soma.Unique × String × BinderInfo) := #[]
   body : Expr
   fnType : Value
   closureInfo : Option ClosureInfo

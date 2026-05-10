@@ -11,8 +11,10 @@ import Soma.Dependent.Convert
 import Soma.Dependent.Coverage
 import Soma.Dependent.Unify
 import Soma.Dependent.Solver
+import Soma.Dependent.Telescope
 import Soma.Dependent.Error
 import Soma.Dependent.Usage
+import Soma.Dependent.Zonk
 import Soma.Syntax.Ast
 
 namespace Soma.Dependent
@@ -57,13 +59,25 @@ def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none
   match v' with
   | .vPi qty binder name dom cod => return (qty, binder, name, dom, cod)
   | .vNeutral _ (.nMeta mid) =>
-    -- Fake it for error recovery
     let domMeta ← TCM.freshMetaVal (.vType .zero)
     let codMeta ← TCM.freshMetaVal (.vType .zero)
     let codClosure := Closure.const "?cod" codMeta
     let piTy := Value.vPi .omega .explicit "?dom" domMeta codClosure
     TCM.solveMeta mid piTy "ensurePi-meta"
     return (.omega, .explicit, "?dom", domMeta, codClosure)
+  | .vNeutral _ neu =>
+    match neu.head with
+    | .hMeta _ =>
+      let domMeta ← TCM.freshMetaVal (.vType .zero)
+      let codMeta ← TCM.freshMetaVal (.vType .zero)
+      let codClosure := Closure.const "?cod" codMeta
+      let piTy := Value.vPi .omega .explicit "?dom" domMeta codClosure
+      try
+        Soma.Dependent.unify v' piTy
+        return (.omega, .explicit, "?dom", domMeta, codClosure)
+      catch _ =>
+        TCM.throw (.expectedFunction v' span origin)
+    | _ => TCM.throw (.expectedFunction v' span origin)
   | _ =>
     TCM.throw (.expectedFunction v' span origin)
 
@@ -99,8 +113,15 @@ def extractClassInfo (ty : Value) : Option (Unique × Array Value) := do
     return (unique, args.toArray)
   | _ => none
 
-/-- Insert implicit arguments for a function type, tracking created metavariables.
-    Returns (resultType, wrappedCoreExpr, createdMetas). -/
+private partial def isSortDomain : Value → Bool
+  | .vType _ | .vRowSort | .vLabelSort => true
+  | .vPi _ _ name dom cod =>
+    isSortDomain dom &&
+      let neutral := Value.vNeutral dom (.nVar ⟨name, cod.level?.getD ⟨0⟩⟩)
+      isSortDomain (cod.applyPure neutral)
+  | _ => false
+
+/-- Insert implicit arguments for a function type, tracking created metavariables -/
 partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span : Span)
     : TCM (Value × Soma.Core.Expr × Array (MetaId × Value × String)) := do
   let fnTy' ← force fnTy
@@ -108,8 +129,33 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
   | .vPi _qty binder name dom cod =>
     if binder.isImplicit then
       let piLvl := cod.level?.map (·.lvl)
-      let metaId ← TCM.freshMeta dom (piLevel := piLvl)
-      let argMeta := Value.vNeutral dom (.nMeta metaId)
+
+      let fresh ←
+        if binder == .instance_ then
+          Soma.Dependent.freshMetaWithPolicy dom {
+            kind := .instanceArg
+            abstractLocals := false
+            piLevel := piLvl
+          }
+        else
+          let dom' ← force dom
+          let nextIsInstance ← do
+            let lvl ← TCM.currentLevel
+            let neutral := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+            let nextTy ← applyClosure cod neutral
+            match ← force nextTy with
+            | .vPi _ .instance_ _ _ _ => pure true
+            | _ => pure false
+          Soma.Dependent.freshMetaWithPolicy dom {
+            kind := .autoImplicit
+            abstractLocals := true
+            includeInstanceLocals := false
+            includeTermLocals := !(isSortDomain dom' && nextIsInstance)
+            piLevel := piLvl
+          }
+      let metaId := fresh.id
+      let argMeta := fresh.value
+      let argExpr := fresh.expr
 
       -- Handle instance parameters specially
       if binder == .instance_ then
@@ -122,7 +168,6 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
 
       -- Apply the function to the metavariable
       let resultTy ← applyClosure cod argMeta
-      let argExpr := Soma.Core.Expr.mvar metaId
       let appExpr := Soma.Core.Expr.app fnExpr argExpr
 
       -- Recursively insert more implicits, accumulating metas
@@ -138,6 +183,11 @@ partial def insertImplicits (fnTy : Value) (fnExpr : Soma.Core.Expr) (span : Spa
     : TCM (Value × Soma.Core.Expr) := do
   let (ty, expr, _) ← insertImplicitsCore fnTy fnExpr span
   return (ty, expr)
+
+private def valueMentionsTrackedMeta
+    (v : Value) (metas : Array (MetaId × Value × String)) : Bool :=
+  let tracked := metas.map (fun (m, _, _) => m)
+  (Value.collectMetas v).any fun m => tracked.contains m
 
 /-- Project the result type after consuming n explicit arguments, reusing existing metas.
     This ensures that when we unify the projected result type with an expected type,
@@ -159,6 +209,8 @@ partial def projectResultTypeWithMetas (ty : Value) (numExplicitArgs : Nat)
       projectResultTypeWithMetas resultTy numExplicitArgs existingMetas
     else
       -- Consume one explicit argument with a placeholder
+      if valueMentionsTrackedMeta dom existingMetas then
+        return none
       let lvl ← TCM.currentLevel
       let argVal := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
       let resultTy ← applyClosure cod argVal
@@ -179,18 +231,22 @@ partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
     let finalTy ← force fnTy'
     return (finalTy, fnExpr')
   | some expectedTy =>
-    -- Project result type using the SAME metas we just created
-    match ← projectResultTypeWithMetas fnTy' numExplicitArgs implicitMetas with
-    | some resultTy =>
-      -- Unify projected result with expected type
-      let _ ← tryUnify resultTy expectedTy
+    if implicitMetas.isEmpty || numExplicitArgs > 0 then
       let _ ← solveConstraints
       let finalTy ← force fnTy'
       return (finalTy, fnExpr')
-    | none =>
-      let _ ← solveConstraints
-      let finalTy ← force fnTy'
-      return (finalTy, fnExpr')
+    else
+      match ← projectResultTypeWithMetas fnTy' numExplicitArgs implicitMetas with
+      | some resultTy =>
+        -- Unify projected result with expected type
+        let _ ← tryUnify resultTy expectedTy
+        let _ ← solveConstraints
+        let finalTy ← force fnTy'
+        return (finalTy, fnExpr')
+      | none =>
+        let _ ← solveConstraints
+        let finalTy ← force fnTy'
+        return (finalTy, fnExpr')
 
 /-- Check if we can solve a meta from the expected type -/
 def trySolveMetaFromExpected (metaId : MetaId) (expected : Value) : TCM Bool := do
@@ -244,6 +300,22 @@ partial def instantiateImplicits (ty : Value) (_span : Span) : TCM Value := do
       return ty'
   | _ =>
     return ty'
+
+/-- Like `instantiateImplicits` but also returns the list of meta values inserted -/
+partial def instantiateImplicitsTracked (ty : Value)
+    : TCM (Value × Array (Value × Value)) := do
+  let ty' ← force ty
+  match ty' with
+  | .vPi _qty binder _name dom cod =>
+    if binder.isImplicit then
+      let metaVal ← TCM.freshMetaVal dom
+      let resultTy ← applyClosure cod metaVal
+      let (finalTy, metas) ← instantiateImplicitsTracked resultTy
+      return (finalTy, #[(metaVal, dom)] ++ metas)
+    else
+      return (ty', #[])
+  | _ =>
+    return (ty', #[])
 
 /-- Extract constructor field types and their declared QTT quantities,
     constraining the constructor's result type against the scrutinee type.
@@ -983,9 +1055,13 @@ where
         | some info =>
           let qn := info.name
           if info.isConstructor then
-            let instantiatedTy ← instantiateImplicits info.type name.span
-            let tyExpr ← quoteTypeAnn instantiatedTy
-            return (instantiatedTy, .const qn tyExpr)
+            let (instantiatedTy, metas) ← instantiateImplicitsTracked info.type
+            let tyExpr ← quoteTypeAnn info.type
+            let mut expr : Soma.Core.Expr := .const qn tyExpr
+            for (metaVal, _) in metas do
+              let metaExpr ← quoteValueToExpr metaVal
+              expr := .app expr metaExpr
+            return (instantiatedTy, expr)
           else if info.origin == .typeDecl then
             match ← TCM.lookupWiredPrimitiveOfGlobal qn with
             | some primTy =>
@@ -1206,7 +1282,7 @@ where
       let piUniv : Soma.Core.Level :=
         if (← valueInPropUniverse toVal) then .prop else .zero
       return (.vType piUniv,
-        .pi qty .explicit "_" fromExpr toExpr)
+        .pi qty .explicit "_" fromExpr toExpr.shiftUp)
 
     -- Dependent function type `(x : A) -> B`, `{x : A} -> B`, `{{x : A}} -> B`
     | .pi qty binder name domain codomain _ => do
@@ -1269,7 +1345,7 @@ partial def inferForallChain
     return (.vType Level.zero, bodyExpr)
   | v :: rest => do
     let (domExpr, domVal, name, span, info, userQty) ← match v with
-      | .mk n kind? q =>
+      | .mk n kind? q _bi =>
           let kExpr ← match kind? with
             | some k => inferTypeExpr k
             | none   => pure (.sort Level.zero)
@@ -1441,8 +1517,8 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
     let argExpr ← if qty == .zero then TCM.inErasedContext checkArg else checkArg
     let argVal ← TCM.evalExpr argExpr
     let resultTy ← applyClosure cod argVal
-    let appExpr := Soma.Core.Expr.app fnExpr' argExpr
     let _ ← solveConstraints
+    let appExpr := Soma.Core.Expr.app fnExpr' argExpr
     return (resultTy, appExpr)
 
 /-- Elaborate `(λ name → body) value` as a let binding -/
@@ -1450,6 +1526,9 @@ partial def inferLetStyle (name : Soma.Syntax.QualName) (body : Soma.Syntax.Expr
     (value : Soma.Syntax.Expr) (lamSpan : Span)
     : TCM (Value × Soma.Core.Expr) := do
   let (valueTy, valueExpr) ← inferSyntax value
+  let report ← solveConstraintsSoft
+  report.allowPostponed
+  let valueTy ← zonkValue valueTy
   let bindingId ← TCM.freshLocalId name.name
   TCM.recordLocalBindingType name.span valueTy
   withCheckedBinding name.name bindingId valueTy .omega .explicit lamSpan do
@@ -1465,6 +1544,9 @@ partial def checkLetStyle (name : Soma.Syntax.QualName) (body : Soma.Syntax.Expr
     (value : Soma.Syntax.Expr) (expected : Value) (lamSpan : Span)
     : TCM Soma.Core.Expr := do
   let (valueTy, valueExpr) ← inferSyntax value
+  let report ← solveConstraintsSoft
+  report.allowPostponed
+  let valueTy ← zonkValue valueTy
   let bindingId ← TCM.freshLocalId name.name
   TCM.recordLocalBindingType name.span valueTy
   withCheckedBinding name.name bindingId valueTy .omega .explicit lamSpan do
@@ -1604,7 +1686,7 @@ partial def applyMotiveSpine (motive : Value) (args : Array Value) : TCM Value :
 
 /-- Synthesize a motive Value from an expected arm type in check mode -/
 partial def synthesizeMotive (scrutVals : Array Value) (scrutTys : List Value)
-    (expected : Value) (_span : Span) : TCM Value := do
+    (expected : Value) (_span : Span) : TCM (Soma.Core.Expr × Value) := do
   -- Quote at depth 0 so every outer bound variable becomes a sentinel fvar
   let expectedExpr := Soma.Core.quoteExpr ⟨0⟩ expected
   let tyArr := scrutTys.toArray
@@ -1638,8 +1720,8 @@ partial def synthesizeMotive (scrutVals : Array Value) (scrutTys : List Value)
         | _ => s!"s{i}"
       | _ => s!"s{i}"
     body := .lam .explicit name tyExpr abstracted
-  -- Evaluate the motive Expr to a Value
-  TCM.evalExpr body
+  let bodyVal ← TCM.evalExpr body
+  return (body, bodyVal)
 
 /-- Check each arm of a case expression against `motive @ patternValues` -/
 partial def checkSyntaxArms (arms : List Soma.Syntax.MatchArm)
@@ -1772,9 +1854,8 @@ where
       let (scrutTys, scrutsExpr) ←
         inferSyntaxListErased (scruts.toList.zip erasedFlags)
       let scrutVals ← scrutsExpr.mapM TCM.evalExpr
-      let motive ← synthesizeMotive scrutVals scrutTys expected' caseSpan
+      let (motiveExpr, motive) ← synthesizeMotive scrutVals scrutTys expected' caseSpan
       let armsExpr ← checkSyntaxArms arms.toList scrutTys scrutsExpr motive caseSpan
-      let motiveExpr ← quoteValueToExpr motive
       return .«case» scrutsExpr motiveExpr armsExpr
 
     -- Tuple against Sigma: desugar to nested pair checks
@@ -1796,6 +1877,9 @@ where
         let _ ← solveConstraints
         subtypeUnify resultTy expected'
         return appExpr
+
+    | .composeBlock stmts final_ _, _ =>
+      checkSyntax (desugarCompose stmts final_) expected'
 
     -- List literal against List type
     | .list elems span, .vDataType unique (elemTy :: _) => do

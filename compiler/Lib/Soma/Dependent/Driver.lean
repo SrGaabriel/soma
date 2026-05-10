@@ -7,6 +7,7 @@ import Soma.Dependent.Unify
 import Soma.Dependent.Level
 import Soma.Dependent.Instance
 import Soma.Dependent.Solver
+import Soma.Dependent.Telescope
 import Soma.Dependent.Error
 import Soma.Dependent.Totality
 import Soma.Dependent.Elaborate
@@ -31,13 +32,20 @@ def isBuiltinTypeName (n : String) : Bool :=
   n == "Type" || n == "Type0" || n == "Type1" || n == "Prop"
   || n == "Row" || n == "Label"
 
-/-- Collect every free identifier in `sigSyntax` -/
+/-- Names eligible for auto-implicit binding in a signature -/
+private def isAutoImplicitCandidate (name : String) : Bool :=
+  match name.front? with
+  | some c => c.isLower
+  | none => false
+
+/-- Collect every free identifier -/
 def implicitForallNames (sigSyntax : Soma.Syntax.Expr) : TCM (List String) := do
   let freeVarNames := sigSyntax.freeVars.map (·.name)
   let mut acc : Array String := #[]
   for name in freeVarNames do
     if isBuiltinTypeName name then continue
     if (← TCM.lookupGlobal #[] name).isSome then continue
+    if !isAutoImplicitCandidate name then continue
     acc := acc.push name
   return acc.toList.eraseDups
 
@@ -80,19 +88,80 @@ def elaborateTraitMethodType
       let uid ← TCM.freshLocalId traitParamNames[i]!
       traitBindings := traitBindings.push (uid, traitParamNames[i]!, traitParamKinds[i]!)
 
-    let buildInner : TCM Soma.Core.Expr := do
-      let bodyExpr ← Soma.Dependent.inferTypeExpr methodTypeSyntax
-      let classNameStr' := typeClass.name.display
+    let buildInner : TCM (Soma.Core.Expr ×
+        Array (Soma.Unique × String × Value × Unique × Array Value) ×
+        Option (Soma.Unique × String × Value × Unique × Array Value)) := do
+      let superclasses := typeClass.superclasses
+      let mut scBindings : Array (Soma.Unique × String × Value × Unique × Array Value) := #[]
+
+      for (nameOpt, cstr) in superclasses do
+        let head : Soma.Syntax.Expr := .con cstr.className
+        let appExpr := cstr.args.foldl
+          (fun acc a => Soma.Syntax.Expr.app acc a cstr.span) head
+        let cstrTy ← elabTypeStandalone appExpr
+        let dictName := match nameOpt with
+          | some n => n.name
+          | none => s!"$super_{cstr.className.name}"
+        let dictUnique ← TCM.freshLocalId dictName
+        let forcedTy ← Soma.Dependent.force cstrTy
+        match Soma.Dependent.extractClassInfo forcedTy with
+        | some (classId, classArgs) =>
+          scBindings := scBindings.push (dictUnique, dictName, cstrTy, classId, classArgs)
+        | none => pure ()
+
+      let classNameStr := typeClass.name.display
       let ns ← TCM.getCurrentNamespace
       let ctx ← TCM.getCtx
-      let instanceDomainExpr : Soma.Core.Expr :=
-        match ctx.globals.resolve ns #[] classNameStr' with
-        | none => .sort Level.zero
-        | some classQN =>
-          let argExprs : Array Soma.Core.Expr :=
-            (List.range P).toArray.map (fun i => .bvar (P - 1 - i))
-          .dataTy classQN.id argExprs
-      pure (.pi .omega .instance_ "$dict" instanceDomainExpr bodyExpr.shiftUp)
+      let selfBindingOpt :
+          Option (Soma.Unique × String × Value × Unique × Array Value) := ←
+        match ctx.globals.resolve ns #[] classNameStr with
+        | none => pure none
+        | some classQN => do
+          let mut traitParamVals : Array Value := #[]
+          for i in [:P] do
+            let pname := traitParamNames[i]!
+            match ← TCM.lookupLocal pname with
+            | some entry =>
+              traitParamVals := traitParamVals.push
+                (Value.vNeutral entry.type (.nVar ⟨pname, entry.level⟩))
+            | none =>
+              traitParamVals := traitParamVals.push (Value.vType Level.zero)
+          let selfTy : Value := Value.vDataType classQN.id traitParamVals.toList
+          let selfDictName := "$self"
+          let selfDictUnique ← TCM.freshLocalId selfDictName
+          pure (some (selfDictUnique, selfDictName, selfTy, classQN.id, traitParamVals))
+
+      let allBindings := match selfBindingOpt with
+        | some sb => scBindings.push sb
+        | none => scBindings
+      -- Total Pi-binder depth: own vars (M) + trait params (P) + super dicts (S) + self dict (1, when present)
+      let scCount := scBindings.size
+      let selfCount := if selfBindingOpt.isSome then 1 else 0
+      let totalDepth := M + P + scCount + selfCount
+      let rec withSCs (idx : Nat) : TCM Soma.Core.Expr := do
+        if idx >= allBindings.size then
+          let oldPostponed := (← TCM.getState).postponed
+          let oldSet := oldPostponed.foldl
+            (init := (∅ : Std.HashSet Soma.Core.ConstraintId))
+            (fun acc tc => acc.insert tc.constraintId)
+          let bodyExpr ← Soma.Dependent.inferTypeExpr methodTypeSyntax
+          let bodyVal ← TCM.evalExpr bodyExpr
+          TCM.modifyState fun s =>
+            let kept := s.postponed.filter (fun tc => !oldSet.contains tc.constraintId)
+            { s with postponed := kept }
+          let report ← Soma.Dependent.solveConstraintsSoft
+          report.allowPostponed
+          TCM.modifyState fun s =>
+            { s with postponed := oldPostponed ++ s.postponed }
+          pure (Soma.Core.quoteExpr ⟨totalDepth⟩ bodyVal)
+        else
+          let (dictUnique, dictName, dictTy, _, _) := allBindings[idx]!
+          Soma.Dependent.withLocalInstanceBinding dictName dictUnique dictTy
+            .omega Span.uninhabited (withSCs (idx + 1))
+      termination_by allBindings.size - idx
+
+      let bodyExpr ← withSCs 0
+      pure (bodyExpr, scBindings, selfBindingOpt)
 
     let ownWrapped ← ownBindings.foldrM (init := do
       traitBindings.foldrM (init := buildInner)
@@ -101,14 +170,36 @@ def elaborateTraitMethodType
       (fun (uid, name, kind) acc =>
         pure (TCM.withBinding name uid kind .omega .implicit Span.uninhabited acc))
     let innerInner ← ownWrapped
-    let innerBody ← innerInner
+    let (innerBody, scBindings, selfBindingOpt) ← innerInner
+    let scCount := scBindings.size
 
+    -- own vars: 0 .. M-1
+    -- trait params: M .. M+P-1
+    -- super dicts: M+P .. M+P+scCount-1
+    -- self dict: M+P+scCount (if present)
     let mut piExpr : Soma.Core.Expr := innerBody
+
+    if let some (_, _, _, classQN, _) := selfBindingOpt then
+      let argExprs : Array Soma.Core.Expr :=
+        (List.range P).toArray.map (fun i => .bvar (P - 1 - i + scCount))
+      let domExpr : Soma.Core.Expr := .dataTy classQN argExprs
+      piExpr := .pi .omega .instance_ "$dict" domExpr piExpr
+
+    for i in [:scCount] do
+      let idx := scCount - 1 - i
+      let (_, dictName, _, classQN, classArgs) := scBindings[idx]!
+      let outerSuperCount := scCount - 1 - i
+      let argExprs : Array Soma.Core.Expr := classArgs.map fun arg =>
+        Soma.Core.quoteExpr ⟨P + outerSuperCount⟩ arg
+      let domExpr : Soma.Core.Expr := .dataTy classQN argExprs
+      piExpr := .pi .omega .instance_ dictName domExpr piExpr
+
     for i in [:P] do
       let idx := P - 1 - i
       let name := traitParamNames[idx]!
       let kindExpr := traitParamKindExprs[idx]!
       piExpr := .pi .omega .implicit name kindExpr piExpr
+
     for i in [:M] do
       let idx := M - 1 - i
       let name := methodOwnVarsArr[idx]!
@@ -255,9 +346,51 @@ def withSignaturePrefixBindings (allParams : Array (String × Value × Soma.Core
       let (bindingId, paramName, binder, qty) := allBindings[idx]!
       let (_, ty, _, _) := allParams[idx]!
       withCheckedBinding paramName bindingId ty qty binder span do
-        go (idx + 1)
+        if binder == .instance_ then
+          Soma.Dependent.withLocalInstanceForBoundDict
+            paramName bindingId ty span (go (idx + 1))
+        else
+          go (idx + 1)
   let result ← go 0
   return (explicitBindings, result)
+
+/-- Like `withSignaturePrefixBindings`, but also returns the full value telescope used to publish an unfoldable NbE value -/
+def withSignaturePrefixBindingsFull
+    (allParams : Array (String × Value × Soma.Core.BinderInfo × Soma.Core.Quantity))
+    (explicitParams : Array String)
+    (span : Span) (action : TCM α)
+    : TCM (Array (Soma.Unique × String)
+        × Array (Soma.Unique × String × Soma.Core.BinderInfo) × α) := do
+  let mut explicitBindings : Array (Soma.Unique × String) := #[]
+  let mut allBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo × Soma.Core.Quantity) := #[]
+  let mut valueBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo) := #[]
+  let mut eIdx : Nat := 0
+  for (name, _, binder, qty) in allParams do
+    if binder.isImplicit then
+      let bindingId ← TCM.freshLocalId name
+      allBindings := allBindings.push (bindingId, name, binder, qty)
+      valueBindings := valueBindings.push (bindingId, name, binder)
+    else
+      let paramName := if h : eIdx < explicitParams.size then explicitParams[eIdx] else name
+      let bindingId ← TCM.freshLocalId paramName
+      allBindings := allBindings.push (bindingId, paramName, .explicit, qty)
+      valueBindings := valueBindings.push (bindingId, paramName, .explicit)
+      explicitBindings := explicitBindings.push (bindingId, paramName)
+      eIdx := eIdx + 1
+  let rec go (idx : Nat) : TCM α := do
+    if idx >= allBindings.size then
+      action
+    else
+      let (bindingId, paramName, binder, qty) := allBindings[idx]!
+      let (_, ty, _, _) := allParams[idx]!
+      withCheckedBinding paramName bindingId ty qty binder span do
+        if binder == .instance_ then
+          Soma.Dependent.withLocalInstanceForBoundDict
+            paramName bindingId ty span (go (idx + 1))
+        else
+          go (idx + 1)
+  let result ← go 0
+  return (explicitBindings, valueBindings, result)
 
 /-- Elaborate a function type signature -/
 def elaborateFunctionType (sigSyntax : Syntax.Expr) : TCM Value := do
@@ -273,8 +406,11 @@ def elaborateFunctionType (sigSyntax : Syntax.Expr) : TCM Value := do
 
   let go : TCM Soma.Core.Expr := do
     let bodyExpr ← Soma.Dependent.inferTypeExpr sigSyntax
+    let report ← Soma.Dependent.solveConstraintsSoft
+    report.allowPostponed
     let bodyVal ← TCM.evalExpr bodyExpr
-    pure (Soma.Core.quoteExpr ⟨N⟩ bodyVal)
+    let bodyVal' ← zonkValue bodyVal
+    pure (Soma.Core.quoteExpr ⟨N⟩ bodyVal')
   let wrapped ← bindingIds.foldrM (init := go)
     (fun (uid, name) acc => pure (TCM.withBinding name uid tyTy .omega .implicit Span.uninhabited acc))
   let closedBodyExpr ← wrapped
@@ -286,7 +422,8 @@ def elaborateFunctionType (sigSyntax : Syntax.Expr) : TCM Value := do
     piExpr := Soma.Core.Expr.pi .omega .implicit name (.sort Level.zero) piExpr
   let fnType ← TCM.evalExprInEnv Soma.Core.Env.empty piExpr
 
-  let _ ← Soma.Dependent.solveConstraintsSilently
+  let report ← Soma.Dependent.solveConstraintsSoft
+  report.allowPostponed
   return fnType
 
 /-- Finds the index among explicit binders of the first pi whose domain is uninhabited per `Coverage.liveCandidates` -/
@@ -325,7 +462,8 @@ def synthesizeExFalsoBody (k : Nat) (span : Span) : Soma.Syntax.Expr :=
 
 /-- Type check a single function returning the elaborated type, body, param ids, and whether errored -/
 def checkFunction (fn : Soma.Core.UntypedFunction)
-  : TCM (Value × Soma.Core.Expr × Array (Soma.Unique × String) × Bool) := do
+  : TCM (Value × Soma.Core.Expr × Array (Soma.Unique × String)
+      × Array (Soma.Unique × String × Soma.Core.BinderInfo) × Bool) := do
   let span := fn.span
   let storedType : Option Value ← match ← TCM.lookupGlobalByQN fn.name with
     | some info => pure (some info.type)
@@ -340,10 +478,10 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
       let declaredType'' ← expandAbbrevValue declaredType'
-      return (declaredType'', Soma.Core.TypedFunction.externBody fn.name, #[], false)
+      return (declaredType'', Soma.Core.TypedFunction.externBody fn.name, #[], #[], false)
     | none =>
       let ty ← TCM.freshMetaVal (.vType .zero)
-      return (ty, Soma.Core.TypedFunction.externBody fn.name, #[], false)
+      return (ty, Soma.Core.TypedFunction.externBody fn.name, #[], #[], false)
   match fn.declaredTypeSyntax with
   | some typeSyntax =>
     let declaredType ← match storedType with
@@ -365,7 +503,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
         (.patternArityMismatch fn.name.display explicitInSig fn.params.size resolvedResult span)
       let declaredType' ← zonkValue declaredType
       let declaredType'' ← expandAbbrevValue declaredType'
-      return (declaredType'', Soma.Core.TypedFunction.erroredBody fn.name, #[], true)
+      return (declaredType'', Soma.Core.TypedFunction.erroredBody fn.name, #[], #[], true)
     let effectiveBody : Option Soma.Syntax.Expr ←
       if fn.isBodilessExFalso then
         match ← findFirstUninhabitedExplicit resultType with
@@ -379,20 +517,21 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       reportUnsolvedMetas declaredType' span
       let resolved' ← expandAbbrevValue declaredType'
       TCM.addError (.bodilessNotDerivable fn.name.display resolved' span)
-      return (resolved', Soma.Core.TypedFunction.erroredBody fn.name, #[], true)
+      return (resolved', Soma.Core.TypedFunction.erroredBody fn.name, #[], #[], true)
     | some body =>
       let bodyIsProof ← Soma.Dependent.valueInPropUniverse resultType
       let runBodyCheck : TCM Soma.Core.Expr :=
         TCM.infallible (Soma.Dependent.checkSyntax body resultType) default
-      let (generatedParams, typedBody) ← withSignaturePrefixBindings allParams fn.params span do
-        if bodyIsProof then TCM.inErasedContext runBodyCheck else runBodyCheck
-      Soma.Dependent.drainConstraints
+      let (generatedParams, valueParams, typedBody) ← withSignaturePrefixBindingsFull allParams fn.params span do
+        let bodyExpr ← if bodyIsProof then TCM.inErasedContext runBodyCheck else runBodyCheck
+        Soma.Dependent.drainConstraints
+        pure bodyExpr
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
-      let typedBody' ← zonkExpr typedBody
+      let typedBody' := (← zonkExpr typedBody).betaReduce
       Soma.Dependent.zonkLocalTypesInPlace
       let declaredType'' ← expandAbbrevValue declaredType'
-      return (declaredType'', typedBody', generatedParams, false)
+      return (declaredType'', typedBody', generatedParams, valueParams, false)
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
@@ -404,11 +543,12 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     -- Zonk all solved metas so downstream passes see concrete types
     let inferredType' ← zonkValue inferredType
     reportUnsolvedMetas inferredType' span
-    let typedBody' ← zonkExpr typedBody
+    let typedBody' := (← zonkExpr typedBody).betaReduce
     Soma.Dependent.zonkLocalTypesInPlace
     -- Expand parameterized type abbreviations so downstream passes see real types
     let inferredType'' ← expandAbbrevValue inferredType'
-    return (inferredType'', typedBody', generatedParams, false)
+    let valueParams := generatedParams.map fun (u, n) => (u, n, Soma.Core.BinderInfo.explicit)
+    return (inferredType'', typedBody', generatedParams, valueParams, false)
 
 /-- Elaborate a constructor type -/
 def elaborateCtorType (typeName : Soma.Core.QualifiedName)
@@ -418,23 +558,8 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
     (fieldQuantities : Array Soma.Core.Quantity := #[])
     (fieldNames : Array String := #[]) : TCM Value := do
   let N := typeVarBinders.size
-
-  let mut paramKindExprs : Array Soma.Core.Expr := #[]
-  let mut paramKinds : Array Value := #[]
-  for binder in typeVarBinders do
-    let kindExpr ← match binder.kind with
-      | some k => Soma.Dependent.inferTypeExpr k
-      | none => pure (.sort Level.zero)
-    let kindVal ← TCM.evalExpr kindExpr
-    paramKindExprs := paramKindExprs.push kindExpr
-    paramKinds := paramKinds.push kindVal
-
-  let mut bindings : Array (Soma.Unique × String) := #[]
-  for binder in typeVarBinders do
-    let uid ← TCM.freshLocalId binder.name.name
-    bindings := bindings.push (uid, binder.name.name)
-
   let M := fieldTypeSyntax.size
+
   let fieldBI (i : Nat) : Soma.Core.BinderInfo :=
     fieldBinderInfos[i]?.getD .explicit
   let fieldQty (i : Nat) : Soma.Core.Quantity :=
@@ -442,17 +567,18 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
   let fieldNm (i : Nat) : String :=
     fieldNames[i]?.getD "_"
 
-  let resultExpr (depth : Nat) : TCM Soma.Core.Expr := do
-    let mut typeVarVals : List Value := []
-    for (_, name) in bindings do
-      match ← TCM.lookupLocal name with
-      | some entry =>
-        typeVarVals := typeVarVals ++
-          [Value.vNeutral entry.type (Soma.Core.Neutral.nVar ⟨name, entry.level⟩)]
-      | none => pure ()
-    pure (Soma.Core.quoteExpr ⟨depth⟩ (Value.vDataType typeName.id typeVarVals))
+  let paramQty (i : Nat) : Soma.Core.Quantity :=
+    if h : i < typeVarBinders.size then typeVarBinders[i].quantity else .omega
+  let binderBI (i : Nat) : Soma.Core.BinderInfo :=
+    if h : i < typeVarBinders.size then
+      let b := typeVarBinders[i]
+      if b.isConstraint then .instance_ else .implicit
+    else .implicit
 
-  let rec processFields (i : Nat) : TCM Soma.Core.Expr := do
+  let resultExpr (depth : Nat) (paramVals : Array Value) : TCM Soma.Core.Expr := do
+    pure (Soma.Core.quoteExpr ⟨depth⟩ (Value.vDataType typeName.id paramVals.toList))
+
+  let rec processFields (i : Nat) (paramVals : Array Value) : TCM Soma.Core.Expr := do
     if h : i < fieldTypeSyntax.size then
       let fieldTy := fieldTypeSyntax[i]
       let fieldExpr ← Soma.Dependent.inferTypeExpr fieldTy
@@ -462,60 +588,124 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
       let fname := fieldNm i
       let uid ← TCM.freshLocalId fname
       TCM.withBinding fname uid fieldVal qty bi Span.uninhabited do
-        let inner ← processFields (i + 1)
+        let inner ← processFields (i + 1) paramVals
         pure (.pi qty bi fname fieldExpr inner)
     else
-      resultExpr (N + M)
+      resultExpr (N + M) paramVals
   termination_by fieldTypeSyntax.size - i
 
-  let paramQty (i : Nat) : Soma.Core.Quantity :=
-    if h : i < typeVarBinders.size then typeVarBinders[i].quantity else .omega
-  let wrapped ← (bindings.zip paramKinds).zipIdx.foldrM (init := processFields 0)
-    (fun (((uid, name), kindVal), i) acc =>
-      pure (TCM.withBinding name uid kindVal (paramQty i) .implicit Span.uninhabited acc))
-  let innerBody ← wrapped
+  let rec processBinders (i : Nat) (paramVals : Array Value)
+      (kindExprs : Array Soma.Core.Expr)
+      : TCM (Soma.Core.Expr × Array Soma.Core.Expr) := do
+    if h : i < typeVarBinders.size then
+      let binder := typeVarBinders[i]
+      let kindExpr ← match binder with
+        | .mk _ (some k) _ _ => Soma.Dependent.inferTypeExpr k
+        | .mk _ none _ _ => pure (.sort Level.zero)
+        | .constraint _ cstr =>
+          let head : Soma.Syntax.Expr := .con cstr.className
+          let appExpr := cstr.args.foldl
+            (fun acc a => Soma.Syntax.Expr.app acc a cstr.span) head
+          Soma.Dependent.inferTypeExpr appExpr
+      let kindVal ← TCM.evalExpr kindExpr
+      let qty := paramQty i
+      let bi := binderBI i
+      let uid ← TCM.freshLocalId binder.name.name
+      let kindExprs' := kindExprs.push kindExpr
+      TCM.withBinding binder.name.name uid kindVal qty bi Span.uninhabited do
+        let lvl ← TCM.currentLevel
+        let paramVals' :=
+          paramVals.push (Value.vNeutral kindVal (.nVar ⟨binder.name.name, ⟨lvl.lvl - 1⟩⟩))
+        let act := processBinders (i + 1) paramVals' kindExprs'
+        if bi == .instance_ then
+          Soma.Dependent.withLocalInstanceForBoundDict
+            binder.name.name uid kindVal Span.uninhabited act
+        else act
+    else
+      let body ← processFields 0 paramVals
+      let report ← Soma.Dependent.solveConstraintsSoft
+      report.allowPostponed
+      pure (body, kindExprs)
+  termination_by typeVarBinders.size - i
+  let (innerBody, paramKindExprs) ← processBinders 0 #[] #[]
 
   let mut piExpr : Soma.Core.Expr := innerBody
   for i in [:N] do
     let idx := N - 1 - i
     let name := typeVarBinders[idx]!.name.name
     let kindExpr := paramKindExprs[idx]!
-    piExpr := .pi (paramQty idx) .implicit name kindExpr piExpr
+    piExpr := .pi (paramQty idx) (binderBI idx) name kindExpr piExpr
   TCM.evalExprInEnv Soma.Core.Env.empty piExpr
 
 /-- Elaborate an indexed constructor type from a full user-written signature -/
 def elaborateIndexedCtorType (_typeName : Soma.Core.QualifiedName)
-    (_typeVarNames : Array String) (sigSyntax : Syntax.Expr) : TCM Value := do
-  let freeVarNamesUnique ← implicitForallNames sigSyntax
+    (typeVarBinders : Array Syntax.TypeVarBinder) (paramCount : Nat)
+    (sigSyntax : Syntax.Expr) : TCM Value := do
+  let P := min paramCount typeVarBinders.size
+  let paramNames : Array String :=
+    (Array.range P).map (fun i => typeVarBinders[i]!.name.name)
 
-  let tyTy : Value := Value.vType Level.zero
-  let N := freeVarNamesUnique.length
+  let rec drive (i : Nat) (acc : Array (Soma.Core.Expr × Soma.Core.Quantity × String))
+      : TCM Soma.Core.Expr := do
+    if h : i < P then
+      let binder := typeVarBinders[i]!
+      let kindExpr ← match binder.kind with
+        | some k => Soma.Dependent.inferTypeExpr k
+        | none   => pure (.sort Level.zero)
+      let kindVal ← TCM.evalExpr kindExpr
+      let bi := binder.binderInfo
+      let qty : Soma.Core.Quantity ← match binder.quantity with
+        | .zero => pure .zero
+        | .one  => pure .one
+        | .omega =>
+          if (← Soma.Dependent.shouldAutoEraseBinder kindVal) then pure .zero
+          else pure .omega
+      let pname := binder.name.name
+      let uid ← TCM.freshLocalId pname
+      TCM.withBinding pname uid kindVal qty bi Span.uninhabited do
+        drive (i + 1) (acc.push (kindExpr, qty, pname))
+    else
+      let allFree ← implicitForallNames sigSyntax
+      let freeVarNamesUnique := allFree.filter (fun n => !paramNames.contains n)
 
-  let mut bindings : Array (Soma.Unique × String × Value) := #[]
-  for varName in freeVarNamesUnique do
-    let uid ← TCM.freshLocalId varName
-    let kindMeta ← TCM.freshMetaVal tyTy
-    bindings := bindings.push (uid, varName, kindMeta)
+      let tyTy : Value := Value.vType Level.zero
+      let M := freeVarNamesUnique.length
 
-  let buildInner : TCM Soma.Core.Expr := do
-    let bodyExpr ← Soma.Dependent.inferTypeExpr sigSyntax
-    let bodyVal ← TCM.evalExpr bodyExpr
-    pure (Soma.Core.quoteExpr ⟨N⟩ bodyVal)
+      let mut autoBindings : Array (Soma.Unique × String × Value) := #[]
+      for varName in freeVarNamesUnique do
+        let uid ← TCM.freshLocalId varName
+        let kindMeta ← TCM.freshMetaVal tyTy
+        autoBindings := autoBindings.push (uid, varName, kindMeta)
 
-  let wrapped ← bindings.foldrM (init := buildInner)
-    (fun (uid, name, kind) acc =>
-      pure (TCM.withBinding name uid kind .omega .implicit Span.uninhabited acc))
-  let innerBody ← wrapped
+      let buildInner : TCM Soma.Core.Expr := do
+        let bodyExpr ← Soma.Dependent.inferTypeExpr sigSyntax
+        let bodyVal ← TCM.evalExpr bodyExpr
+        pure (Soma.Core.quoteExpr ⟨P + M⟩ bodyVal)
 
-  let mut piExpr : Soma.Core.Expr := innerBody
-  for i in [:N] do
-    let idx := N - 1 - i
-    let name := freeVarNamesUnique[idx]!
-    let (_, _, kindVal) := bindings[idx]!
-    let kindExpr ← do
-      let zonked ← zonkValue kindVal
-      pure (Soma.Core.quoteExpr0 zonked)
-    piExpr := .pi .omega .implicit name kindExpr piExpr
+      let wrapped ← autoBindings.foldrM (init := buildInner)
+        (fun (uid, name, kind) acc =>
+          pure (TCM.withBinding name uid kind .omega .implicit Span.uninhabited acc))
+      let innerBody ← wrapped
+
+      -- Wrap with auto-implicit forall Pis (innermost layer).
+      let mut piExpr : Soma.Core.Expr := innerBody
+      for i in [:M] do
+        let idx := M - 1 - i
+        let name := freeVarNamesUnique[idx]!
+        let (_, _, kindVal) := autoBindings[idx]!
+        let kindExpr ← do
+          let zonked ← zonkValue kindVal
+          pure (Soma.Core.quoteExpr0 zonked)
+        piExpr := .pi .omega .implicit name kindExpr piExpr
+
+      for i in [:P] do
+        let idx := P - 1 - i
+        let (kindExpr, qty, pname) := acc[idx]!
+        piExpr := .pi qty .implicit pname kindExpr piExpr
+      pure piExpr
+  termination_by P - i
+
+  let piExpr ← drive 0 #[]
   TCM.evalExprInEnv Soma.Core.Env.empty piExpr
 
 private def registerWiredRoleFromAttrs
@@ -548,7 +738,7 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
   let mut g := globals
   for typeDef in module.types do
     match typeDef with
-    | .algebraic attrs typeName _ ctors _ _ =>
+    | .algebraic attrs typeName _ _ ctors _ _ =>
       if let some typeInfo := g.getDef typeName then
         g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {typeName.display}"
       for ctor in ctors do
@@ -577,31 +767,33 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
 def elaborateTypeHeadKind
     (binders : Array Syntax.TypeVarBinder)
     (resultSort : Soma.Core.Level := Level.zero) : TCM Value := do
-  let rec loop (i : Nat) (acc : Array (String × Value × Soma.Core.Quantity))
-      : TCM (Array (String × Value × Soma.Core.Quantity)) := do
+  let rec loop (i : Nat)
+      (acc : Array (String × Soma.Core.Expr × Soma.Core.Quantity × Soma.Core.BinderInfo))
+      : TCM (Array (String × Soma.Core.Expr × Soma.Core.Quantity × Soma.Core.BinderInfo)) := do
     if h : i < binders.size then
       let binder := binders[i]
-      let kind ← match binder.kind with
-        | some k => elabTypeStandalone k
-        | none   => pure (Value.vType Level.zero)
+      let kindExpr ← match binder.kind with
+        | some k => Soma.Dependent.inferTypeExpr k
+        | none   => pure (.sort Level.zero)
+      let kindVal ← TCM.evalExpr kindExpr
+      let bi := binder.binderInfo
       let qty : Soma.Core.Quantity ← match binder.quantity with
         | .zero => pure .zero
         | .one => pure .one
         | .omega =>
-          if (← Soma.Dependent.shouldAutoEraseBinder kind) then pure .zero
+          if (← Soma.Dependent.shouldAutoEraseBinder kindVal) then pure .zero
           else pure .omega
-      let acc' := acc.push (binder.name.name, kind, qty)
+      let acc' := acc.push (binder.name.name, kindExpr, qty, bi)
       let uid ← TCM.freshLocalId binder.name.name
-      TCM.withBinding binder.name.name uid kind qty .explicit Span.uninhabited do
+      TCM.withBinding binder.name.name uid kindVal qty bi Span.uninhabited do
         loop (i + 1) acc'
     else
       pure acc
   let paramKinds ← loop 0 #[]
-  let mut headKind : Value := Value.vType resultSort
-  for (paramName, paramKind, qty) in paramKinds.reverse do
-    headKind := Value.vPi qty .explicit paramName paramKind
-      (Soma.Core.Closure.const paramName headKind)
-  return headKind
+  let mut headKindExpr : Soma.Core.Expr := .sort resultSort
+  for (paramName, paramKindExpr, qty, bi) in paramKinds.reverse do
+    headKindExpr := .pi qty bi paramName paramKindExpr headKindExpr
+  TCM.evalExprInEnv Soma.Core.Env.empty headKindExpr
 
 /-- Register or reuse a type class head symbol as a global type -/
 private def registerTypeClassHead
@@ -675,7 +867,7 @@ def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
   let mut globals := ctx.globals
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName binders _ headSort _ =>
+    | .algebraic _ typeName binders _ _ headSort _ =>
       let typeQN := typeName
       let headKind ← TCM.withGlobals globals (elaborateTypeHeadKind binders headSort)
       globals := globals.registerInductive typeQN .algebraic
@@ -852,6 +1044,7 @@ private def registerConstructorRaw
     (globals : Globals)
     (typeName : Soma.Core.QualifiedName)
     (typeVarBinders : Array Syntax.TypeVarBinder)
+    (paramCount : Nat)
     (ctorQN : Soma.Core.QualifiedName)
     (ctorSimpleName : String)
     (ctorTag : Nat)
@@ -865,7 +1058,6 @@ private def registerConstructorRaw
     : TCM Globals := do
   let ns ← TCM.getCurrentNamespace
   let typeNs := ns.push typeName.display
-  let typeVarNames := typeVarBinders.map (·.name.name)
 
   if !isDirty then
     if let some prev := prevGlobals then
@@ -881,11 +1073,13 @@ private def registerConstructorRaw
           }
           return g
 
+  let paramBinders := typeVarBinders.extract 0 paramCount
   let ctorType ← TCM.recoverWithM
     (match sigSyntax with
-      | some sig => TCM.withGlobals globals (elaborateIndexedCtorType typeName typeVarNames sig)
+      | some sig => TCM.withGlobals globals
+          (elaborateIndexedCtorType typeName typeVarBinders paramCount sig)
       | none => TCM.withGlobals globals
-          (elaborateCtorType typeName typeVarBinders fieldTypes
+          (elaborateCtorType typeName paramBinders fieldTypes
             fieldBinderInfos fieldQuantities fieldNames))
     (TCM.typePlaceholder Span.uninhabited)
   let ctorValue := mkConstructorValue ctorQN ctorTag ctorType
@@ -910,13 +1104,14 @@ private def registerConstructorRaw
 /-- Register or reuse a constructor from an `UntypedConstructor` record -/
 private def registerConstructor
     (globals : Globals)
-  (typeName : Soma.Core.QualifiedName)
+    (typeName : Soma.Core.QualifiedName)
     (typeVarBinders : Array Syntax.TypeVarBinder)
-  (ctor : Soma.Core.UntypedConstructor)
+    (paramCount : Nat)
+    (ctor : Soma.Core.UntypedConstructor)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals :=
-  registerConstructorRaw globals typeName typeVarBinders
+  registerConstructorRaw globals typeName typeVarBinders paramCount
     ctor.name ctor.name.id.original ctor.tag ctor.fieldTypeSyntax ctor.sigSyntax
     prevGlobals isDirty
     (fieldBinderInfos := ctor.fieldBinderInfos)
@@ -968,7 +1163,7 @@ private def registerRecordConstructor
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
-  let g ← registerConstructorRaw globals recordName typeVarBinders
+  let g ← registerConstructorRaw globals recordName typeVarBinders typeVarBinders.size
     ctorName "New" 0 (fields.map (·.type)) none prevGlobals isDirty
     (fieldBinderInfos := fields.map (·.binderInfo))
     (fieldQuantities := fields.map (·.quantity))
@@ -983,12 +1178,58 @@ private def elaborateMethodType
     : TCM Value :=
   elaborateTraitMethodType globals typeClass methodTypeSyntax
 
+/-- Walk a method type collecting pi binders along with its domain quoted as a Core `Expr` -/
+private partial def collectMethodBinders (ty : Soma.Core.Value)
+    : Array (Soma.Core.Quantity × Soma.Core.BinderInfo × String × Soma.Core.Expr) :=
+  go ty 0 #[]
+where
+  go (ty : Soma.Core.Value) (depth : Nat)
+      (acc : Array (Soma.Core.Quantity × Soma.Core.BinderInfo × String × Soma.Core.Expr))
+      : Array (Soma.Core.Quantity × Soma.Core.BinderInfo × String × Soma.Core.Expr) :=
+    match ty with
+    | .vPi qty binder name dom cod =>
+      let domExpr := Soma.Core.quoteExpr ⟨depth⟩ dom
+      let argVal := Soma.Core.Value.vNeutral dom (Soma.Core.Neutral.nVar ⟨name, ⟨depth⟩⟩)
+      let nextTy := cod.applyPure argVal
+      go nextTy (depth + 1) (acc.push (qty, binder, name, domExpr))
+    | _ => acc
+
+/-- Build the auto-projection body Core for a class method -/
+private def buildClassMethodAutoProjValue
+    (methodSimpleName : String) (fieldIdx : Nat) (methodType : Soma.Core.Value)
+    : Option Soma.Core.Expr := Id.run do
+  let binders := collectMethodBinders methodType
+  let total := binders.size
+  if total == 0 then return none
+  -- Find the last instance binder (the self-class dict).
+  let mut dictPos? : Option Nat := none
+  for h : i in [:total] do
+    let (_, binder, _, _) := binders[i]
+    if binder == .instance_ then dictPos? := some i
+  match dictPos? with
+  | none => return none
+  | some pos =>
+    let dictBVar := total - pos - 1
+    let head : Soma.Core.Expr :=
+      Soma.Core.Expr.fieldAccess (.bvar dictBVar) methodSimpleName fieldIdx
+    let mut body := head
+    for h : p in [pos + 1 : total] do
+      let argBVar := total - p - 1
+      body := .app body (.bvar argBVar)
+    let mut result := body
+    for h : i in [:total] do
+      let idx := total - 1 - i
+      let (_qty, binder, name, domExpr) := binders[idx]!
+      result := .lam binder name domExpr result
+    return some result
+
 /-- Register or reuse a type class method, returns updated globals -/
 private def registerMethod
     (globals : Globals)
-  (typeClass : Soma.Core.TypeClassMeta)
-  (methodName : Soma.Core.QualifiedName)
+    (typeClass : Soma.Core.TypeClassMeta)
+    (methodName : Soma.Core.QualifiedName)
     (methodTypeSyntax : Syntax.Expr)
+    (fieldIdx : Nat)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
@@ -1004,10 +1245,13 @@ private def registerMethod
   let methodType ← TCM.recoverWithM
     (elaborateMethodType globals typeClass methodTypeSyntax)
     (TCM.typePlaceholder Span.uninhabited)
+  let methodValue? : Option Soma.Core.Value :=
+    (buildClassMethodAutoProjValue methodName.id.original fieldIdx methodType).map
+      Soma.Core.evalClosed
   let methodInfo : GlobalInfo := {
     name := methodName
     type := methodType
-    value := none
+    value := methodValue?
     isConstructor := false
     origin := .traitMethod
   }
@@ -1063,7 +1307,7 @@ def buildGlobals
   -- First pass: Register all data type heads
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName binders _ headSort _ =>
+    | .algebraic _ typeName binders _ _ headSort _ =>
       globals ← registerDataType globals typeName .algebraic binders #[] #[] headSort prevGlobals (isDirty typeName.display)
     | .record _ recordName binders _ fields _ =>
       let sourceFieldNames := fields.map (fun f => f.name.getD "_")
@@ -1076,17 +1320,17 @@ def buildGlobals
   -- Second pass: Register constructors
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName binders constructors _ _ =>
+    | .algebraic _ typeName binders paramCount constructors _ _ =>
       let dirty := isDirty typeName.display
       for ctor in constructors do
-        globals ← registerConstructor globals typeName binders ctor prevGlobals dirty
+        globals ← registerConstructor globals typeName binders paramCount ctor prevGlobals dirty
     | .record _ recordName binders ctorName fields _ =>
       let dirty := isDirty recordName.display
       globals ← registerRecordConstructor globals recordName binders ctorName fields prevGlobals dirty
 
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName _ _ _ typeSpan =>
+    | .algebraic _ typeName _ _ _ _ typeSpan =>
       match globals.lookupInductive typeName with
       | some indMeta =>
         let ctorTypes := indMeta.ctors.map (·.type)
@@ -1101,8 +1345,9 @@ def buildGlobals
 
   for typeClass in module.typeClasses do
     let dirty := isDirty typeClass.name.display
-    for (methodName, methodTypeSyntax) in typeClass.methodSignatures do
-      globals ← registerMethod globals typeClass methodName methodTypeSyntax prevGlobals dirty
+    for h : i in [:typeClass.methodSignatures.size] do
+      let (methodName, methodTypeSyntax) := typeClass.methodSignatures[i]
+      globals ← registerMethod globals typeClass methodName methodTypeSyntax i prevGlobals dirty
 
   for typeClass in module.typeClasses do
     let classNameStr := typeClass.name.display
@@ -1128,7 +1373,7 @@ def buildGlobals
         | none =>
           let u ← TCM.freshUnique "New"
           pure ⟨u⟩
-      globals ← registerRecordConstructor globals typeClass.name typeClass.params ctorName fields prevGlobals dirty
+      globals ← registerRecordConstructor globals typeClass.name typeClass.binders ctorName fields prevGlobals dirty
 
   -- Functions and theorems
   for fn in module.functions do

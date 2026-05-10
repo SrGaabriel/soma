@@ -14,6 +14,10 @@ structure GlobalEnv where
   defs : Std.HashMap QualifiedName Value := {}
   /-- Map from class unique IDs to their Pi-wrapped record types -/
   classRecordTypes : Std.HashMap Unique Value := {}
+  /-- Map from data type unique IDs to their single constructor type -/
+  recordCtorInfo : Std.HashMap Unique (Value × Array String) := {}
+  /-- Map from wired-in primitive type kinds to their underlying inductive data-type unique IDs -/
+  primTyToInductiveId : Std.HashMap PrimType Unique := {}
   deriving Inhabited
 
 namespace GlobalEnv
@@ -33,6 +37,23 @@ def insertClassRecordType (env : GlobalEnv) (classId : Unique) (recordType : Val
 /-- Look up a class record type by class unique ID -/
 def lookupClassRecordType (env : GlobalEnv) (classId : Unique) : Option Value :=
   env.classRecordTypes.get? classId
+
+/-- Register an inductive record's single-constructor info -/
+def insertRecordCtorInfo (env : GlobalEnv) (typeId : Unique)
+    (ctorType : Value) (fieldNames : Array String) : GlobalEnv :=
+  { env with recordCtorInfo := env.recordCtorInfo.insert typeId (ctorType, fieldNames) }
+
+/-- Look up record info by data-type unique ID -/
+def lookupRecordCtorInfo (env : GlobalEnv) (typeId : Unique) : Option (Value × Array String) :=
+  env.recordCtorInfo.get? typeId
+
+/-- Register the inductive uid for a wired-in primitive type kind -/
+def insertPrimTyInductive (env : GlobalEnv) (p : PrimType) (typeId : Unique) : GlobalEnv :=
+  { env with primTyToInductiveId := env.primTyToInductiveId.insert p typeId }
+
+/-- Look up the inductive uid that backs a wired-in primitive type kind -/
+def lookupPrimTyInductive (env : GlobalEnv) (p : PrimType) : Option Unique :=
+  env.primTyToInductiveId.get? p
 
 end GlobalEnv
 
@@ -81,13 +102,17 @@ def vSnd (v : Value) : Value :=
   | .vNeutral ty neu => .vNeutral ty (.nSnd neu)
   | _ => v  -- Type error
 
-/-- Field access on a record -/
-def vFieldAccess (v : Value) (field : String) : Value :=
+/-- Field access on a record-style value -/
+def vFieldAccess (v : Value) (field : String) (fieldIdx : Nat := 0) : Value :=
   match v with
   | .vRecordVal fields =>
     match fields.find? (·.1 == field) with
     | some (_, fieldVal) => fieldVal
     | none => v  -- Field not found
+  | .vConstructor _ _ args _ =>
+    match args.toArray[fieldIdx]? with
+    | some fieldVal => fieldVal
+    | none => v
   | .vNeutral ty neu => .vNeutral ty (.nFieldAccess neu field)
   | _ => v  -- Type error
 
@@ -304,8 +329,8 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
       .vRecordVal merged
     | _ => baseVal
 
-  | .fieldAccess e field _idx =>
-    vFieldAccess (evalCoreExpr ctx e) field
+  | .fieldAccess e field idx =>
+    vFieldAccess (evalCoreExpr ctx e) field idx
 
   | .inject _label _args _ =>
     -- Inject into variant: create a constructor-like value
@@ -343,7 +368,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   | .panic _msg =>
     .vNeutral .type0 (.mk .hErrored #[])
 
-  | .closure name _captures =>
+  | .closure name _captures _ =>
     -- Post lambda-lift closure: treated as global reference
     match ctx.globals.lookup name with
     | some v => v
@@ -481,6 +506,42 @@ def resolveClassFieldType (globals : GlobalEnv) (classId : Unique) (args : List 
   let fields := appliedTy.recordFields
   fields.toList.find? (·.1 == field) |>.map (·.2)
 
+/-- Walk a single-constructor type's Pi chain -/
+private partial def fieldTypeFromCtorType (ctorTy : Value)
+    (typeArgs : List Value) (fieldIdx : Nat) : Option Value :=
+  go ctorTy typeArgs 0
+where
+  go (ty : Value) (remainingArgs : List Value) (explicitsSeen : Nat) : Option Value :=
+    match ty with
+    | .vPi _ binder name dom cod =>
+      let isErasedImplicit : Bool :=
+        match binder with
+        | .implicit | .strictImplicit =>
+          match dom with
+          | .vType _ | .vRowSort | .vLabelSort => true
+          | _ => false
+        | _ => false
+      if isErasedImplicit then
+        match remainingArgs with
+        | arg :: rest => go (cod.applyPure arg) rest explicitsSeen
+        | [] =>
+          let neutral := Value.vNeutral dom (.nVar ⟨name, ⟨0⟩⟩)
+          go (cod.applyPure neutral) [] explicitsSeen
+      else
+        if explicitsSeen == fieldIdx then
+          some dom
+        else
+          let neutral := Value.vNeutral dom (.nVar ⟨name, ⟨0⟩⟩)
+          go (cod.applyPure neutral) remainingArgs (explicitsSeen + 1)
+    | _ => none
+
+/-- Resolve field access on an inductive record's `vDataType` value -/
+def resolveRecordFieldType (globals : GlobalEnv) (typeId : Unique)
+    (args : List Value) (field : String) : Option Value := do
+  let (ctorTy, fieldNames) ← globals.lookupRecordCtorInfo typeId
+  let fieldIdx ← fieldNames.findIdx? (· == field)
+  fieldTypeFromCtorType ctorTy args fieldIdx
+
 /-- Compute the type of a Core expression -/
 partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
     (unfoldTy : Value → Value := id) (evalEnv : Env := .empty)
@@ -596,22 +657,21 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
     match fields.toList.find? (·.1 == field) with
     | some (_, ty) => ty
     | none =>
-      -- The record type may be a class dictionary type (vDataType(ClassId, args)).
-      -- Resolve it by looking up the class record type and applying type arguments.
-      match recTy with
-      | .vDataType classId args =>
-        match resolveClassFieldType globals classId args field with
-        | some fieldTy => fieldTy
-        | none =>
-          -- Fallback: infer from the record expression itself
-          match expr with
-          | .record recFields =>
-            match recFields.toList.find? (·.1 == field) with
-            | some (_, fieldExpr) => typeOfWith bvarCtx globals unfoldTy evalEnv metas fieldExpr
-            | none => .vType .zero
-          | _ => .vType .zero
-      | _ =>
-        -- Non-class, non-record type — try expression-level fallback
+      let unfoldedRecTy := unfoldTy recTy
+      let resolved : Option Value :=
+        match unfoldedRecTy with
+        | .vDataType typeId args =>
+          match resolveClassFieldType globals typeId args field with
+          | some fieldTy => some fieldTy
+          | none => resolveRecordFieldType globals typeId args field
+        | .vPrimTy p =>
+          match globals.lookupPrimTyInductive p with
+          | some typeId => resolveRecordFieldType globals typeId [] field
+          | none => none
+        | _ => none
+      match resolved with
+      | some fieldTy => fieldTy
+      | none =>
         match expr with
         | .record recFields =>
           match recFields.toList.find? (·.1 == field) with
@@ -619,7 +679,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
           | none => .vType .zero
         | _ => .vType .zero
 
-  | .closure _name _captures => .vType .zero
+  | .closure _ _ ty => evalCoreExpr { env := evalEnv, globals, metas } ty
 
   | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _

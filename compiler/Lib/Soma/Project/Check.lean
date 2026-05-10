@@ -350,11 +350,16 @@ structure FunctionCheckResult where
 def buildTypedFnValue (fn : Soma.Core.TypedFunction) (globals : Globals)
     (instanceEnv : InstanceEnv) (metas : Soma.Core.MetaState) : Soma.Core.Value := Id.run do
   let mut lambdaExpr := fn.body
-  for i in [:fn.params.size] do
-    let idx := fn.params.size - 1 - i
-    let (paramId, paramName) := fn.params[idx]!
+  let valueParams :=
+    if fn.valueParams.isEmpty then
+      fn.params.map fun (u, n) => (u, n, Soma.Core.BinderInfo.explicit)
+    else
+      fn.valueParams
+  for i in [:valueParams.size] do
+    let idx := valueParams.size - 1 - i
+    let (paramId, paramName, binderInfo) := valueParams[idx]!
     lambdaExpr := lambdaExpr.abstractFVar paramId
-    lambdaExpr := Soma.Core.Expr.lam .explicit paramName (.sort .zero) lambdaExpr
+    lambdaExpr := Soma.Core.Expr.lam binderInfo paramName (.sort .zero) lambdaExpr
   let evalCtx : Soma.Core.EvalCtx := {
     env := .empty
     globals := globals.toGlobalEnvWithClasses instanceEnv
@@ -364,11 +369,12 @@ def buildTypedFnValue (fn : Soma.Core.TypedFunction) (globals : Globals)
 
 /-- Publish the results of checking `fn` onto its global entry -/
 def registerTypedFnValue (globals : Globals) (fn : Soma.Core.TypedFunction)
+    (isTheorem : Bool)
     (instanceEnv : InstanceEnv) (metas : Soma.Core.MetaState) : Globals :=
   match globals.defs.get? fn.name with
   | none => globals
   | some info =>
-    let isOpaque := fn.isExternStub || fn.attrs.partial_
+    let isOpaque := isTheorem || fn.isExternStub || fn.attrs.partial_
     let value := if isOpaque then info.value
                  else some (buildTypedFnValue fn globals instanceEnv metas)
     let info' := { info with type := fn.fnType, value := value }
@@ -424,7 +430,7 @@ def checkFunctionsCore
         let syntaxHash := hashFunction fn
         let cache := DefCache.failure syntaxHash (Value.vType Level.zero) DefKind.function #[e]
         incrState := incrState.updateCache defId cache
-      | .ok ((fnType, typedBody, generatedParams, errored), newState) =>
+      | .ok ((fnType, typedBody, generatedParams, valueParams, errored), newState) =>
         errors := errors ++ newState.errors
 
         if isTheorem then
@@ -443,6 +449,7 @@ def checkFunctionsCore
         let typedFn : Soma.Core.TypedFunction := {
           name := fn.name
           params := generatedParams
+          valueParams := valueParams
           body := typedBody
           fnType := fnType
           closureInfo := fn.closureInfo
@@ -455,8 +462,7 @@ def checkFunctionsCore
         else
           typedFns := typedFns.insert fnName typedFn
 
-        -- Both defs and theorems get their unfoldable value published
-        currentGlobals := registerTypedFnValue currentGlobals typedFn
+        currentGlobals := registerTypedFnValue currentGlobals typedFn isTheorem
           ctx.instanceEnv newState.metas
 
         -- Clear old dependencies and record new ones
@@ -606,6 +612,38 @@ def buildGlobalsAndInstances
   let fullGlobals := { mergeGlobals seedWithAbbrevs moduleGlobals with imports := seedGlobals.imports }
   let ctx := { baseCtx with globals := fullGlobals, instanceEnv := seedInstanceEnv, abbrevEnv := fullAbbrevEnv }
 
+  let mut preGlobals := fullGlobals
+  let mut preState := state'
+  for fn in untypedModule.functions do
+    if fn.declaredTypeSyntax.isNone || fn.isExternStub then continue
+    let preCtx := { ctx with globals := preGlobals }
+    let priorErrors := preState.errors
+    let stateForTry := { preState with errors := #[] }
+    match (Soma.Dependent.Driver.checkFunction fn).run preCtx stateForTry with
+    | .error _ =>
+      pure ()
+    | .ok ((fnType, typedBody, generatedParams, valueParams, errored), st) =>
+      if errored || !st.errors.isEmpty then
+        pure ()
+      else
+        let typedFn : Soma.Core.TypedFunction := {
+          name := fn.name
+          params := generatedParams
+          valueParams := valueParams
+          body := typedBody
+          fnType := fnType
+          closureInfo := fn.closureInfo
+          attrs := fn.attrs
+          errored := false
+          isExternStub := fn.isExternStub
+        }
+        preGlobals := registerTypedFnValue preGlobals typedFn false
+          ctx.instanceEnv st.metas
+        preState := { st with errors := priorErrors }
+  let fullGlobals := preGlobals
+  let state' := preState
+  let ctx := { baseCtx with globals := fullGlobals, instanceEnv := seedInstanceEnv, abbrevEnv := fullAbbrevEnv }
+
   -- Build instance environment
   let instanceEnvResult := match dirtyNames, prevInstanceEnv, prevInstanceMap with
     | some dirty, some prev, some prevMap =>
@@ -704,8 +742,8 @@ def typeCheckModule
   let mut seededGlobals := globalsResult.globals
   for instFn in globalsResult.instanceTypedFunctions do
     if let some info := seededGlobals.defs.get? instFn.name then
-      if info.origin == .traitMethod then
-        seededGlobals := registerTypedFnValue seededGlobals instFn
+      if info.origin == .traitMethod || info.origin == .instanceMethod then
+        seededGlobals := registerTypedFnValue seededGlobals instFn false
           globalsResult.instanceEnv globalsResult.finalState.metas
 
   -- Prepare context for function checking
@@ -882,7 +920,7 @@ def extractPublicSymbols
   -- Extract type definitions and constructors
   for typeDef in untypedModule.types do
     match typeDef with
-    | .algebraic _ typeName _binders constructors _headSort typeSpan =>
+    | .algebraic _ typeName _binders _paramCount constructors _headSort typeSpan =>
       let typeNameStr := typeName.display
       if shouldExport typeNameStr then
         let typeSym : Symbol := {

@@ -235,6 +235,43 @@ instance : Hashable SpecRequest where
   hash r := mixHash (hash r.hofFuncId.id)
     (mixHash (hash r.paramIdx) (hash r.targetFuncId.id))
 
+/-- wrapper(p) := makeClosure(inner, p); ret - -/
+private def trampolineInner? (m : Module) (funcId : FuncId) : Option FuncId := do
+  let f ← getMonoFunc? m funcId
+  let cfg ← f.body
+  guard (cfg.blocks.size == 1)
+  let entry ← cfg.getBlock .entry
+  guard (entry.stmts.size == 1)
+  let stmt := entry.stmts[0]!
+  -- Wrapper must be a 1-arg function whose body is `makeClosure(inner, p)`.
+  guard (f.sig.params.size == 1)
+  let paramId := f.sig.params[0]!.id
+  match stmt.inst with
+  | .makeClosure (.local innerId) (.local envId) =>
+    guard (envId == paramId)
+    match entry.terminator with
+    | .ret (.local retId) =>
+      match stmt.result with
+      | some resId => guard (resId == retId); return innerId
+      | none => failure
+    | _ => failure
+  | _ => failure
+
+/-- Is this function a trampoline wrapper that we can't retarget -/
+private def isUnretargetableWrapper (m : Module) (funcId : FuncId) : Bool := Id.run do
+  let some f := getMonoFunc? m funcId | return false
+  let some cfg := f.body | return false
+  if cfg.blocks.size != 1 then return false
+  let some entry := cfg.getBlock .entry | return false
+  if entry.stmts.size != 1 then return false
+  let stmt := entry.stmts[0]!
+  match stmt.inst with
+  | .makeClosure _ _ | .makeClosurePoly _ _ _ =>
+    match entry.terminator with
+    | .ret _ => (trampolineInner? m funcId).isNone
+    | _ => false
+  | _ => false
+
 /-- Scan all functions for call sites that pass known closures to HOFs -/
 def findSpecRequests (m : Module)
     (closureParamMap : Std.HashMap Nat (Array ClosureParamInfo))
@@ -255,10 +292,14 @@ def findSpecRequests (m : Module)
               | .local makeClosureId =>
                 match findMakeClosureInFunc cfg makeClosureId with
                 | some (targetFuncId, envOp) =>
+                  let effectiveTargetFuncId :=
+                    (trampolineInner? m targetFuncId).getD targetFuncId
+                  if isUnretargetableWrapper m targetFuncId then continue
                   let hasEnv := !isUnitEnv envOp f.localTypes
                   let req : SpecRequest := {
                     hofFuncId, paramIdx := cp.paramIdx,
-                    targetFuncId, hasEnv, envOperand := some envOp
+                    targetFuncId := effectiveTargetFuncId,
+                    hasEnv, envOperand := some envOp
                   }
                   if !seen.contains req then
                     requests := requests.push req
@@ -635,12 +676,15 @@ private def inlineCallsInBlock (m : Module) (block : ClosedBlock) (nextLocalId :
       else
         match isTinyInlinable? m funcId with
         | some callee =>
-          let (inlinedStmts, newNextId, freshTypes) :=
-            inlineCall callee callArgs stmt.result nextId types retTy
-          newStmts := newStmts ++ inlinedStmts
-          nextId := newNextId
-          for (tid, ty) in freshTypes.toArray do
-            types := types.insert tid ty
+          if callArgs.size == callee.sig.params.size then
+            let (inlinedStmts, newNextId, freshTypes) :=
+              inlineCall callee callArgs stmt.result nextId types retTy
+            newStmts := newStmts ++ inlinedStmts
+            nextId := newNextId
+            for (tid, ty) in freshTypes.toArray do
+              types := types.insert tid ty
+          else
+            newStmts := newStmts.push stmt
         | none => newStmts := newStmts.push stmt
     | _ => newStmts := newStmts.push stmt
   return ({ block with stmts := newStmts }, nextId, types)

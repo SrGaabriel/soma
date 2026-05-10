@@ -1,7 +1,7 @@
 // expect: success
 // Test: constructors with fields - CTOR with arity > 0
 
-inductive Maybe {a : Type} where
+inductive Maybe (a : Type) where
     | Nothing
     | Just (value : a)
 

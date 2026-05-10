@@ -93,8 +93,9 @@ pub const SomaSup = extern struct {
 };
 
 pub const SomaString = extern struct {
-    data: ?[*]u8,
-    len: i64,
+    data: ?*anyopaque,
+    len: u32,
+    offset: u32,
 };
 
 pub const SomaFlatArray = extern struct {
@@ -122,10 +123,22 @@ pub const SomaList = extern struct {
 
 const SOMA_LIST_NIL: SomaList = .{ .data = null, .len = 0, .offset = 0 };
 
-const SOMA_STRING_STATIC_BIT: i64 = @bitCast(@as(u64, 1) << 63);
+inline fn somaStringFromList(list: SomaList) SomaString {
+    return .{ .data = list.data, .len = list.len, .offset = list.offset };
+}
 
-inline fn somaStringLen(s: SomaString) i64 {
-    return s.len & ~SOMA_STRING_STATIC_BIT;
+inline fn somaListFromString(str: SomaString) SomaList {
+    return .{ .data = str.data, .len = str.len, .offset = str.offset };
+}
+
+inline fn somaStringLen(s: SomaString) usize {
+    return @intCast(s.len);
+}
+
+inline fn somaStringBytes(s: SomaString) ?[*]u8 {
+    const data = s.data orelse return null;
+    const base: [*]u8 = @ptrCast(data);
+    return base + @as(usize, s.offset);
 }
 
 const SomaBoxedList = extern struct {
@@ -707,7 +720,7 @@ fn projImpl(sup_val: SomaValue, proj_idx: u1) SomaValue {
         sup.tag = my_proj_tag;
         const value: SomaValue = @intFromPtr(sup.value);
 
-        if (isHeapSup(value)) {
+        if (sup.type_desc == null and isHeapSup(value)) {
             const inner: *SomaSup = @ptrCast(@alignCast(toPtr(value).?));
             if (inner.label == sup.label) {
                 const result: SomaValue = @intFromPtr(inner.value);
@@ -732,7 +745,7 @@ fn projImpl(sup_val: SomaValue, proj_idx: u1) SomaValue {
             return value;
         }
 
-        if (isHeapSup(value)) {
+        if (sup.type_desc == null and isHeapSup(value)) {
             const inner: *SomaSup = @ptrCast(@alignCast(toPtr(value).?));
             if (inner.label == sup.label) {
                 const result: SomaValue = @intFromPtr(inner.value);
@@ -964,27 +977,49 @@ pub export fn soma_clone_closure(closure_ptr: ?*anyopaque, label: u32) ?*anyopaq
 }
 
 pub export fn soma_from_cstring(cstr: ?[*:0]const u8) SomaString {
-    const s = cstr orelse return .{ .data = null, .len = 0 };
+    const s = cstr orelse return .{ .data = null, .len = 0, .offset = 0 };
     const len = strlen(s);
+    return somaStringFromList(soma_list_from_array(@ptrCast(s), @intCast(len), 1));
+}
+
+pub export fn soma_to_cstring(str: SomaString) ?[*:0]u8 {
+    const len = somaStringLen(str);
     const buf_raw = soma_pool_alloc_raw(len + 1) orelse {
-        somaPanic("soma_from_cstring: out of memory");
+        somaPanic("soma_to_cstring: out of memory");
     };
-    _ = memcpy(buf_raw, @as(*const anyopaque, @ptrCast(s)), len + 1);
-    return .{ .data = @ptrCast(buf_raw), .len = @intCast(len) };
+    const buf: [*]u8 = @ptrCast(buf_raw);
+    if (len != 0) {
+        const src = somaStringBytes(str) orelse {
+            buf[0] = 0;
+            return @ptrCast(buf);
+        };
+        _ = memcpy(buf_raw, @ptrCast(src), len);
+    }
+    buf[len] = 0;
+    return @ptrCast(buf);
 }
 
 pub export fn soma_strcat(a: SomaString, b: SomaString) SomaString {
-    const len_a: usize = @intCast(somaStringLen(a));
-    const len_b: usize = @intCast(somaStringLen(b));
+    const len_a = somaStringLen(a);
+    const len_b = somaStringLen(b);
     const total_len = len_a + len_b;
-    const buf_raw = soma_pool_alloc_raw(total_len + 1) orelse {
+    if (total_len == 0) return .{ .data = null, .len = 0, .offset = 0 };
+    const buf_raw = malloc(total_len + 1) orelse {
         somaPanic("soma_strcat: out of memory");
     };
     const buf: [*]u8 = @ptrCast(buf_raw);
-    if (len_a != 0) _ = memcpy(buf_raw, @ptrCast(a.data), len_a);
-    if (len_b != 0) _ = memcpy(@ptrCast(buf + len_a), @ptrCast(b.data), len_b);
+    if (len_a != 0) {
+        if (somaStringBytes(a)) |src_a| {
+            _ = memcpy(buf_raw, @ptrCast(src_a), len_a);
+        }
+    }
+    if (len_b != 0) {
+        if (somaStringBytes(b)) |src_b| {
+            _ = memcpy(@ptrCast(buf + len_a), @ptrCast(src_b), len_b);
+        }
+    }
     buf[total_len] = 0;
-    return .{ .data = buf, .len = @intCast(total_len) };
+    return .{ .data = buf_raw, .len = @intCast(total_len), .offset = 0 };
 }
 
 pub export fn soma_int_to_string(val: i32) SomaString {
@@ -1015,18 +1050,11 @@ pub export fn soma_int_to_string(val: i32) SomaString {
         tmp[end] = '-';
     }
 
-    const len = tmp.len - 1 - end;
-    const buf_raw = soma_pool_alloc_raw(len + 1) orelse {
-        somaPanic("soma_int_to_string: out of memory");
-    };
-    _ = memcpy(buf_raw, @ptrCast(&tmp[end]), len + 1);
-    return .{ .data = @ptrCast(buf_raw), .len = @intCast(len) };
+    return soma_from_cstring(@ptrCast(&tmp[end]));
 }
 
 pub export fn soma_era_string(str: SomaString) void {
-    const data = str.data orelse return;
-    if (str.len < 0) return;
-    soma_pool_free_raw(@ptrCast(data), @as(usize, @intCast(str.len)) + 1);
+    soma_list_era(somaListFromString(str));
 }
 
 const ERA_STACK_INLINE: comptime_int = 64;

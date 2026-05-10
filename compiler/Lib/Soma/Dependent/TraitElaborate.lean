@@ -7,6 +7,7 @@ import Soma.Dependent.Monad
 import Soma.Dependent.Elaborate
 import Soma.Dependent.Infer
 import Soma.Dependent.Instance
+import Soma.Dependent.Telescope
 import Soma.Dependent.Zonk
 import Soma.Core.Module
 import Soma.Syntax.Ast
@@ -135,9 +136,10 @@ Elaborate a type class (trait) declaration into a ClassInfo structure.
 The record type for the class is built from the method signatures.
 -/
 
-def elaborateClassRecordType (binders : Array TypeVarBinder)
+/-- Build the dictionary record type for a class -/
+def elaborateClassRecordType (typeClass : Soma.Core.TypeClassMeta)
   (methods : Array (QualifiedName × Soma.Syntax.Expr)) : TCM Value := do
-  let params := binders.filter (! ·.isConstraint)
+  let params := typeClass.params
   let N := params.size
 
   -- Resolve each type-param's kind once, outside the bindings
@@ -157,11 +159,18 @@ def elaborateClassRecordType (binders : Array TypeVarBinder)
     bindings := bindings.push (uid, param.name.name)
 
   let buildInner : TCM Soma.Core.Expr := do
+    let oldPostponed := (← TCM.getState).postponed
+    let oldSet := oldPostponed.foldl
+      (init := (∅ : Std.HashSet Soma.Core.ConstraintId))
+      (fun acc tc => acc.insert tc.constraintId)
     let mut fields : List (String × Value) := []
     for (methodName, methodTypeSyntax) in methods do
       let expr ← Soma.Dependent.inferTypeExpr methodTypeSyntax
       let methodType ← TCM.evalExpr expr
       fields := (methodName.display, methodType) :: fields
+    TCM.modifyState fun s =>
+      let kept := s.postponed.filter (fun tc => oldSet.contains tc.constraintId)
+      { s with postponed := kept }
     let mut row := Value.vRowEmpty
     for (name, ty) in fields.reverse do
       row := Value.vRowExtend (Value.vLabelLit name) ty row
@@ -219,7 +228,7 @@ def elaborateClass (typeClass : Soma.Core.TypeClassMeta) : TCM ClassInfo := do
   let classUnique := typeClass.name.id
 
   -- Build the dictionary record type
-  let recordType ← elaborateClassRecordType typeClass.binders typeClass.methodSignatures
+  let recordType ← elaborateClassRecordType typeClass typeClass.methodSignatures
 
   let typeParams := typeClass.params
   let supersOnly := typeClass.superclasses.map (·.2)
@@ -285,150 +294,6 @@ def validateInstanceMethodSet
   unless missing.isEmpty do
     TCM.addError (.missingInstanceMethods className missing instSpan)
 
-/-- Substitute instance type arguments into a method signature.
-
-For `instance Display Int where def display | x => ...`:
-- The class method signature is `a -> String`
-- We substitute `a := Int` to get `Int -> String`
--/
-def substituteMethodType (methodTypeSyntax : Soma.Syntax.Expr) (binders : Array TypeVarBinder)
-    (typeArgs : Array Value) : TCM Value := do
-  let params := binders.filter (! ·.isConstraint)
-  let paramNames := params.map (·.name.name)
-  let mut bindings : Array (Soma.Unique × String × Value) := #[]
-  for param in params do
-    let kindVal ← match param.kind with
-      | some k => do
-        let expr ← Soma.Dependent.inferTypeExpr k
-        TCM.evalExpr expr
-      | none => pure (Value.vType Level.zero)
-    let uid ← TCM.freshLocalId param.name.name
-    bindings := bindings.push (uid, param.name.name, kindVal)
-
-  let go : TCM Value := do
-    let expr ← Soma.Dependent.inferTypeExpr methodTypeSyntax
-    TCM.evalExpr expr
-
-  let methodType ← bindings.foldrM (init := go)
-    (fun (uid, name, kind) acc =>
-      pure (TCM.withBinding name uid kind .omega .implicit Span.uninhabited acc))
-  let resolved ← methodType
-
-  substituteTypeArgsInValue resolved paramNames typeArgs 0
-
-/-- Build a lambda value from parameter names and types wrapping a body value. -/
-partial def buildLambdaValue (paramNames : Array String) (paramTypes : Array Value)
-    (bodyVal : Value) : TCM Value := do
-  -- Wrap in lambdas for each parameter (right to left)
-  let mut result := bodyVal
-  for i in [:paramNames.size] do
-    let idx := paramNames.size - 1 - i
-    if h₁ : idx < paramNames.size then
-      let name := paramNames[idx]
-      let _paramTy := if h₂ : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
-      result := Value.vLam name (Closure.const name result)
-
-  return result
-
-/-- Result of elaborating a single instance method -/
-structure MethodElabResult where
-  /-- The method value for the instance record -/
-  value : Value
-  /-- The Core Expr body (before NbE evaluation) -/
-  coreBody : Expr
-  /-- The full lambda-wrapped Expr (params abstracted, before evaluation) -/
-  lambdaExpr : Expr
-  /-- The full function type (after instance type argument substitution) -/
-  fnType : Value
-  /-- Parameter bindings: (Unique, name) pairs -/
-  params : Array (Unique × String)
-
-/-- Extract explicit parameter types from a function type, skipping implicit binders -/
-private partial def extractParamTypes (ty : Value) (count : Nat) : TCM (Array Value × Value) := do
-  if count == 0 then
-    return (#[], ty)
-  else
-    let ty' ← force ty
-    match ty' with
-    | .vPi _ binder _ dom cod =>
-      let dummyArg ← TCM.freshMetaVal dom
-      let codTy ← applyClosure cod dummyArg
-      if binder.isImplicit then
-        extractParamTypes codTy count
-      else
-        let (restParams, resultTy) ← extractParamTypes codTy (count - 1)
-        return (#[dom] ++ restParams, resultTy)
-    | _ =>
-      return (#[], ty')
-
-/-- Elaborate a method implementation.
-
-Type-checks the method body against the expected (substituted) signature
-and returns the elaborated value -/
-def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : Value)
-    : TCM MethodElabResult := do
-  let paramNames := methodFn.params
-
-  -- Decompose the expected type to get explicit parameter types
-  let (paramTypes, _resultType) ← extractParamTypes expectedType paramNames.size
-
-  -- Extend context with params, then elaborate the method body
-  let rec bindParams (idx : Nat) (accParams : Array (Unique × String))
-      : TCM (Value × Expr × Array (Unique × String)) := do
-    if idx >= paramNames.size then
-      let (_bodyTy, coreBody) ← Soma.Dependent.inferSyntax methodFn.body
-      let bodyVal ← TCM.evalExpr coreBody
-      return (bodyVal, coreBody, accParams)
-    else
-      let name := paramNames[idx]!
-      let paramTy := if h : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
-      let bindingId ← TCM.freshLocalId name
-      TCM.withBinding name bindingId paramTy .omega
-        (Soma.Core.BinderInfo.explicit) methodFn.span do
-        let paramUnique : Unique := ⟨bindingId.id, bindingId.module, name⟩
-        bindParams (idx + 1) (accParams.push (paramUnique, name))
-
-  let (_bodyVal, coreBody, generatedParams) ← bindParams 0 #[]
-
-  let _ ← Soma.Dependent.solveConstraintsSilently
-  let coreBody' ← zonkExpr coreBody
-  let expectedType' ← zonkValue expectedType
-
-  -- Build the method value by abstracting fvars into proper lambda binders
-  let mut lambdaExpr := coreBody'
-  for i in [:generatedParams.size] do
-    let idx := generatedParams.size - 1 - i
-    let (paramId, paramName) := generatedParams[idx]!
-    lambdaExpr := lambdaExpr.abstractFVar paramId
-    let domTy := if idx < paramTypes.size then
-      Soma.Core.quoteExpr0 paramTypes[idx]!
-    else
-      Expr.sort Level.zero
-    lambdaExpr := .lam .explicit paramName domTy lambdaExpr
-  let methodVal ← TCM.evalExpr lambdaExpr
-
-  return {
-    value := methodVal
-    coreBody := coreBody'
-    lambdaExpr := lambdaExpr
-    fnType := expectedType'
-    params := generatedParams
-  }
-
-/-- Extract field names and types from a record type value -/
-private partial def extractRecordFields (v : Value) : TCM (Array (String × Value)) := do
-  match ← force v with
-  | .vRecord row => extractRowFields row
-  | _ => pure #[]
-where
-  extractRowFields (row : Value) : TCM (Array (String × Value)) := do
-    match ← force row with
-    | .vRowExtend (.vLabelLit name) ty rest =>
-      let restFields ← extractRowFields rest
-      return #[(name, ty)] ++ restFields
-    | .vRowEmpty => return #[]
-    | _ => return #[]
-
 /-- Recursively check whether a Value contains an unsolved metavariable -/
 private partial def valueContainsMeta : Value → Bool
   | .vNeutral ty neu => valueContainsMeta ty || neutralContainsMeta neu
@@ -459,6 +324,256 @@ where
   elimContainsMeta : Elim → Bool
     | .eApp arg => valueContainsMeta arg
     | .eFst | .eSnd | .eField _ => false
+
+/-- Substitute instance type arguments into a method signature -/
+def substituteMethodType (methodTypeSyntax : Soma.Syntax.Expr)
+    (typeClass : Soma.Core.TypeClassMeta) (typeArgs : Array Value) : TCM Value := do
+  let params := typeClass.params
+  let paramNames := params.map (·.name.name)
+  let mut bindings : Array (Soma.Unique × String × Value) := #[]
+  for param in params do
+    let kindVal ← match param.kind with
+      | some k => do
+        let expr ← Soma.Dependent.inferTypeExpr k
+        TCM.evalExpr expr
+      | none => pure (Value.vType Level.zero)
+    let uid ← TCM.freshLocalId param.name.name
+    bindings := bindings.push (uid, param.name.name, kindVal)
+
+  let go : TCM Value := do
+    let superclasses := typeClass.superclasses
+    let mut scBindings : Array (Soma.Unique × String × Value × Unique × Array Value × Option Value) := #[]
+    for (nameOpt, cstr) in superclasses do
+      let head : Soma.Syntax.Expr := .con cstr.className
+      let appExpr := cstr.args.foldl
+        (fun acc a => Soma.Syntax.Expr.app acc a cstr.span) head
+      let cstrTyExpr ← Soma.Dependent.inferTypeExpr appExpr
+      let cstrTy ← TCM.evalExpr cstrTyExpr
+      let dictName := match nameOpt with
+        | some n => n.name
+        | none => s!"$super_{cstr.className.name}"
+      let dictUnique ← TCM.freshLocalId dictName
+      let forcedTy ← Soma.Dependent.force cstrTy
+      match Soma.Dependent.extractClassInfo forcedTy with
+      | some (classId, classArgs) =>
+        let resolvedValue? : Option Value ← do
+          if classArgs.any valueContainsMeta then
+            pure none
+          else
+            match ← Soma.Dependent.resolveInstance classId classArgs with
+            | .found v _ => pure (some v)
+            | _ => pure none
+        scBindings := scBindings.push
+          (dictUnique, dictName, cstrTy, classId, classArgs, resolvedValue?)
+      | none => pure ()
+
+    let classNameStr := typeClass.name.display
+    let ns ← TCM.getCurrentNamespace
+    let ctx ← TCM.getCtx
+    let selfBindingOpt :
+        Option (Soma.Unique × String × Value × Unique × Array Value × Option Value) := ←
+      match ctx.globals.resolve ns #[] classNameStr with
+      | none => pure none
+      | some classQN => do
+        let selfArgs := typeArgs
+        let selfTy : Value := Value.vDataType classQN.id selfArgs.toList
+        let selfDictName := "$self"
+        let selfDictUnique ← TCM.freshLocalId selfDictName
+        pure (some (selfDictUnique, selfDictName, selfTy, classQN.id, selfArgs, none))
+
+    let allBindings := match selfBindingOpt with
+      | some sb => scBindings.push sb
+      | none => scBindings
+
+    let rec withSCs (idx : Nat) : TCM Value := do
+      if idx >= allBindings.size then
+        -- Snapshot the older constraints so we can isolate the constraints we introduce here
+        let oldPostponed := (← TCM.getState).postponed
+        let oldSet := oldPostponed.foldl
+          (init := (∅ : Std.HashSet Soma.Core.ConstraintId))
+          (fun acc tc => acc.insert tc.constraintId)
+        let expr ← Soma.Dependent.inferTypeExpr methodTypeSyntax
+        TCM.modifyState fun s =>
+          let kept := s.postponed.filter (fun tc => !oldSet.contains tc.constraintId)
+          { s with postponed := kept }
+        let report ← Soma.Dependent.solveConstraintsSoft
+        report.allowPostponed
+        TCM.modifyState fun s =>
+          { s with postponed := oldPostponed ++ s.postponed }
+        TCM.evalExpr expr
+      else
+        let (dictUnique, dictName, dictTy, _, _, resolvedValue?) := allBindings[idx]!
+        match resolvedValue? with
+        | some resolvedValue =>
+          Soma.Dependent.withResolvedInstanceBinding dictName dictUnique dictTy
+            resolvedValue .omega Span.uninhabited (withSCs (idx + 1))
+        | none =>
+          Soma.Dependent.withLocalInstanceBinding dictName dictUnique dictTy
+            .omega Span.uninhabited (withSCs (idx + 1))
+    termination_by allBindings.size - idx
+
+    withSCs 0
+
+  let methodType : TCM Value := do
+    let rec wrap (i : Nat) : TCM Value := do
+      if i >= bindings.size then go
+      else
+        let (uid, name, kind) := bindings[i]!
+        let valueArg :=
+          if h : i < typeArgs.size then typeArgs[i]
+          else Value.vNeutral kind (.nVar ⟨name, ⟨0⟩⟩)
+        TCM.withBindingValue name uid kind .omega .implicit Span.uninhabited
+          valueArg (wrap (i + 1))
+    termination_by bindings.size - i
+    wrap 0
+  let resolved ← methodType
+
+  let zonked ← zonkValue resolved
+
+  substituteTypeArgsInValue zonked paramNames typeArgs 0
+
+/-- Build a lambda value from parameter names and types wrapping a body value. -/
+partial def buildLambdaValue (paramNames : Array String) (paramTypes : Array Value)
+    (bodyVal : Value) : TCM Value := do
+  -- Wrap in lambdas for each parameter (right to left)
+  let mut result := bodyVal
+  for i in [:paramNames.size] do
+    let idx := paramNames.size - 1 - i
+    if h₁ : idx < paramNames.size then
+      let name := paramNames[idx]
+      let _paramTy := if h₂ : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
+      result := Value.vLam name (Closure.const name result)
+
+  return result
+
+/-- Result of elaborating a single instance method -/
+structure MethodElabResult where
+  /-- The method value for the instance record -/
+  value : Value
+  /-- The Core Expr body (before NbE evaluation) -/
+  coreBody : Expr
+  /-- The full lambda-wrapped Expr (params abstracted, before evaluation) -/
+  lambdaExpr : Expr
+  /-- The full function type (after instance type argument substitution) -/
+  fnType : Value
+  /-- Parameter bindings: (Unique, name) pairs -/
+  params : Array (Unique × String)
+  /-- Full NbE value telescope, including erased implicit and instance binders -/
+  valueParams : Array (Unique × String × BinderInfo) := #[]
+
+/-- Extract the part of a method signature needed to check the source body -/
+private partial def extractMethodSignaturePrefix (ty : Value) (explicitCount : Nat)
+    : TCM (Array (String × Value × BinderInfo × Quantity) × Value) := do
+  let startLvl ← TCM.currentLevel
+  go ty explicitCount startLvl.lvl
+where
+  go (ty : Value) (remainingExplicit : Nat) (lvl : Nat)
+      : TCM (Array (String × Value × BinderInfo × Quantity) × Value) := do
+    let ty' ← force ty
+    match ty' with
+    | .vPi qty binder name dom cod =>
+      if remainingExplicit == 0 && !binder.isImplicit then
+        return (#[], ty')
+      let neutral := Value.vNeutral dom (.nVar ⟨name, ⟨lvl⟩⟩)
+      let codTy ← applyClosure cod neutral
+      let remainingExplicit' :=
+        if binder.isImplicit then remainingExplicit else remainingExplicit - 1
+      let (rest, resultTy) ← go codTy remainingExplicit' (lvl + 1)
+      return (#[(name, dom, binder, qty)] ++ rest, resultTy)
+    | _ =>
+      return (#[], ty')
+
+/-- Bind a method-signature prefix for body checking -/
+private def withMethodSignaturePrefix
+    (sigPrefix : Array (String × Value × BinderInfo × Quantity))
+    (explicitNames : Array String)
+    (span : Span)
+    (action : TCM α)
+    : TCM (Array (Unique × String) × Array (Unique × String × BinderInfo) × α) := do
+  let mut runtimeParams : Array (Unique × String) := #[]
+  let mut valueParams : Array (Unique × String × BinderInfo) := #[]
+  let mut binders : Array (Unique × String × Value × BinderInfo × Quantity) := #[]
+  let mut explicitIdx : Nat := 0
+  for (sigName, ty, binder, qty) in sigPrefix do
+    let mut name := sigName
+    if !binder.isImplicit then
+      name := explicitNames[explicitIdx]?.getD sigName
+      explicitIdx := explicitIdx + 1
+    let uid ← TCM.freshLocalId name
+    binders := binders.push (uid, name, ty, binder, qty)
+    valueParams := valueParams.push (uid, name, binder)
+    if !binder.isImplicit then
+      runtimeParams := runtimeParams.push (uid, name)
+
+  let rec bindAll (idx : Nat) : TCM α := do
+    if idx >= binders.size then
+      action
+    else
+      let (uid, name, ty, binder, qty) := binders[idx]!
+      Soma.Dependent.withCheckedBinding name uid ty qty binder span do
+        if binder == .instance_ then
+          Soma.Dependent.withLocalInstanceForBoundDict name uid ty span (bindAll (idx + 1))
+        else
+          bindAll (idx + 1)
+  termination_by binders.size - idx
+
+  let result ← bindAll 0
+  return (runtimeParams, valueParams, result)
+
+/-- Elaborate a method implementation.
+
+Type-checks the method body against the expected (substituted) signature
+and returns the elaborated value -/
+def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : Value)
+    : TCM MethodElabResult := do
+  let (sigPrefix, resultType) ← extractMethodSignaturePrefix expectedType methodFn.params.size
+
+  let (generatedParams, valueParams, coreBody) ←
+    withMethodSignaturePrefix sigPrefix methodFn.params methodFn.span do
+      let bodyIsProof ← Soma.Dependent.valueInPropUniverse resultType
+      let checked ←
+        if bodyIsProof then
+          TCM.inErasedContext (Soma.Dependent.checkSyntax methodFn.body resultType)
+        else
+          Soma.Dependent.checkSyntax methodFn.body resultType
+      Soma.Dependent.drainConstraints
+      pure checked
+
+  let coreBody' ← zonkExpr coreBody
+  let expectedType' ← zonkValue expectedType
+
+  -- Build the unfoldable method value over the full semantic telescope
+  let mut lambdaExpr := coreBody'
+  for i in [:valueParams.size] do
+    let idx := valueParams.size - 1 - i
+    let (paramId, paramName, binderInfo) := valueParams[idx]!
+    lambdaExpr := lambdaExpr.abstractFVar paramId
+    lambdaExpr := .lam binderInfo paramName (Expr.sort Level.zero) lambdaExpr
+  let methodVal ← TCM.evalExpr lambdaExpr
+
+  return {
+    value := methodVal
+    coreBody := coreBody'
+    lambdaExpr := lambdaExpr
+    fnType := expectedType'
+    params := generatedParams
+    valueParams := valueParams
+  }
+
+/-- Extract field names and types from a record type value -/
+private partial def extractRecordFields (v : Value) : TCM (Array (String × Value)) := do
+  match ← force v with
+  | .vRecord row => extractRowFields row
+  | _ => pure #[]
+where
+  extractRowFields (row : Value) : TCM (Array (String × Value)) := do
+    match ← force row with
+    | .vRowExtend (.vLabelLit name) ty rest =>
+      let restFields ← extractRowFields rest
+      return #[(name, ty)] ++ restFields
+    | .vRowEmpty => return #[]
+    | _ => return #[]
+
 
 /-- Build the record type for a constraint dict (class record type applied to args) -/
 private partial def buildConstraintDictType (constraintClassId : Unique)
@@ -568,6 +683,7 @@ partial def elaborateInstanceBodiesCore
     typedFns := typedFns.push {
       name := method.name
       params := result.params
+      valueParams := result.valueParams
       body := coreBody
       fnType := result.fnType
       closureInfo := method.closureInfo
@@ -837,14 +953,14 @@ partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
 def collectInstanceMethodJobs
     (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
     (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
-    (binders : Array TypeVarBinder)
+    (typeClass : Soma.Core.TypeClassMeta)
     : TCM (Array InstanceMethodJob × Array (String × QualifiedName × Value)) := do
   let mut jobs : Array InstanceMethodJob := #[]
   let mut selfRefs : Array (String × QualifiedName × Value) := #[]
   for method in methods do
     match methodSignatures.find? (fun (name, _) => name.display == method.name.display) with
     | some (_, sigSyntax) =>
-      let expectedType ← substituteMethodType sigSyntax binders typeArgs
+      let expectedType ← substituteMethodType sigSyntax typeClass typeArgs
       jobs := jobs.push { method := method, expectedType := expectedType }
       selfRefs := selfRefs.push (method.name.display, method.name, expectedType)
     | none => pure ()
@@ -854,8 +970,8 @@ def collectInstanceMethodJobs
 def elaborateInstanceSkeleton
     (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
     (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
-    (binders : Array TypeVarBinder) : TCM InstanceSkeleton := do
-  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures binders
+    (typeClass : Soma.Core.TypeClassMeta) : TCM InstanceSkeleton := do
+  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures typeClass
   pure { value := buildIndirectInstanceValue jobs,
          methodJobs := jobs, selfRefs := selfRefs }
 
@@ -863,10 +979,10 @@ def elaborateInstanceSkeleton
 def elaborateInstanceValue (typeArgs : Array Value)
   (methods : Array Soma.Core.UntypedFunction)
     (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
-    (binders : Array TypeVarBinder)
+    (typeClass : Soma.Core.TypeClassMeta)
     (constraintDicts : Array ConstraintDictEntry := #[])
     : TCM InstanceElabResult := do
-  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures binders
+  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures typeClass
   elaborateInstanceBodiesCore jobs selfRefs constraintDicts
 
 /-- Elaborate a single instance declaration into an InstanceInfo.
@@ -894,19 +1010,20 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl)
     let instUnique ← TCM.freshUnique s!"$inst_{inst.className.name}_{typeArgs.size}"
 
     let elabSimple := elaborateInstanceValue typeArgs inst.methods
-      typeClass.methodSignatures typeClass.binders
+      typeClass.methodSignatures typeClass
     let (instanceInfo, typedFns) ← elaborateConstrainedInstance
       typeClass.name.id instUnique typeArgs constraints inst.span
       elabSimple
       (fun entries => elaborateInstanceValue typeArgs inst.methods
-        typeClass.methodSignatures typeClass.binders entries)
+        typeClass.methodSignatures typeClass entries)
 
     return some (instanceInfo, typedFns)
 
 /-- Build a method dispatch wrapper for a type class method -/
 private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
     (fieldIdx : Nat) : TCM (Option TypedFunction) := do
-  let mut wrapperParams : Array (Soma.Unique × String) := #[]
+  let mut runtimeParams : Array (Soma.Unique × String) := #[]
+  let mut allValueParams : Array (Soma.Unique × String × Soma.Core.BinderInfo) := #[]
   let mut paramTyExprs : Array Soma.Core.Expr := #[]
   let mut paramIsExplicit : Array Bool := #[]
   let mut walkTy := info.type
@@ -918,38 +1035,44 @@ private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
     | .vPi _qty binder name dom cod =>
       let paramUnique ← TCM.freshUnique name
       let domExpr := Soma.Core.quoteExpr0 dom
-      wrapperParams := wrapperParams.push (paramUnique, name)
       paramTyExprs := paramTyExprs.push domExpr
+      allValueParams := allValueParams.push (paramUnique, name, binder)
+      let isErasedImplicitTyParam : Bool :=
+        match binder with
+        | .implicit | .strictImplicit =>
+          match dom with
+          | .vType _ | .vRowSort | .vLabelSort => true
+          | _ => false
+        | _ => false
+      paramIsExplicit := paramIsExplicit.push (binder == .explicit)
       if binder == .instance_ then
         dictUnique := paramUnique
         foundInstance := true
-        paramIsExplicit := paramIsExplicit.push false
-      else if binder.isImplicit then
-        paramIsExplicit := paramIsExplicit.push false
-      else
-        paramIsExplicit := paramIsExplicit.push true
+      if !isErasedImplicitTyParam then
+        runtimeParams := runtimeParams.push (paramUnique, name)
       walkTy := cod.applyPure (.vNeutral dom (.nVar ⟨name, ⟨0⟩⟩))
     | _ => walking := false
   if !foundInstance then return none
 
-  -- Index of the dict parameter (first instance binder)
-  let dictIdx := wrapperParams.findIdx? (fun (u, _) => u == dictUnique) |>.getD 0
-  let dictTyExpr := paramTyExprs[dictIdx]?.getD (Soma.Core.Expr.sort .zero)
+  -- Locate the `$dict` parameter inside the all-binders array
+  let allDictIdx := allValueParams.findIdx? (fun (u, _, _) => u == dictUnique) |>.getD 0
+  let dictTyExpr := paramTyExprs[allDictIdx]?.getD (Soma.Core.Expr.sort .zero)
 
   let mut body : Soma.Core.Expr :=
     Soma.Core.Expr.fieldAccess
       (Soma.Core.Expr.fvar dictUnique dictTyExpr)
       methodNameStr
       fieldIdx
-  for i in [dictIdx + 1 : wrapperParams.size] do
+  for i in [allDictIdx + 1 : allValueParams.size] do
     if paramIsExplicit[i]? == some true then
-      let (u, _) := wrapperParams[i]!
+      let (u, _, _) := allValueParams[i]!
       let tyExpr := paramTyExprs[i]?.getD (Soma.Core.Expr.sort .zero)
       body := Soma.Core.Expr.app body (Soma.Core.Expr.fvar u tyExpr)
 
   return some {
     name := info.name
-    params := wrapperParams
+    params := runtimeParams
+    valueParams := allValueParams
     body := body
     fnType := info.type
     closureInfo := none
@@ -986,7 +1109,7 @@ partial def elaborateSimpleInstanceSkeleton
       collectInstanceMethodJobsFromClassInfo classInfo typeArgs methods
     | none, some typeClass =>
       collectInstanceMethodJobs typeArgs methods
-        typeClass.methodSignatures typeClass.binders
+        typeClass.methodSignatures typeClass
     | none, none =>
       pure (#[], #[])
   let indirectValue := buildIndirectInstanceValue jobs
@@ -1090,11 +1213,23 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
         instanceMap := instanceMap.insert inst.span instInfo
         pending := pending.push p
       | none =>
+        for prior in pending do
+          let bodyResult ← TCM.withInstanceEnv prior.instanceEnvSnapshot do
+            elaborateInstanceBodiesCore prior.jobs prior.selfRefs #[]
+          match instanceMap.get? prior.span with
+          | some priorSkel =>
+            let realInfo := { priorSkel with value := bodyResult.value }
+            env := env.replaceInstanceWithId realInfo
+            instanceMap := instanceMap.insert prior.span realInfo
+          | none => pure ()
+          allTypedFns := allTypedFns ++ bodyResult.typedFns
+        pending := #[]
+        let visible' := mergeInstanceEnvs env seedEnv
         let attemptFull : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) :=
           match typeClass? with
           | some typeClass => elaborateInstance inst typeClass
           | none           => elaborateInstanceFromClassInfo inst classInfo
-        match ← TCM.withInstanceEnv visible attemptFull with
+        match ← TCM.withInstanceEnv visible' attemptFull with
         | some (instInfo, methodFns) =>
           env ← env.addInstanceWithIdForced instInfo
           instanceMap := instanceMap.insert inst.span instInfo
