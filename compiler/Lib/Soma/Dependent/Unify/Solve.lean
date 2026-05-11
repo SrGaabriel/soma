@@ -308,7 +308,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     solveMeta m [] lhs
 
   -- Metavariable with spine on the left
-  | .vNeutral _ neu1, _rhs =>
+  | .vNeutral neuTy1 neu1, _rhs =>
     match getMetaWithSpine neu1 with
     | some (m, spine) =>
       solveMeta m spine v2
@@ -328,10 +328,13 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
                 solveMetaProjectionSpine m projSpine v1
               | none =>
                 unifyNeutral neu1 neu2
+          | .vConstructor _ 0 ctorArgs ctorRty =>
+            let ok ← recordEtaUnify ctorArgs ctorRty neuTy1 neu1 (ctorOnLeft := false)
+            if !ok then throwUnifyError v1' v2' "flex-rigid mismatch"
           | _ => throwUnifyError v1' v2' "flex-rigid mismatch"
 
   -- Metavariable with spine on the right
-  | _lhs, .vNeutral _ty2 neu2 =>
+  | _lhs, .vNeutral neuTy2 neu2 =>
     match getMetaWithSpine neu2 with
     | some (m, spine) =>
       -- Pass original (pre-force) v1 so solvePattern can see abbreviation DataTypes
@@ -343,6 +346,9 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
       | none =>
         match v1' with
         | .vNeutral _ neu1 => unifyNeutral neu1 neu2
+        | .vConstructor _ 0 ctorArgs ctorRty =>
+          let ok ← recordEtaUnify ctorArgs ctorRty neuTy2 neu2 (ctorOnLeft := true)
+          if !ok then throwUnifyError v1' v2' "rigid-flex mismatch"
         | _ => throwUnifyError v1' v2' "rigid-flex mismatch"
 
   -- Eta for pairs: v1 = v2 if (v1.1, v1.2) = (v2.1, v2.2)
@@ -511,6 +517,25 @@ partial def unifyRecordFields (fs1 fs2 : List (String × Value)) : TCM Unit := d
     | some (_, val2) => unify val1 val2
     | none =>
       throwUnifyError (.vRecordVal fs1) (.vRecordVal fs2) s!"field '{name}' not found"
+
+/-- Record-eta unification, mirrors `recordEtaConvert` for the unifier -/
+partial def recordEtaUnify
+    (ctorArgs : List Value) (ctorRty : Value)
+    (neuTy : Value) (neu : Neutral)
+    (ctorOnLeft : Bool) : TCM Bool := do
+  let some ctorTypeId ← recordTypeId? ctorRty | return false
+  let some neuTypeId ← recordTypeId? neuTy | return false
+  if ctorTypeId != neuTypeId then return false
+  let ctx ← TCM.getCtx
+  let some indMeta := ctx.globals.lookupInductive ⟨ctorTypeId⟩ | return false
+  if ctorArgs.length != indMeta.fieldNames.size then return false
+  let projections := recordEtaProjections neu indMeta.fieldNames
+  let argsArr := ctorArgs.toArray
+  for _h : i in [:argsArr.size] do
+    let arg := argsArr[i]!
+    let proj := projections[i]!
+    if ctorOnLeft then unify arg proj else unify proj arg
+  return true
 
 /-- Unify a list of values pairwise -/
 partial def unifyList (vs1 vs2 : List Value) : TCM Unit := do

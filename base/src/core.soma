@@ -1,7 +1,7 @@
-use base::prim::{Int32}
+use base::prim::{Int32, List}
 use base::prop::{Eq, cong}
 use base::string::{String}
-use base::list::{list_append, list_append_assoc}
+use base::list::{list_append, list_append_assoc, list_append_right_id}
 
 @[extern "soma_int_to_string"]
 def int_to_string : Int32 -> String
@@ -70,6 +70,12 @@ instance : Magma String where
 instance : Semigroup String where
     def associative : (x : String) -> (y : String) -> (z : String) -> (x <> (y <> z) = (x <> y) <> z)
         | x, y, z => cong String::New (list_append_assoc x.bytes y.bytes z.bytes)
+
+instance : Monoid String where
+    def identity : String := String::New List::Nil
+    def left_identity (x : String) : (identity <> x = x) := Eq::Refl
+    def right_identity (x : String) : (x <> identity = x) :=
+        cong String::New (list_append_right_id x.bytes)
 
 instance {a : Type} {{d : Display a}} : Display (Option a) where
     def display : Option a -> String

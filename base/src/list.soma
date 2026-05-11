@@ -8,3 +8,7 @@ def list_append {a : Type} : List a -> List a -> List a
 theorem list_append_assoc {a : Type} : (xs : List a) -> (ys : List a) -> (zs : List a) -> Eq (list_append xs (list_append ys zs)) (list_append (list_append xs ys) zs)
     | List::Nil, _, _ => Eq::Refl
     | List::Cons x xs, ys, zs => cong (\rest -> List::Cons x rest) (list_append_assoc xs ys zs)
+
+theorem list_append_right_id {a : Type} : (xs : List a) -> Eq (list_append xs List::Nil) xs
+    | List::Nil => Eq::Refl
+    | List::Cons x xs => cong (\rest -> List::Cons x rest) (list_append_right_id xs)

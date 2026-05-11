@@ -951,6 +951,12 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     if !fstEq then return false
     convert snd b2
 
+  | .vConstructor _ 0 ctorArgs ctorRty, .vNeutral neuTy neu =>
+    recordEtaConvert ctorArgs ctorRty neuTy neu (ctorOnLeft := true)
+
+  | .vNeutral neuTy neu, .vConstructor _ 0 ctorArgs ctorRty =>
+    recordEtaConvert ctorArgs ctorRty neuTy neu (ctorOnLeft := false)
+
   -- Different constructors
   | _, _ => return false
 
@@ -1120,6 +1126,55 @@ partial def convertRecordFields (fs1 fs2 : List (String × Value)) : TCM Bool :=
       let eq ← convert val1 val2
       if !eq then return false
     | none => return false
+  return true
+
+/-- Resolve the unique type identifier for an inductive `record` declaration -/
+partial def recordTypeId? (ty : Value) : TCM (Option Soma.Unique) := do
+  let ty' ← force ty
+  let ctx ← TCM.getCtx
+  let candidate? : Option Soma.Unique :=
+    match ty' with
+    | .vDataType id _ => some id
+    | .vPrimTy p =>
+      Id.run do
+        for role in WiredRole.all do
+          if WiredRole.primTyOfRole? role == some p then
+            if let some info := ctx.globals.wiredIn.getUnique? role then
+              return some info.name.id
+        return none
+    | _ => none
+  match candidate? with
+  | none => return none
+  | some uid =>
+    match ctx.globals.lookupInductive ⟨uid⟩ with
+    | some indMeta =>
+      if indMeta.kind == .record then return some uid else return none
+    | none => return none
+
+/-- Eta-expand a value of an inductive `record` type into a list of field projections -/
+partial def recordEtaProjections (neu : Neutral) (fieldNames : Array String)
+    : Array Value :=
+  fieldNames.map fun field =>
+    Value.vNeutral .type0 (neu.pushElim (.eField field))
+
+/-- Record-eta convertibility -/
+partial def recordEtaConvert
+    (ctorArgs : List Value) (ctorRty : Value)
+    (neuTy : Value) (neu : Neutral)
+    (ctorOnLeft : Bool) : TCM Bool := do
+  let some ctorTypeId ← recordTypeId? ctorRty | return false
+  let some neuTypeId ← recordTypeId? neuTy | return false
+  if ctorTypeId != neuTypeId then return false
+  let ctx ← TCM.getCtx
+  let some indMeta := ctx.globals.lookupInductive ⟨ctorTypeId⟩ | return false
+  if ctorArgs.length != indMeta.fieldNames.size then return false
+  let projections := recordEtaProjections neu indMeta.fieldNames
+  let argsArr := ctorArgs.toArray
+  for _h : i in [:argsArr.size] do
+    let arg := argsArr[i]!
+    let proj := projections[i]!
+    let eq ← if ctorOnLeft then convert arg proj else convert proj arg
+    if !eq then return false
   return true
 
 end

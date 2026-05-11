@@ -1,0 +1,26 @@
+// expect: success
+
+inductive Eq {a : Type} (x : a) : a -> Prop where
+    | Refl : Eq x x
+
+record Couple (a : Type) (b : Type) where
+    fst : a
+    snd : b
+
+def couple_reconstruct {a : Type} {b : Type} (p : Couple a b) : Couple a b :=
+    Couple::New p.fst p.snd
+
+theorem couple_eta {a : Type} {b : Type} (p : Couple a b) : Eq p (couple_reconstruct p) :=
+    Eq::Refl
+
+theorem couple_eta_sym {a : Type} {b : Type} (p : Couple a b) : Eq (couple_reconstruct p) p :=
+    Eq::Refl
+
+record Boxed (a : Type) where
+    unbox : a
+
+def boxed_reconstruct {a : Type} (b : Boxed a) : Boxed a :=
+    Boxed::New b.unbox
+
+theorem boxed_eta {a : Type} (b : Boxed a) : Eq b (boxed_reconstruct b) :=
+    Eq::Refl
