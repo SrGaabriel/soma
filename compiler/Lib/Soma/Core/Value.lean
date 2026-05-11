@@ -22,12 +22,6 @@ inductive Value where
   /-- Lambda abstraction -/
   | vLam (name : String) (body : Closure)
 
-  /-- Dependent pair type: (x : A) * B -/
-  | vSigma (qty : Quantity) (name : String) (fst : Value) (snd : Closure)
-
-  /-- Pair value -/
-  | vPair (fst snd : Value)
-
   /-- Neutral term (stuck computation) -/
   | vNeutral (ty : Value) (neu : Neutral)
 
@@ -116,10 +110,6 @@ inductive Head where
 inductive Elim where
   /-- Function application: `neu arg` -/
   | eApp (arg : Value)
-  /-- First projection of a neutral pair: `neu.fst` -/
-  | eFst
-  /-- Second projection of a neutral pair: `neu.snd` -/
-  | eSnd
   /-- Field access on a neutral record: `neu.field` -/
   | eField (name : String)
 
@@ -275,40 +265,11 @@ def Value.isPi (v : Value) : Bool :=
   | Value.vPi _ _ _ _ _ => true
   | _ => false
 
-/-- Check if value is a sigma type -/
-def Value.isSigma (v : Value) : Bool :=
-  match v with
-  | Value.vSigma _ _ _ _ => true
-  | _ => false
-
 /-- Extract the domain from a Pi type -/
 def Value.piDomain? (v : Value) : Option Value :=
   match v with
   | Value.vPi _ _ _ domain _ => some domain
   | _ => none
-
-/-- Extract the first component type from a Sigma type -/
-def Value.sigmaFst? (v : Value) : Option Value :=
-  match v with
-  | Value.vSigma _ _ fst _ => some fst
-  | _ => none
-
-/-- Create a non-dependent Sigma (product) -/
-def Value.prod (a b : Value) : Value :=
-  Value.vSigma Quantity.omega "_" a (Closure.const "_" b)
-
-/-- Build a tuple/product type from an array of types -/
-def Value.tuple (types : Array Value) : Value :=
-  if types.isEmpty then Value.vPrimTy .unit
-  else if h : types.size = 1 then types[0]
-  else
-    -- Build right-nested sigma
-    let rec go (i : Nat) : Value :=
-      if i + 1 >= types.size then
-        types[types.size - 1]!
-      else
-        Value.prod types[i]! (go (i + 1))
-    go 0
 
 /-- Extract field type from a record row type at a given index -/
 partial def Value.rowFieldType (row : Value) (idx : Nat) : Option Value :=
@@ -423,12 +384,6 @@ def nCase (scrutinees : Array Value) (motive : Value) (arms : List ArmClosure) :
 /-- Application `fn arg` where `fn` is already a neutral -/
 def nApp (fn : Neutral) (arg : Value) : Neutral := fn.pushElim (.eApp arg)
 
-/-- First projection of a neutral pair -/
-def nFst (pair : Neutral) : Neutral := pair.pushElim .eFst
-
-/-- Second projection of a neutral pair -/
-def nSnd (pair : Neutral) : Neutral := pair.pushElim .eSnd
-
 /-- Field access on a neutral record -/
 def nFieldAccess (record : Neutral) (field : String) : Neutral :=
   record.pushElim (.eField field)
@@ -449,9 +404,6 @@ mutual
     | .vPi _ _ _ dom cod =>
       Value.collectMetas dom ++ Closure.collectMetas cod
     | .vLam _ body => Closure.collectMetas body
-    | .vSigma _ _ fst snd =>
-      Value.collectMetas fst ++ Closure.collectMetas snd
-    | .vPair a b => Value.collectMetas a ++ Value.collectMetas b
     | .vNeutral ty neu => Value.collectMetas ty ++ Neutral.collectMetas neu
     | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _ => #[]
     | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => #[]
@@ -485,7 +437,7 @@ mutual
 
   partial def Elim.collectMetas : Elim → Array MetaId
     | .eApp arg => Value.collectMetas arg
-    | .eFst | .eSnd | .eField _ => #[]
+    | .eField _ => #[]
 
   partial def Closure.collectMetas : Closure → Array MetaId
     | .const _ value => Value.collectMetas value

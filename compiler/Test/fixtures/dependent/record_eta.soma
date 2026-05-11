@@ -24,3 +24,9 @@ def boxed_reconstruct {a : Type} (b : Boxed a) : Boxed a :=
 
 theorem boxed_eta {a : Type} (b : Boxed a) : Eq b (boxed_reconstruct b) :=
     Eq::Refl
+
+def tuple_reconstruct (p : (Int32, Int32)) : (Int32, Int32) :=
+    (p.fst, p.snd)
+
+theorem tuple_eta (p : (Int32, Int32)) : Eq p (tuple_reconstruct p) :=
+    Eq::Refl

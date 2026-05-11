@@ -99,18 +99,6 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
     let bodyE ← rename ren.lift bodyVal
     .ok (.lam .explicit name (.sort Level.zero) bodyE)
 
-  | .vSigma qty name fst snd => do
-    let fstE ← rename ren fst
-    let argVal := Value.vNeutral fst (.nVar ⟨name, ⟨ren.dom⟩⟩)
-    let sndVal := Closure.applyPure snd argVal
-    let sndE ← rename ren.lift sndVal
-    .ok (.sigma qty .explicit name fstE sndE)
-
-  | .vPair a b => do
-    let aE ← rename ren a
-    let bE ← rename ren b
-    .ok (.pair aE bE)
-
   | .vNeutral _ neu => renameNeutral ren neu
   | .vPrimTy p => .ok (.primTy p)
   | .vIntLit n => .ok (.lit (.int n))
@@ -196,8 +184,6 @@ partial def renameElim (ren : PartialRenaming) (acc : Soma.Core.Expr) : Elim →
   | .eApp arg => do
     let argE ← rename ren arg
     .ok (.app acc argE)
-  | .eFst => .ok (.projFst acc)
-  | .eSnd => .ok (.projSnd acc)
   | .eField name => .ok (.fieldAccess acc name 0)
 
 partial def renameNeutral (ren : PartialRenaming) (n : Neutral) : RenameResult := do

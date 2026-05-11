@@ -166,7 +166,6 @@ private partial def inlineProducerLets (ctx : FusionCtx) (e : Expr) : Expr :=
       (arms.map fun arm => Arm.mk arm.patterns (inlineProducerLets ctx arm.body))
   | .if_ c t el => .if_ (inlineProducerLets ctx c) (inlineProducerLets ctx t) (inlineProducerLets ctx el)
   | .construct n tag args rty => .construct n tag (args.map (inlineProducerLets ctx)) rty
-  | .pair f s => .pair (inlineProducerLets ctx f) (inlineProducerLets ctx s)
   | .record _ => e
   | _ => e
 
@@ -226,9 +225,6 @@ private partial def fuseChildren (ctx : FusionCtx) (e : Expr) : Expr :=
   | .if_ c t el => .if_ (fuseExpr ctx c) (fuseExpr ctx t) (fuseExpr ctx el)
   | .construct name tag args resultTy =>
     .construct name tag (args.map (fuseExpr ctx)) (fuseExpr ctx resultTy)
-  | .pair f s => .pair (fuseExpr ctx f) (fuseExpr ctx s)
-  | .projFst x => .projFst (fuseExpr ctx x)
-  | .projSnd x => .projSnd (fuseExpr ctx x)
   | .fieldAccess x f i => .fieldAccess (fuseExpr ctx x) f i
   | .inject l args rty => .inject l (args.map (fuseExpr ctx)) (fuseExpr ctx rty)
   | .closure name caps ty =>

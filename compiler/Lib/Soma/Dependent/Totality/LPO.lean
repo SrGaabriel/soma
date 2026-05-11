@@ -59,30 +59,10 @@ partial def compareLPO (t1 t2 : TermShape) (ctx : TerminationContext) : LPOResul
       else if args2.any (fun a => compareLPO t1 a ctx == .less) then .less
       else .incomparable
 
-  | .pair f1 s1, .pair f2 s2 =>
-    compareLPOArgs [f1, s1] [f2, s2] ctx
-
-  -- Projections: compare inner terms
-  | .fstProj i1, .fstProj i2 => compareLPO i1 i2 ctx
-  | .sndProj i1, .sndProj i2 => compareLPO i1 i2 ctx
-
-  -- Projection is less than the whole
-  | .fstProj i1, t2 =>
-    if compareLPO i1 t2 ctx == .equal then .less
-    else .incomparable
-  | .sndProj i1, t2 =>
-    if compareLPO i1 t2 ctx == .equal then .less
-    else .incomparable
-
   -- Variable is subterm of constructor => less
   | .var _, .ctor _ args2 =>
     if args2.any (fun a => compareLPO t1 a ctx == .equal) then .less
     else if args2.any (fun a => compareLPO t1 a ctx == .less) then .less
-    else .incomparable
-
-  | .var _, .pair fst2 snd2 =>
-    if compareLPO t1 fst2 ctx == .equal || compareLPO t1 fst2 ctx == .less then .less
-    else if compareLPO t1 snd2 ctx == .equal || compareLPO t1 snd2 ctx == .less then .less
     else .incomparable
 
   | _, _ => .incomparable
@@ -211,11 +191,6 @@ where
       let g2 := go th guard
       let g3 := go el guard
       combineGuardedness g1 (combineGuardedness g2 g3)
-
-    | .pair a b => combineGuardedness (go a guard) (go b guard)
-
-    | .projFst e => go e guard
-    | .projSnd e => go e guard
 
     | .record fields =>
       fields.foldl (fun g (_, v) => combineGuardedness g (go v guard)) guard

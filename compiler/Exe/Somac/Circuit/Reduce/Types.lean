@@ -488,11 +488,6 @@ private partial def portType (entry : NodeEntry) (portIdx : Nat) : Option Value 
 where
   extractFieldType (ty : Value) (fieldIdx : Nat) : Option Value :=
     match ty with
-    | .vSigma _ _ fst sndClos =>
-      if fieldIdx == 0 then some fst
-      else if fieldIdx == 1 then
-        some (sndClos.applyPure (Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩)))
-      else none
     | .vPi _ _ _ dom cod =>
       if fieldIdx == 0 then some dom
       else extractFieldType (cod.applyPure (Value.vNeutral dom (.nVar ⟨"_", ⟨0⟩⟩))) (fieldIdx - 1)

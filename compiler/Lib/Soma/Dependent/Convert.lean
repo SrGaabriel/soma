@@ -177,12 +177,24 @@ partial def applyElim (v : Value) (e : Elim) : TCM Value := do
   | .vLam _ body, .eApp arg => applyClosure body arg
   | .vDataType id params, .eApp arg =>
     return .vDataType id (params ++ [arg])
-  | .vPair a _, .eFst => pure a
-  | .vPair _ b, .eSnd => pure b
   | .vRecordVal fields, .eField name =>
     match fields.find? (·.1 == name) with
     | some (_, v') => pure v'
     | none => pure v
+  | .vConstructor _ _ _ _, .eField name =>
+    let ctx ← TCM.getCtx
+    match v with
+    | .vConstructor ctorName _ args _ =>
+      match ctx.globals.lookupInductiveByCtor ctorName with
+      | some indMeta =>
+        match indMeta.fieldNames.findIdx? (· == name) with
+        | some idx =>
+          match args.toArray[idx]? with
+          | some fieldVal => pure fieldVal
+          | none => pure v
+        | none => pure v
+      | none => pure v
+    | _ => pure v
   | .vNeutral ty neu, _ =>
     return .vNeutral ty (neu.pushElim e)
   | _, _ => pure v
@@ -322,14 +334,6 @@ partial def substValue (σ : LevelSubst) (v : Value) : TCM Value := do
   | .vLam n c =>
     let c' ← substClosure σ c
     return .vLam n c'
-  | .vSigma q n f s =>
-    let f' ← substValue σ f
-    let s' ← substClosure σ s
-    return .vSigma q n f' s'
-  | .vPair a b =>
-    let a' ← substValue σ a
-    let b' ← substValue σ b
-    return .vPair a' b'
   | .vRowExtend l t tail =>
     let l' ← substValue σ l
     let t' ← substValue σ t
@@ -633,20 +637,6 @@ def etaExpandLam (v : Value) (piTy : Value) : TCM Value := do
       return .vLam name closure
     | _ => return v
 
-/-- Eta-expand a value to a pair if checking against a Sigma type -/
-def etaExpandPair (v : Value) (sigmaTy : Value) : TCM Value := do
-  match v with
-  | .vPair _ _ => return v -- Already a pair
-  | .vNeutral ty neu =>
-    match sigmaTy with
-    | .vSigma _ _ _ _ =>
-      -- η-expand: v becomes (v.1, v.2)
-      let fst := Value.vNeutral ty (.nFst neu)
-      let snd := Value.vNeutral ty (.nSnd neu)
-      return .vPair fst snd
-    | _ => return v
-  | _ => return v
-
 /-- Find a label in a row and return the field type and remaining row -/
 partial def findAndRemoveLabel (label : String) (row : Value) : TCM (Option (Value × Value)) := do
   match row with
@@ -791,23 +781,6 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     let b2Val ← applyClosure body2 x
     convert b1Val b2Val
 
-  -- Sigma types
-  | .vSigma q1 n1 f1 s1, .vSigma q2 _ f2 s2 =>
-    if q1 != q2 then return false
-    let fstEq ← convert f1 f2
-    if !fstEq then return false
-    let lvl ← TCM.currentLevel
-    let x := Value.vNeutral f1 (.nVar ⟨n1, lvl⟩)
-    let snd1 ← applyClosure s1 x
-    let snd2 ← applyClosure s2 x
-    convert snd1 snd2
-
-  -- Pairs
-  | .vPair a1 b1, .vPair a2 b2 =>
-    let fstEq ← convert a1 a2
-    if !fstEq then return false
-    convert b1 b2
-
   -- Primitives
   | .vPrimTy p1, .vPrimTy p2 => return p1 == p2
 
@@ -935,21 +908,6 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     let body1 := Value.vNeutral ty (.nApp neu x)
     let body2 ← applyClosure b2 x
     convert body1 body2
-
-  -- Eta rules for pairs
-  | .vPair a1 b1, .vNeutral ty neu =>
-    let fst := Value.vNeutral ty (.nFst neu)
-    let snd := Value.vNeutral ty (.nSnd neu)
-    let fstEq ← convert a1 fst
-    if !fstEq then return false
-    convert b1 snd
-
-  | .vNeutral ty neu, .vPair a2 b2 =>
-    let fst := Value.vNeutral ty (.nFst neu)
-    let snd := Value.vNeutral ty (.nSnd neu)
-    let fstEq ← convert fst a2
-    if !fstEq then return false
-    convert snd b2
 
   | .vConstructor _ 0 ctorArgs ctorRty, .vNeutral neuTy neu =>
     recordEtaConvert ctorArgs ctorRty neuTy neu (ctorOnLeft := true)
@@ -1079,8 +1037,6 @@ partial def convertHead (h1 h2 : Head) : TCM Bool := do
 partial def convertElim (e1 e2 : Elim) : TCM Bool := do
   match e1, e2 with
   | .eApp a1, .eApp a2 => convert a1 a2
-  | .eFst, .eFst => return true
-  | .eSnd, .eSnd => return true
   | .eField f1, .eField f2 => return f1 == f2
   | _, _ => return false
 
@@ -1148,7 +1104,10 @@ partial def recordTypeId? (ty : Value) : TCM (Option Soma.Unique) := do
   | some uid =>
     match ctx.globals.lookupInductive ⟨uid⟩ with
     | some indMeta =>
-      if indMeta.kind == .record then return some uid else return none
+      if indMeta.ctors.size == 1 && indMeta.fieldNames.size > 0 then
+        return some uid
+      else
+        return none
     | none => return none
 
 /-- Eta-expand a value of an inductive `record` type into a list of field projections -/

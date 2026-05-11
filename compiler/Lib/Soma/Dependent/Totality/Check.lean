@@ -172,20 +172,9 @@ where
       checkTerm then_
       checkTerm else_
 
-    | .pair fst snd =>
-      checkTerm fst
-      checkTerm snd
-
-    | .projFst e => checkTerm e
-    | .projSnd e => checkTerm e
-
     | .pi _ _ _ dom cod =>
       checkTerm dom
       checkTerm cod
-
-    | .sigma _ _ _ fst snd =>
-      checkTerm fst
-      checkTerm snd
 
     | .recordTy row => checkTerm row
     | .variantTy row => checkTerm row

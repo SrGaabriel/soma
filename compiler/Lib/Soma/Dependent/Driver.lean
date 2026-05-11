@@ -1307,8 +1307,20 @@ def buildGlobals
   -- First pass: Register all data type heads
   for typeDef in module.types do
     match typeDef with
-    | .algebraic _ typeName binders _ _ headSort _ =>
-      globals ← registerDataType globals typeName .algebraic binders #[] #[] headSort prevGlobals (isDirty typeName.display)
+    | .algebraic _ typeName binders _ ctors headSort _ =>
+      let (structFieldNames, structFieldQuantities) :=
+        match ctors[0]? with
+        | some ctor =>
+          if ctors.size == 1
+             && ctor.fieldNames.size > 0
+             && ctor.fieldNames.all (· != "_") then
+            (ctor.fieldNames, ctor.fieldQuantities)
+          else
+            (#[], #[])
+        | none => (#[], #[])
+      globals ← registerDataType globals typeName .algebraic binders
+        structFieldNames structFieldQuantities headSort prevGlobals
+        (isDirty typeName.display)
     | .record _ recordName binders _ fields _ =>
       let sourceFieldNames := fields.map (fun f => f.name.getD "_")
       let sourceFieldQuantities := fields.map (·.quantity)
@@ -1375,6 +1387,7 @@ def buildGlobals
           pure ⟨u⟩
       globals ← registerRecordConstructor globals typeClass.name typeClass.binders ctorName fields prevGlobals dirty
 
+  globals ← indexWiredRoles module globals
   -- Functions and theorems
   for fn in module.functions do
     globals ← registerFunction globals fn prevGlobals (isDirty fn.name.display)

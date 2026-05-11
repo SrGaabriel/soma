@@ -238,6 +238,8 @@ end InductiveMeta
 inductive WiredRole where
   | pair
   | typePair
+  | sigma
+  | typeSigma
   | cons
   | nil
   | typeInt
@@ -285,6 +287,8 @@ namespace WiredRole
 def canonical : WiredRole → String
   | .pair => "pair"
   | .typePair => "type.pair"
+  | .sigma => "sigma"
+  | .typeSigma => "type.sigma"
   | .cons => "cons"
   | .nil => "nil"
   | .typeInt => "type.int"
@@ -331,6 +335,8 @@ instance : ToString WiredRole := ⟨canonical⟩
 def fromString? : String → Option WiredRole
   | "pair" => some .pair
   | "type.pair" => some .typePair
+  | "sigma" => some .sigma
+  | "type.sigma" => some .typeSigma
   | "cons" => some .cons
   | "nil" => some .nil
   | "type.int" | "int" => some .typeInt
@@ -407,7 +413,7 @@ def primTyOfRole? (r : WiredRole) : Option Soma.Core.PrimType :=
 
 /-- Every `WiredRole` value, in declaration order -/
 def all : Array WiredRole := #[
-  .pair, .typePair, .cons, .nil,
+  .pair, .typePair, .sigma, .typeSigma, .cons, .nil,
   .typeInt, .typeBool, .typeString, .typeFloat, .typeDouble,
   .typeUnit, .typeInt8, .typeInt16, .typeInt64,
   .typeWord, .typeWord8, .typeWord16, .typeWord64, .typeNat,
@@ -820,7 +826,7 @@ inductive DiscrKey where
   | rowSort
   | labelSort
   | rowEmpty
-  | pi | sigma | lam | pair
+  | pi | lam
   | record | variant | rowExtend
   | labelLit (s : String)
   | intLit (n : Int)
@@ -850,9 +856,7 @@ partial def ofValue : Value → DiscrKey
   | .vFloatLit _ => .floatLit
   | .vStringLit _ => .strLit
   | .vPi _ _ _ _ _ => .pi
-  | .vSigma _ _ _ _ => .sigma
   | .vLam _ _ => .lam
-  | .vPair _ _ => .pair
   | .vRecord _ => .record
   | .vVariant _ => .variant
   | .vRowExtend _ _ _ => .rowExtend
@@ -1744,10 +1748,6 @@ where
     | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => return false
     | .vPi _ _ _ dom _ => goVal dom visited
     | .vLam _ _ => return false
-    | .vSigma _ _ fst _ => goVal fst visited
-    | .vPair a b =>
-      if ← goVal a visited then return true
-      goVal b visited
     | .vRowExtend label ty tail =>
       if ← goVal label visited then return true
       if ← goVal ty visited then return true
@@ -1777,7 +1777,7 @@ where
     neu.spine.anyM fun e =>
       match e with
       | .eApp arg => goVal arg visited
-      | .eFst | .eSnd | .eField _ => pure false
+      | .eField _ => pure false
 
   goHead (h : Head) (visited : Std.HashSet Nat) : TCM Bool := do
     match h with

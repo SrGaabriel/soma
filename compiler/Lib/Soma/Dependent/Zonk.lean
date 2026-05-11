@@ -21,10 +21,6 @@ partial def collectMvarIds (e : Expr) (acc : Std.HashSet MetaId := {}) : Std.Has
   | .lam _ _ dom body => collectMvarIds body (collectMvarIds dom acc)
   | .let_ _ ty val body => collectMvarIds body (collectMvarIds val (collectMvarIds ty acc))
   | .pi _ _ _ dom cod => collectMvarIds cod (collectMvarIds dom acc)
-  | .sigma _ _ _ fst snd => collectMvarIds snd (collectMvarIds fst acc)
-  | .pair fst snd => collectMvarIds snd (collectMvarIds fst acc)
-  | .projFst e => collectMvarIds e acc
-  | .projSnd e => collectMvarIds e acc
   | .construct _ _ args rty =>
     args.foldl (fun a e => collectMvarIds e a) acc |> collectMvarIds rty
   | .«case» scruts motive arms =>
@@ -68,11 +64,6 @@ partial def applyMvarSubst (e : Expr) (subst : Std.HashMap MetaId Expr) (depth :
     .let_ name (applyMvarSubst ty subst depth) (applyMvarSubst val subst depth) (applyMvarSubst body subst (depth + 1))
   | .pi qty info name dom cod =>
     .pi qty info name (applyMvarSubst dom subst depth) (applyMvarSubst cod subst (depth + 1))
-  | .sigma qty info name fst snd =>
-    .sigma qty info name (applyMvarSubst fst subst depth) (applyMvarSubst snd subst (depth + 1))
-  | .pair fst snd => .pair (applyMvarSubst fst subst depth) (applyMvarSubst snd subst depth)
-  | .projFst x => .projFst (applyMvarSubst x subst depth)
-  | .projSnd x => .projSnd (applyMvarSubst x subst depth)
   | .construct name tag args rty =>
     .construct name tag (args.map (applyMvarSubst · subst depth)) (applyMvarSubst rty subst depth)
   | .«case» scruts motive arms =>
@@ -150,16 +141,6 @@ partial def zonkValue (v : Value) : TCM Value := do
   | .vLam name body =>
     let body' ← zonkClosure body
     return .vLam name body'
-
-  | .vSigma qty name fst snd =>
-    let fst' ← zonkValue fst
-    let snd' ← zonkClosure snd
-    return .vSigma qty name fst' snd'
-
-  | .vPair a b =>
-    let a' ← zonkValue a
-    let b' ← zonkValue b
-    return .vPair a' b'
 
   | .vNeutral _ _ =>
     let forced ← force v
@@ -256,8 +237,6 @@ partial def zonkElim (e : Elim) : TCM Elim := do
   | .eApp arg =>
     let arg' ← zonkValue arg
     return .eApp arg'
-  | .eFst => return .eFst
-  | .eSnd => return .eSnd
   | .eField name => return .eField name
 
 /-- Zonk a neutral term -/
@@ -304,10 +283,6 @@ partial def hasUnsolvedMetas (v : Value) : TCM Bool := do
     | none => return true
   | .vPi _ _ _ dom _ => hasUnsolvedMetas dom
   | .vLam _ _ => return false
-  | .vSigma _ _ fst _ => hasUnsolvedMetas fst
-  | .vPair a b =>
-    if ← hasUnsolvedMetas a then return true
-    hasUnsolvedMetas b
   | .vNeutral ty neu =>
     if ← hasUnsolvedMetas ty then return true
     hasUnsolvedMetasNeutral neu
@@ -369,8 +344,6 @@ partial def hasUnsolvedMetasHead (h : Head) : TCM Bool := do
 partial def hasUnsolvedMetasElim (e : Elim) : TCM Bool := do
   match e with
   | .eApp arg => hasUnsolvedMetas arg
-  | .eFst => return false
-  | .eSnd => return false
   | .eField _ => return false
 
 end
@@ -381,10 +354,6 @@ partial def collectUnsolvedMetas (v : Value) (span : Span) : TCM Unit := do
   match v with
   | .vPi _ _ _ dom _ => collectUnsolvedMetas dom span
   | .vLam _ _ => pure ()
-  | .vSigma _ _ fst _ => collectUnsolvedMetas fst span
-  | .vPair a b =>
-    collectUnsolvedMetas a span
-    collectUnsolvedMetas b span
   | .vNeutral ty neu =>
     collectUnsolvedMetas ty span
     collectUnsolvedMetasNeutral neu span
@@ -443,8 +412,6 @@ partial def collectUnsolvedMetasHead (h : Head) (span : Span) : TCM Unit := do
 partial def collectUnsolvedMetasElim (e : Elim) (span : Span) : TCM Unit := do
   match e with
   | .eApp arg => collectUnsolvedMetas arg span
-  | .eFst => pure ()
-  | .eSnd => pure ()
   | .eField _ => pure ()
 
 end
@@ -487,14 +454,6 @@ partial def expandAbbrevValue (v : Value) : TCM Value := do
   | .vLam name body =>
     let body' ← expandAbbrevClosure body
     return .vLam name body'
-  | .vSigma qty name fst snd =>
-    let fst' ← expandAbbrevValue fst
-    let snd' ← expandAbbrevClosure snd
-    return .vSigma qty name fst' snd'
-  | .vPair a b =>
-    let a' ← expandAbbrevValue a
-    let b' ← expandAbbrevValue b
-    return .vPair a' b'
   | .vNeutral ty neu =>
     let ty' ← expandAbbrevValue ty
     return .vNeutral ty' neu

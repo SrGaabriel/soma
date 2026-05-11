@@ -81,14 +81,6 @@ def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none
   | _ =>
     TCM.throw (.expectedFunction v' span origin)
 
-/-- Ensure a value is a Sigma type -/
-def ensureSigma (v : Value) (span : Span) (origin : Option ConstraintOrigin := none)
-    : TCM (Quantity × String × Value × Closure) := do
-  let v' ← force v
-  match v' with
-  | .vSigma qty name fst snd => return (qty, name, fst, snd)
-  | _ => TCM.throw (.expectedSigma v' span origin)
-
 /-- Apply a motive value to an argument.
     Used for transport where we have P : A -> Type and want P x. -/
 def vAppMotive (motive : Value) (arg : Value) : TCM Value := do
@@ -804,10 +796,9 @@ where
     | elem :: rest =>
       let ty' ← force ty
       match ty' with
-      | .vSigma fstQty _ fstTy sndClos =>
+      | .vDataType _ (fstTy :: sndTy :: _) =>
         let (elemPat, elemVal, elemBindings, midLvl) ←
-          convertPatternWithBindings elem fstTy (scrutQty * fstQty) startLvl
-        let sndTy ← applyClosure sndClos elemVal
+          convertPatternWithBindings elem fstTy scrutQty startLvl
         let (restPats, restVals, restBindings, nextLvl) ←
           convertTuplePatternWithBindings rest sndTy scrutQty midLvl
         return (elemPat :: restPats, elemVal :: restVals,
@@ -836,7 +827,11 @@ where
       | some info =>
         let fstTy ← inferValueType v
         let sndTy ← inferValueType restV
-        pure (.vConstructor info.name info.ctorTag [v, restV] (Value.prod fstTy sndTy))
+        let pairTy ← match ← TCM.lookupWiredIn .typePair with
+          | some tyInfo => pure (Value.vDataType tyInfo.name.id [fstTy, sndTy])
+          | none =>
+            TCM.throw (.unboundGlobal "Pair (no @[wired_in \"type.pair\"] type in scope)" span #[])
+        pure (.vConstructor info.name info.ctorTag [v, restV] pairTy)
       | none =>
         TCM.throw (.unboundGlobal "pair (no @[wired_in \"pair\"] constructor in scope)" span #[])
   buildListValue (vs : List Value) (elemTy scrutTy : Value) (span : Span) : TCM Value := do
@@ -1314,8 +1309,10 @@ where
       TCM.recordLocalBindingType name.span fstVal
       let sndExpr ← TCM.withBinding name.name bindingId fstVal qty .explicit name.span do
         inferTypeExpr snd
+      let sigmaTypeInfo ← requireUniqueWiredRole .typeSigma name.span
+      let bExpr := Soma.Core.Expr.lam .explicit name.name fstExpr sndExpr
       return (.vType Level.zero,
-        .sigma qty .explicit name.name fstExpr sndExpr)
+        Soma.Core.Expr.dataTy sigmaTypeInfo.name.id #[fstExpr, bExpr])
 
     -- Universal quantification `forall a b. T`
     | .forall_ vars body _ => do
@@ -1398,7 +1395,7 @@ partial def elaborateTypeArg (typeArg : Soma.Syntax.TypeAppArg) : TCM Value := d
     let expr ← inferTypeExpr tyExpr
     TCM.evalExpr expr
 
-/-- Elaborate a tuple expression in type position as a nested Sigma chain -/
+/-- Elaborate a tuple expression in type position as a nested `Pair` chain -/
 partial def inferTupleAsSigma (elems : List Soma.Syntax.Expr)
     : TCM Soma.Core.Expr := do
   match elems with
@@ -1409,7 +1406,11 @@ partial def inferTupleAsSigma (elems : List Soma.Syntax.Expr)
   | e :: rest => do
     let fstExpr ← elabTypePosition e
     let sndExpr ← inferTupleAsSigma rest
-    return .sigma .omega .explicit "_" fstExpr sndExpr.shiftUp
+    let span : Span := match elems with
+      | head :: _ => head.span
+      | [] => Span.uninhabited
+    let pairTypeInfo ← requireUniqueWiredRole .typePair span
+    return Soma.Core.Expr.dataTy pairTypeInfo.name.id #[fstExpr, sndExpr]
 where
   /-- Elaborate a single tuple element in type position -/
   elabTypePosition (e : Soma.Syntax.Expr) : TCM Soma.Core.Expr := do
@@ -1793,8 +1794,16 @@ partial def inferSyntaxTuple (elems : List Soma.Syntax.Expr) (span : Span)
   | e :: rest => do
     let (fstTy, fstExpr) ← inferSyntax e
     let (sndTy, sndExpr) ← inferSyntaxTuple rest span
-    let sigmaTy := Value.vSigma .omega "_" fstTy (Closure.const "_" sndTy)
-    return (sigmaTy, .pair fstExpr sndExpr)
+    let pairCtor ← requireUniqueWiredRole .pair span
+    let pairTypeInfo ← requireUniqueWiredRole .typePair span
+    let lvl ← TCM.currentLevel
+    let fstTyExpr := Soma.Core.quoteExpr lvl fstTy
+    let sndTyExpr := Soma.Core.quoteExpr lvl sndTy
+    let pairTyVal := Value.vDataType pairTypeInfo.name.id [fstTy, sndTy]
+    let resultTyExpr := Soma.Core.Expr.dataTy pairTypeInfo.name.id #[fstTyExpr, sndTyExpr]
+    let expr := Soma.Core.Expr.construct pairCtor.name pairCtor.ctorTag
+                  #[fstExpr, sndExpr] resultTyExpr
+    return (pairTyVal, expr)
 
 /-- Check an expression against an expected type (Syntax.Expr version) -/
 partial def checkSyntax (e : Soma.Syntax.Expr) (expected : Value)
@@ -1858,9 +1867,18 @@ where
       let armsExpr ← checkSyntaxArms arms.toList scrutTys scrutsExpr motive caseSpan
       return .«case» scrutsExpr motiveExpr armsExpr
 
-    -- Tuple against Sigma: desugar to nested pair checks
-    | .tuple elems _, .vSigma _ _ _ _ =>
-      checkSyntaxTupleAgainstSigma elems.toList expected'
+    -- Tuple against Pair / Sigma: desugar to nested pair-constructor checks
+    | .tuple elems _, .vDataType uid _ => do
+      let pairInfo? ← TCM.lookupWiredIn .typePair
+      let sigmaInfo? ← TCM.lookupWiredIn .typeSigma
+      if pairInfo?.any (·.name.id == uid) || sigmaInfo?.any (·.name.id == uid) then
+        checkSyntaxTupleAgainstSigma elems.toList expected'
+      else
+        let (inferred, expr) ← inferSyntax e
+        let (inferred', expr') ← insertImplicits inferred expr e.span
+        subtypeUnify inferred' expected'
+        let _ ← solveConstraints
+        return expr'
 
     | .tuple elems _, .vType _ => do
       inferTupleAsSigma elems.toList
@@ -1904,7 +1922,7 @@ where
       let _ ← solveConstraints
       return expr'
 
-/-- Check tuple elements against a Sigma type -/
+/-- Check tuple elements against an expected pair type -/
 partial def checkSyntaxTupleAgainstSigma (elems : List Soma.Syntax.Expr) (sigmaTy : Value)
     : TCM Soma.Core.Expr := do
   match elems with
@@ -1914,15 +1932,39 @@ partial def checkSyntaxTupleAgainstSigma (elems : List Soma.Syntax.Expr) (sigmaT
   | [e] => checkSyntax e sigmaTy
   | e :: rest => do
     let sigmaTy' ← force sigmaTy
-    match sigmaTy' with
-    | .vSigma _qty _name fstTy sndClos =>
+    let pairTypeInfo? ← TCM.lookupWiredIn .typePair
+    let sigmaTypeInfo? ← TCM.lookupWiredIn .typeSigma
+    let decomposed? : Option (Value × Value × Bool) ← do
+      match sigmaTy' with
+      | .vDataType uid args =>
+        if pairTypeInfo?.any (·.name.id == uid) then
+          match args with
+          | [fstTy, sndTy] => pure (some (fstTy, sndTy, false))
+          | _ => pure none
+        else if sigmaTypeInfo?.any (·.name.id == uid) then
+          match args with
+          | [fstTy, sndFun] => pure (some (fstTy, sndFun, true))
+          | _ => pure none
+        else pure none
+      | _ => pure none
+    match decomposed? with
+    | some (fstTy, sndRepr, isDependent) =>
       let fstExpr ← checkSyntax e fstTy
       let fstVal ← TCM.evalExpr fstExpr
-      let sndTy ← applyClosure sndClos fstVal
+      let sndTy ← if isDependent then
+                    applyValueArgs sndRepr #[fstVal]
+                  else
+                    pure sndRepr
       let sndExpr ← checkSyntaxTupleAgainstSigma rest sndTy
-      return .pair fstExpr sndExpr
-    | _ =>
-      -- Not a sigma, fall back to inference
+      let pairCtor ← requireUniqueWiredRole .pair e.span
+      let pairTypeInfo ← requireUniqueWiredRole .typePair e.span
+      let lvl ← TCM.currentLevel
+      let fstTyExpr := Soma.Core.quoteExpr lvl fstTy
+      let sndTyExpr := Soma.Core.quoteExpr lvl sndTy
+      let resultTyExpr := Soma.Core.Expr.dataTy pairTypeInfo.name.id #[fstTyExpr, sndTyExpr]
+      return Soma.Core.Expr.construct pairCtor.name pairCtor.ctorTag
+                #[fstExpr, sndExpr] resultTyExpr
+    | none =>
       let (_, expr) ← inferSyntaxTuple elems Span.uninhabited
       return expr
 

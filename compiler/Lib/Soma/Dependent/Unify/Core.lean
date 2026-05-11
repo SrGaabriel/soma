@@ -57,9 +57,6 @@ partial def occursIn (m : MetaId) (v : Value) : Bool :=
     occursIn m dom || occursInClosure m cod
   | .vLam _ body =>
     occursInClosure m body
-  | .vSigma _ _ fst snd =>
-    occursIn m fst || occursInClosure m snd
-  | .vPair a b => occursIn m a || occursIn m b
   | .vNeutral _ neu => occursInNeutral m neu
   | .vPrimTy _ => false
   | .vIntLit _ => false
@@ -100,7 +97,7 @@ partial def occursInHead (m : MetaId) : Head → Bool
 
 partial def occursInElim (m : MetaId) : Elim → Bool
   | .eApp arg => occursIn m arg
-  | .eFst | .eSnd | .eField _ => false
+  | .eField _ => false
 
 partial def occursInClosure (m : MetaId) (clos : Closure) : Bool :=
   match clos with
@@ -119,10 +116,6 @@ where
     | .lam _ _ dom body => occursInExpr m dom || occursInExpr m body
     | .let_ _ ty val body => occursInExpr m ty || occursInExpr m val || occursInExpr m body
     | .pi _ _ _ dom cod => occursInExpr m dom || occursInExpr m cod
-    | .sigma _ _ _ fst snd => occursInExpr m fst || occursInExpr m snd
-    | .pair a b => occursInExpr m a || occursInExpr m b
-    | .projFst e => occursInExpr m e
-    | .projSnd e => occursInExpr m e
     | .if_ c t e => occursInExpr m c || occursInExpr m t || occursInExpr m e
     | .«case» scruts motive arms =>
         scruts.any (occursInExpr m) || occursInExpr m motive ||
@@ -159,9 +152,6 @@ partial def inScope (allowedLevels : List DeBruijnLvl) (v : Value) : Bool :=
     inScope allowedLevels dom && inScopeClosure allowedLevels cod
   | .vLam _ body =>
     inScopeClosure allowedLevels body
-  | .vSigma _ _ fst snd =>
-    inScope allowedLevels fst && inScopeClosure allowedLevels snd
-  | .vPair a b => inScope allowedLevels a && inScope allowedLevels b
   | .vNeutral _ neu => inScopeNeutral allowedLevels neu
   | .vPrimTy _ => true
   | .vIntLit _ => true
@@ -202,7 +192,7 @@ partial def inScopeHead (allowedLevels : List DeBruijnLvl) : Head → Bool
 
 partial def inScopeElim (allowedLevels : List DeBruijnLvl) : Elim → Bool
   | .eApp arg => inScope allowedLevels arg
-  | .eFst | .eSnd | .eField _ => true
+  | .eField _ => true
 
 partial def inScopeClosure (allowedLevels : List DeBruijnLvl) (clos : Closure) : Bool :=
   match clos with
@@ -221,9 +211,6 @@ partial def collectFreeVars (v : Value) : Array DeBruijnLvl :=
     collectFreeVars dom ++ collectFreeVarsClosure cod
   | .vLam _ body =>
     collectFreeVarsClosure body
-  | .vSigma _ _ fst snd =>
-    collectFreeVars fst ++ collectFreeVarsClosure snd
-  | .vPair a b => collectFreeVars a ++ collectFreeVars b
   | .vNeutral _ neu => collectFreeVarsNeutral neu
   | .vPrimTy _ => #[]
   | .vIntLit _ => #[]
@@ -266,7 +253,7 @@ partial def collectFreeVarsHead : Head → Array DeBruijnLvl
 
 partial def collectFreeVarsElim : Elim → Array DeBruijnLvl
   | .eApp arg => collectFreeVars arg
-  | .eFst | .eSnd | .eField _ => #[]
+  | .eField _ => #[]
 
 partial def collectFreeVarsClosure (clos : Closure) : Array DeBruijnLvl :=
   match clos with
@@ -308,14 +295,6 @@ def valueToNeutral (v : Value) : Neutral :=
   | .vNeutral _ neu => neu
   | _ => .nVar ⟨"_eta", ⟨0⟩⟩
 
-/-- Eta-expand a value to a pair -/
-def etaExpandPairValue (v : Value) : Value × Value :=
-  match v with
-  | .vPair a b => (a, b)
-  | .vNeutral ty neu =>
-    (Value.vNeutral ty (.nFst neu), Value.vNeutral ty (.nSnd neu))
-  | _ => (v, v)  -- Shouldn't happen in well-typed code
-
 /-- Enumerate a list with indices starting from 0 -/
 def enumList {α : Type} (xs : List α) : List (Nat × α) :=
   let rec go (i : Nat) : List α → List (Nat × α)
@@ -338,8 +317,6 @@ def getValueKind : Value → String
   | .vType _ => "vType"
   | .vPi _ _ _ _ _ => "vPi"
   | .vLam _ _ => "vLam"
-  | .vSigma _ _ _ _ => "vSigma"
-  | .vPair _ _ => "vPair"
   | .vNeutral _ n => s!"vNeutral({getNeutralKind n})"
   | .vPrimTy p => s!"vPrimTy({p})"
   | .vIntLit _ => "vIntLit"
@@ -368,8 +345,6 @@ where
       | .hCase _ _ _ => "nCase"
     let elimsStr := String.intercalate "," (n.spine.toList.map fun
       | .eApp _ => "app"
-      | .eFst => "fst"
-      | .eSnd => "snd"
       | .eField f => s!"field({f})")
     if elimsStr.isEmpty then headKind else s!"{headKind}[{elimsStr}]"
 

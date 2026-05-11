@@ -70,15 +70,6 @@ def testOccursInPi : Bool :=
   let v := Value.vPi .omega .explicit "x" dom clos
   occursIn metaId v == true
 
-def testOccursInPair : Bool :=
-  let metaId : MetaId := ⟨0⟩
-  let fst := Value.vIntLit 1
-  let snd := Value.vNeutral .type0 (.nMeta metaId)
-  let v := Value.vPair fst snd
-  occursIn metaId v == true
-
-/-! ## Scope Checking Tests -/
-
 def testInScopeVar : Bool :=
   let allowedLevels := [⟨0⟩, ⟨1⟩]
   let v := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
@@ -271,16 +262,6 @@ def testZonkValuePrimTy : Bool :=
   | .ok (.vPrimTy .int, _) => true
   | _ => false
 
-def testZonkValuePair : Bool :=
-  match runTCM do
-    let result ← zonkValue (.vPair (.vIntLit 1) (.vIntLit 2))
-    match result with
-    | .vPair (.vIntLit 1) (.vIntLit 2) => return true
-    | _ => return false
-  with
-  | .ok (true, _) => true
-  | _ => false
-
 def testZonkSolvedMeta : Bool :=
   match runTCM do
     -- Create and solve a meta
@@ -354,8 +335,7 @@ def occursCheckTests : List (String × Bool) := [
   ("occursIn var (no)", testOccursInVar),
   ("occursIn same meta (yes)", testOccursInMeta),
   ("occursIn different meta (no)", testOccursInDifferentMeta),
-  ("occursIn Pi domain", testOccursInPi),
-  ("occursIn pair snd", testOccursInPair)
+  ("occursIn Pi domain", testOccursInPi)
 ]
 
 def scopeCheckTests : List (String × Bool) := [
@@ -408,7 +388,6 @@ def constraintTests : List (String × Bool) := [
 
 def zonkTests : List (String × Bool) := [
   ("zonk primTy", testZonkValuePrimTy),
-  ("zonk pair", testZonkValuePair),
   ("zonk solved meta", testZonkSolvedMeta),
   ("zonk unsolved meta", testZonkUnsolvedMeta),
   ("zonk level simplifies", testZonkLevel)
@@ -431,15 +410,6 @@ def testCollectMetasSingle : Bool :=
   let v := Value.vNeutral .type0 (.nMeta metaId)
   let metas := Value.collectMetas v
   metas.size == 1 && metas[0]! == metaId
-
-def testCollectMetasMultiple : Bool :=
-  let meta1 : MetaId := ⟨0⟩
-  let meta2 : MetaId := ⟨1⟩
-  let v := Value.vPair
-    (Value.vNeutral .type0 (.nMeta meta1))
-    (Value.vNeutral .type0 (.nMeta meta2))
-  let metas := Value.collectMetas v
-  metas.size == 2 && metas.contains meta1 && metas.contains meta2
 
 def testCollectMetasPi : Bool :=
   let metaId : MetaId := ⟨0⟩
@@ -581,7 +551,6 @@ def testWakeConstraintsFor : Bool :=
 def dependencyTrackingTests : List (String × Bool) := [
   ("collectMetas empty", testCollectMetasEmpty),
   ("collectMetas single meta", testCollectMetasSingle),
-  ("collectMetas multiple metas", testCollectMetasMultiple),
   ("collectMetas Pi domain", testCollectMetasPi),
   ("collectMetas constraint", testCollectMetasConstraint),
   ("MetaDependencies empty", testMetaDependenciesEmpty),
@@ -611,13 +580,6 @@ def testCollectFreeVarsVar : Bool :=
   let v := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
   let vars := collectFreeVars v
   vars.size == 1 && vars[0]! == ⟨0⟩
-
-def testCollectFreeVarsMultiple : Bool :=
-  let x := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
-  let y := Value.vNeutral .type0 (.nVar ⟨"y", ⟨1⟩⟩)
-  let v := Value.vPair x y
-  let vars := collectFreeVars v
-  vars.size == 2 && vars.contains ⟨0⟩ && vars.contains ⟨1⟩
 
 def testCollectFreeVarsMeta : Bool :=
   -- Metas should not contribute free vars (they're not bound vars)
@@ -750,21 +712,6 @@ def testTryEtaExpandLambdaNo : Bool :=
   | some _ => false
   | none => true
 
-def testTryEtaExpandPairYes : Bool :=
-  let p := Value.vPair (.vIntLit 1) (.vIntLit 2)
-  match tryEtaExpandPair p with
-  | some (a, b) =>
-    match a, b with
-    | .vIntLit 1, .vIntLit 2 => true
-    | _, _ => false
-  | none => false
-
-def testTryEtaExpandPairNo : Bool :=
-  let v := Value.vPrimTy .int
-  match tryEtaExpandPair v with
-  | some _ => false
-  | none => true
-
 def testTryMakePatternViaEtaLambda : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
@@ -840,7 +787,6 @@ def testUnifyWithHeterogeneousType : Bool :=
 def freeVarTests : List (String × Bool) := [
   ("collectFreeVars empty", testCollectFreeVarsEmpty),
   ("collectFreeVars var", testCollectFreeVarsVar),
-  ("collectFreeVars multiple", testCollectFreeVarsMultiple),
   ("collectFreeVars meta (no contribution)", testCollectFreeVarsMeta),
   ("collectFreeVars Pi", testCollectFreeVarsPi)
 ]
@@ -865,8 +811,6 @@ def heterogeneousTests : List (String × Bool) := [
 def etaExpansionTests : List (String × Bool) := [
   ("tryEtaExpandLambda yes", testTryEtaExpandLambdaYes),
   ("tryEtaExpandLambda no", testTryEtaExpandLambdaNo),
-  ("tryEtaExpandPair yes", testTryEtaExpandPairYes),
-  ("tryEtaExpandPair no", testTryEtaExpandPairNo),
   ("tryMakePatternViaEta lambda", testTryMakePatternViaEtaLambda),
   ("tryMakePatternViaEta non-lambda", testTryMakePatternViaEtaNonLambda)
 ]
@@ -971,27 +915,11 @@ def testDetectTwinVarsSingle : Bool :=
   let twins := detectTwinVars [x] rhs
   twins.length == 1
 
-def testDetectTwinVarsMultiple : Bool :=
-  let x := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
-  let y := Value.vNeutral .type0 (.nVar ⟨"y", ⟨1⟩⟩)
-  -- RHS references both x and y
-  let rhs := Value.vPair x y
-  let twins := detectTwinVars [x, y] rhs
-  twins.length == 2
-
 def testAllVarsCoveredByTwinsYes : Bool :=
   let x := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
   let twins : List TwinVar := [{ originalLevel := ⟨0⟩, name1 := "x", name2 := "x" }]
   let rhs := x
   allVarsCoveredByTwins twins rhs
-
-def testAllVarsCoveredByTwinsNo : Bool :=
-  let x := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
-  let y := Value.vNeutral .type0 (.nVar ⟨"y", ⟨1⟩⟩)
-  -- Twin only covers x, but RHS also uses y
-  let twins : List TwinVar := [{ originalLevel := ⟨0⟩, name1 := "x", name2 := "x" }]
-  let rhs := Value.vPair x y
-  !allVarsCoveredByTwins twins rhs
 
 /-! ### Occurs Check Pruning Tests -/
 
@@ -1006,13 +934,6 @@ def testCollectMetaOccurrencesSingle : Bool :=
   let v := Value.vNeutral .type0 (.nMeta m)
   let occs := collectMetaOccurrences m v 0 #[]
   occs.size == 1 && occs[0]!.depth == 0
-
-def testCollectMetaOccurrencesNested : Bool :=
-  let m : MetaId := ⟨0⟩
-  let inner := Value.vNeutral .type0 (.nMeta m)
-  let v := Value.vPair (.vIntLit 1) inner
-  let occs := collectMetaOccurrences m v 0 #[]
-  occs.size == 1 && occs[0]!.depth == 1
 
 def testTryOccursCheckPruningNoOccurrences : Bool :=
   match runTCM do
@@ -1089,15 +1010,12 @@ def spineIntersectionTests : List (String × Bool) := [
 def twinVariableTests : List (String × Bool) := [
   ("detectTwinVars none", testDetectTwinVarsNone),
   ("detectTwinVars single", testDetectTwinVarsSingle),
-  ("detectTwinVars multiple", testDetectTwinVarsMultiple),
-  ("allVarsCoveredByTwins yes", testAllVarsCoveredByTwinsYes),
-  ("allVarsCoveredByTwins no", testAllVarsCoveredByTwinsNo)
+  ("allVarsCoveredByTwins yes", testAllVarsCoveredByTwinsYes)
 ]
 
 def occursCheckPruningTests : List (String × Bool) := [
   ("collectMetaOccurrences none", testCollectMetaOccurrencesNone),
   ("collectMetaOccurrences single", testCollectMetaOccurrencesSingle),
-  ("collectMetaOccurrences nested", testCollectMetaOccurrencesNested),
   ("tryOccursCheckPruning no occurrences", testTryOccursCheckPruningNoOccurrences)
 ]
 

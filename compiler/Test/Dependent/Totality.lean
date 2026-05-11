@@ -206,20 +206,6 @@ def testCtorShape : IO TestResult := do
   | .ctor "Pair" args => if args.size == 2 then return .passed else return .failed "wrong arity"
   | _ => return .failed s!"expected ctor shape, got {repr shape}"
 
-def testPairShape : IO TestResult := do
-  let term := Soma.Core.Expr.pair (testVar "a") (testVar "b")
-  let shape := analyzeExprShape term
-  match shape with
-  | .pair (.var "a") (.var "b") => return .passed
-  | _ => return .failed s!"expected pair shape, got {repr shape}"
-
-def testFstProjShape : IO TestResult := do
-  let term := Soma.Core.Expr.projFst (testVar "p")
-  let shape := analyzeExprShape term
-  match shape with
-  | .fstProj (.var "p") => return .passed
-  | _ => return .failed s!"expected fstProj shape, got {repr shape}"
-
 def testCollectVars : IO TestResult := do
   let term := testConstruct "Node" 0 [testVar "a", testVar "b"]
   let shape := analyzeExprShape term
@@ -232,8 +218,6 @@ def run : IO TestRunner := do
   let mut runner := TestRunner.init
   runner := runner.record "var_shape" (← testVarShape)
   runner := runner.record "ctor_shape" (← testCtorShape)
-  runner := runner.record "pair_shape" (← testPairShape)
-  runner := runner.record "fst_proj_shape" (← testFstProjShape)
   runner := runner.record "collect_vars" (← testCollectVars)
   return runner
 
@@ -268,13 +252,13 @@ def testVarEqual : IO TestResult := do
   | _ => return .failed s!"param 'x' should be equal to itself, got {repr cmp}"
 
 def testProjectionSmaller : IO TestResult := do
-  -- fst x is smaller than x
+  -- p.fst is smaller than p
   let ctx := TerminationContext.fromParams #["p"]
-  let shape := TermShape.fstProj (.var "p")
+  let shape := TermShape.fieldProj (.var "p") "fst"
   let cmp := compareTermToParam shape 0 "p" ctx
   match cmp with
   | .smaller _ => return .passed
-  | _ => return .failed s!"'fst p' should be smaller than 'p', got {repr cmp}"
+  | _ => return .failed s!"'p.fst' should be smaller than 'p', got {repr cmp}"
 
 def testCtorWithSmallerComponents : IO TestResult := do
   -- Pair a b where a and b are smaller should be smaller overall

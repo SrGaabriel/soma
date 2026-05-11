@@ -84,12 +84,6 @@ partial def traverseValue (action : TraversalAction α) (v : Value) : α :=
     | .vLam _ body =>
       traverseClosure action body
 
-    | .vSigma _ _ fst snd =>
-      inst.combine (traverseValue action fst) (traverseClosure action snd)
-
-    | .vPair a b =>
-      inst.combine (traverseValue action a) (traverseValue action b)
-
     | .vNeutral ty neu =>
       inst.combine (traverseValue action ty) (traverseNeutral action neu)
 
@@ -153,7 +147,7 @@ partial def traverseHead (action : TraversalAction α) (h : Head) : α :=
 partial def traverseElim (action : TraversalAction α) (e : Elim) : α :=
   match e with
   | .eApp arg => traverseValue action arg
-  | .eFst | .eSnd | .eField _ => inst.empty
+  | .eField _ => inst.empty
 
 /-- Traverse a Neutral term -/
 partial def traverseNeutral (action : TraversalAction α) (n : Neutral) : α :=
@@ -252,16 +246,6 @@ partial def traverseValueM
     | .vLam _ body =>
       traverseClosureM action body
 
-    | .vSigma _ _ fst snd =>
-      let r1 ← traverseValueM action fst
-      let r2 ← traverseClosureM action snd
-      return inst.combine r1 r2
-
-    | .vPair a b =>
-      let r1 ← traverseValueM action a
-      let r2 ← traverseValueM action b
-      return inst.combine r1 r2
-
     | .vNeutral ty neu =>
       let r1 ← traverseValueM action ty
       let r2 ← traverseNeutralM action neu
@@ -353,7 +337,7 @@ partial def traverseElimM
     (action : MTraversalAction M α) (e : Elim) : M α := do
   match e with
   | .eApp arg => traverseValueM action arg
-  | .eFst | .eSnd | .eField _ => return inst.empty
+  | .eField _ => return inst.empty
 
 /-- Monadic traversal of a Neutral: head + each eliminator -/
 partial def traverseNeutralM
@@ -411,16 +395,6 @@ partial def transformValueM (t : ValueTransformer M) (v : Value) : M Value := do
     | .vLam name body =>
       let body' ← transformClosureM t body
       return .vLam name body'
-
-    | .vSigma qty name fst snd =>
-      let fst' ← transformValueM t fst
-      let snd' ← transformClosureM t snd
-      return .vSigma qty name fst' snd'
-
-    | .vPair a b =>
-      let a' ← transformValueM t a
-      let b' ← transformValueM t b
-      return .vPair a' b'
 
     | .vNeutral ty neu =>
       let ty' ← transformValueM t ty
@@ -505,8 +479,6 @@ partial def transformElimM (t : ValueTransformer M) (e : Elim) : M Elim := do
   | .eApp arg =>
     let arg' ← transformValueM t arg
     return .eApp arg'
-  | .eFst => return .eFst
-  | .eSnd => return .eSnd
   | .eField name => return .eField name
 
 /-- Transform a Neutral using a ValueTransformer -/

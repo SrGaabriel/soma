@@ -84,18 +84,8 @@ partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value)
     | .violated reason span => .violated reason span
     | .ok => checkPositivityClosure unique pol cod dom
 
-  | .vSigma _ _ fst snd =>
-    match checkPositivityValue unique pol fst with
-    | .violated reason span => .violated reason span
-    | .ok => checkPositivityClosure unique pol snd fst
-
   | .vLam _ body =>
     checkPositivityClosure unique pol body (.vType .zero)
-
-  | .vPair a b =>
-    match checkPositivityValue unique pol a with
-    | .violated reason span => .violated reason span
-    | .ok => checkPositivityValue unique pol b
 
   | .vRowEmpty => .ok
 
@@ -182,11 +172,9 @@ def checkDataTypePositivity (unique : Unique) (constructors : Array Value)
 private partial def checkIndexValue (v : Value) (reg : TotalityRegistry) : List String :=
   match v with
   | .vNeutral _ neu => checkNeutral neu reg
-  | .vPair a b => checkIndexValue a reg ++ checkIndexValue b reg
   | .vConstructor _ _ args _ => args.flatMap (checkIndexValue · reg)
   | .vDataType _ params => params.flatMap (checkIndexValue · reg)
   | .vPi _ _ _ dom _ => checkIndexValue dom reg
-  | .vSigma _ _ fst _ => checkIndexValue fst reg
   | .vRowExtend label ty tail =>
       checkIndexValue label reg ++ checkIndexValue ty reg ++ checkIndexValue tail reg
   | .vRecord row => checkIndexValue row reg
@@ -211,7 +199,7 @@ where
   checkElim (e : Elim) (reg : TotalityRegistry) : List String :=
     match e with
     | .eApp arg => checkIndexValue arg reg
-    | .eFst | .eSnd | .eField _ => []
+    | .eField _ => []
   checkNeutral (neu : Neutral) (reg : TotalityRegistry) : List String :=
     checkHead neu.head reg ++
       neu.spine.foldl (fun acc e => acc ++ checkElim e reg) []

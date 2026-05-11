@@ -537,14 +537,6 @@ partial def extractRowVariantsWithMapping (row : Value) (ctx : TypeConvCtx n)
   | Value.vRowExtend _label fieldTy tail =>
     let fields := match fieldTy with
       | Value.vPrimTy (.unit) => #[]
-      | Value.vSigma _ _ fst sndClos =>
-        let fstTy := convertValueTypeWithMapping fst ctx
-        let sndTy := match sndClos with
-          | .const _ v => convertValueTypeWithMapping v ctx
-          | _ => .prim .i64
-        #[fstTy, sndTy]
-      | Value.vPair fst snd =>
-        #[convertValueTypeWithMapping fst ctx, convertValueTypeWithMapping snd ctx]
       | other => #[convertValueTypeWithMapping other ctx]
     extractRowVariantsWithMapping tail ctx (idx + 1) (acc.push (idx, fields))
   | _ => acc
@@ -578,18 +570,6 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
         convertValueTypeWithMapping (cod.applyPure dummyArg) ctx
     .closure #[domTy] codTy
   | Value.vLam _ _ => .closure #[] .rawPtr
-  | Value.vSigma _ name fst sndClos =>
-    let sndTy := match sndClos with
-      | .const _ value => convertValueTypeWithMapping value ctx
-      | .term closName env _ =>
-        let freshLvl : Nat := ctx.tyVars.map.fold (init := env.level.lvl)
-          fun acc level _ => max acc (level + 1)
-        let dummyArg := Value.vNeutral fst (.nVar ⟨closName, ⟨freshLvl⟩⟩)
-        convertValueTypeWithMapping (sndClos.applyPure dummyArg) ctx
-    .struct #[("fst", convertValueTypeWithMapping fst ctx), ("snd", sndTy)]
-  | Value.vPair fst snd =>
-    .struct #[("fst", convertValueTypeWithMapping fst ctx),
-              ("snd", convertValueTypeWithMapping snd ctx)]
   | Value.vDataType dId params =>
     match ctx.primTypes.get? dId with
     | some prim => convertPrimToAlloyTy prim params ctx
@@ -721,7 +701,7 @@ partial def collectTyVarLevelsElim (e : Soma.Core.Elim) (acc : Std.HashSet Nat)
     : Std.HashSet Nat :=
   match e with
   | .eApp arg => collectTyVarLevels arg acc
-  | .eFst | .eSnd | .eField _ => acc
+  | .eField _ => acc
 
 /-- Collect all de Bruijn levels from a Neutral term -/
 partial def collectTyVarLevelsNeutral (neu : Soma.Core.Neutral) (acc : Std.HashSet Nat)
@@ -741,16 +721,6 @@ partial def collectTyVarLevels (val : Value) (acc : Std.HashSet Nat := {}) : Std
       let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
       let nextTy := cod.applyPure dummyArg
       collectTyVarLevels nextTy acc'
-  | Value.vSigma _ name fst sndClos =>
-    let acc' := collectTyVarLevels fst acc
-    match sndClos with
-    | .const _ body => collectTyVarLevels body acc'
-    | .term _ env _ =>
-      let dummyArg := Value.vNeutral fst (.nVar ⟨name, env.level⟩)
-      let nextTy := sndClos.applyPure dummyArg
-      collectTyVarLevels nextTy acc'
-  | Value.vPair fst snd =>
-    collectTyVarLevels snd (collectTyVarLevels fst acc)
   | Value.vDataType _ params =>
     params.foldl (fun a p => collectTyVarLevels p a) acc
   | Value.vVariant row => collectTyVarLevels row acc
@@ -827,14 +797,6 @@ partial def matchTypeStructural (poly concrete : Value)
         (params1.zip params2).foldl (fun acc (p, c) =>
           matchTypeStructural p c levels acc) bindings
       else bindings
-    | _ => bindings
-  | Value.vSigma _ _ fst1 sndClos1 =>
-    match concrete with
-    | Value.vSigma _ _ fst2 sndClos2 =>
-      let bindings' := matchTypeStructural fst1 fst2 levels bindings
-      let snd1 := advanceCodomain sndClos1 fst1
-      let snd2 := advanceCodomain sndClos2 fst2
-      matchTypeStructural snd1 snd2 levels bindings'
     | _ => bindings
   | _ => bindings
 

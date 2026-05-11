@@ -56,10 +56,6 @@ partial def normKey (v : Value) (depth : Nat) (m : NormMap)
   | .vConstructor _ tag as _ =>
     let (parts, m') ← normKeyList as depth m
     return (s!"C{tag}[{parts}]", m')
-  | .vPair fst snd =>
-    let (f, m₁) ← normKey fst depth m
-    let (s, m₂) ← normKey snd depth m₁
-    return (s!"({f},{s})", m₂)
   | .vRecord row =>
     let (r, m') ← normKey row depth m
     return (s!"R({r})", m')
@@ -102,12 +98,6 @@ partial def normKey (v : Value) (depth : Nat) (m : NormMap)
     let codV ← applyClosure cod dummy
     let (cs, m₂) ← normKey codV (depth + 1) m₁
     return (s!"Π{toString qty}{toString binder}({ds}→{cs})", m₂)
-  | .vSigma qty _ fst snd =>
-    let (fs, m₁) ← normKey fst depth m
-    let dummy := Value.vNeutral fst (.nVar ⟨"_σ", ⟨depth⟩⟩)
-    let sndV ← applyClosure snd dummy
-    let (ss, m₂) ← normKey sndV (depth + 1) m₁
-    return (s!"Σ{toString qty}({fs}×{ss})", m₂)
   | .vLam _ body =>
     let dummy := Value.vNeutral (.vType .zero) (.nVar ⟨"_λ", ⟨depth⟩⟩)
     let bV ← applyClosure body dummy
@@ -151,8 +141,6 @@ partial def normElimKey (e : Elim) (depth : Nat) (m : NormMap)
     : TCM (String × NormMap) := do
   match e with
   | .eApp a    => let (s, m') ← normKey a depth m; return (s!"@{s}", m')
-  | .eFst      => return (".1", m)
-  | .eSnd      => return (".2", m)
   | .eField n  => return (s!".{n}", m)
 
 partial def normKeyList (vs : List Value) (depth : Nat) (m : NormMap)
@@ -443,13 +431,6 @@ private partial def refreshStaleMetas (v : Value) (mapping : Std.HashMap Nat Met
   | .vPi qty binder name dom cod =>
     let (dom', mapping') ← refreshStaleMetas dom mapping
     return (.vPi qty binder name dom' cod, mapping')
-  | .vSigma qty name fst snd =>
-    let (fst', mapping') ← refreshStaleMetas fst mapping
-    return (.vSigma qty name fst' snd, mapping')
-  | .vPair fst snd =>
-    let (fst', mapping') ← refreshStaleMetas fst mapping
-    let (snd', mapping'') ← refreshStaleMetas snd mapping'
-    return (.vPair fst' snd', mapping'')
   | .vRowExtend label fieldTy tail =>
     let (label', mapping') ← refreshStaleMetas label mapping
     let (fieldTy', mapping'') ← refreshStaleMetas fieldTy mapping'
@@ -531,8 +512,6 @@ where
     | .eApp arg =>
       let (arg', mapping') ← refreshStaleMetas arg mapping
       return (.eApp arg', mapping')
-    | .eFst => return (e, mapping)
-    | .eSnd => return (e, mapping)
     | .eField _ => return (e, mapping)
 
 /-- Try to match instance arguments against goal arguments using unification.
@@ -809,9 +788,6 @@ partial def deepForceValue (v : Value) : TCM Value := do
   | .vPi qty binder name dom cod =>
     let dom' ← deepForceValue dom
     return .vPi qty binder name dom' cod
-  | .vSigma qty name fst snd =>
-    let fst' ← deepForceValue fst
-    return .vSigma qty name fst' snd
   | .vRowExtend label fieldTy tail =>
     let label' ← deepForceValue label
     let fieldTy' ← deepForceValue fieldTy

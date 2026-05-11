@@ -347,12 +347,6 @@ partial def collectMetaOccurrences (m : MetaId) (v : Value) (depth : Nat)
     collectMetaOccurrencesClosure m cod (depth + 1) scope
   | .vLam _ body =>
     collectMetaOccurrencesClosure m body (depth + 1) scope
-  | .vSigma _ _ fst snd =>
-    collectMetaOccurrences m fst depth scope ++
-    collectMetaOccurrencesClosure m snd (depth + 1) scope
-  | .vPair a b =>
-    collectMetaOccurrences m a (depth + 1) scope ++
-    collectMetaOccurrences m b (depth + 1) scope
   | .vNeutral _ neu => collectMetaOccurrencesNeutral m neu depth scope
   | .vRowExtend label ty tail =>
     collectMetaOccurrences m label depth scope ++
@@ -411,7 +405,7 @@ partial def collectMetaOccurrencesElim (m : MetaId) (e : Elim) (depth : Nat)
     (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
   match e with
   | .eApp arg => collectMetaOccurrences m arg depth scope
-  | .eFst | .eSnd | .eField _ => #[]
+  | .eField _ => #[]
 
 partial def collectMetaOccurrencesClosure (m : MetaId) (clos : Closure) (depth : Nat)
     (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
@@ -476,15 +470,6 @@ def tryEtaExpandLambda (rhs : Value) : Option (String × Value × Value) :=
     -- We can η-expand: instead of ?m = λx. body, solve ?m x = body
     -- where body is the closure applied to a fresh variable
     some (name, .type0, .vNeutral .type0 (.nVar ⟨name, ⟨0⟩⟩))  -- Placeholder, actual application done in caller
-  | _ => none
-
-/-- Try η-expansion on a pair -/
-def tryEtaExpandPair (rhs : Value) : Option (Value × Value) :=
-  match rhs with
-  | .vPair a b => some (a, b)
-  | .vNeutral ty neu =>
-    -- η-expand: x = (fst x, snd x)
-    some (.vNeutral ty (.nFst neu), .vNeutral ty (.nSnd neu))
   | _ => none
 
 /-- Check if a spine can be made into a pattern by η-expanding the meta.

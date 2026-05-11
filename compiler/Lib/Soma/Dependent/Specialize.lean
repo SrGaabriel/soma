@@ -123,11 +123,6 @@ private partial def specializeChildren (registry : ClassMethodRegistry) (e : Exp
       (specializeExpr registry body)
   | .pi qty info name domain codomain =>
     .pi qty info name (specializeExpr registry domain) (specializeExpr registry codomain)
-  | .sigma qty info name fst snd =>
-    .sigma qty info name (specializeExpr registry fst) (specializeExpr registry snd)
-  | .pair fst snd => .pair (specializeExpr registry fst) (specializeExpr registry snd)
-  | .projFst e => .projFst (specializeExpr registry e)
-  | .projSnd e => .projSnd (specializeExpr registry e)
   | .if_ c t e => .if_ (specializeExpr registry c) (specializeExpr registry t)
     (specializeExpr registry e)
   | .«case» scruts motive arms =>
@@ -173,9 +168,7 @@ where
     | .lam _ _ d b => go b (go d acc)
     | .let_ _ t v b => go b (go v (go t acc))
     | .pi _ _ _ d c => go c (go d acc)
-    | .sigma _ _ _ f s => go s (go f acc)
-    | .pair f s => go s (go f acc)
-    | .projFst x | .projSnd x | .ann x _ => go x acc
+    | .ann x _ => go x acc
     | .construct _ _ args _ => args.foldl (fun a e => go e a) acc
     | .case scruts m arms =>
       let acc := scruts.foldl (fun a e => go e a) acc

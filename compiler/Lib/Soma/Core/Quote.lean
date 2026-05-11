@@ -22,8 +22,6 @@ partial def headToString : Head → String
 /-- Format an eliminator applied on top of an already-rendered prefix -/
 partial def elimToString (acc : String) : Elim → String
   | .eApp arg => s!"{acc} {valueToString arg}"
-  | .eFst => s!"{acc}.1"
-  | .eSnd => s!"{acc}.2"
   | .eField name => s!"{acc}.{name}"
 
 /-- Convert a neutral to a string by folding its spine over its head -/
@@ -50,13 +48,6 @@ partial def valueToString (v : Value) : String :=
 
   | .vLam name _body =>
     s!"fun({name}). ..."
-
-  | .vSigma _qty name fst _snd =>
-    let fstStr := valueToString fst
-    s!"({name} : {fstStr}) × ..."
-
-  | .vPair fst snd =>
-    s!"({valueToString fst}, {valueToString snd})"
 
   | .vNeutral _ neu =>
     neutralToString neu
@@ -134,8 +125,6 @@ partial def valueEq (v1 v2 : Value) : Bool :=
     valueEq l1 l2 && valueEq t1 t2 && valueEq r1 r2
   | .vRecord r1, .vRecord r2 => valueEq r1 r2
   | .vVariant r1, .vVariant r2 => valueEq r1 r2
-  | .vPair a1 b1, .vPair a2 b2 =>
-    valueEq a1 a2 && valueEq b1 b2
   | .vNeutral _ n1, .vNeutral _ n2 => neutralEq n1 n2
   | .vDataType id1 ps1, .vDataType id2 ps2 =>
     id1 == id2 && ps1.length == ps2.length &&
@@ -194,8 +183,6 @@ partial def envEq (e1 e2 : Env) : Bool :=
 partial def elimEq (e1 e2 : Elim) : Bool :=
   match e1, e2 with
   | .eApp a1, .eApp a2 => valueEq a1 a2
-  | .eFst, .eFst => true
-  | .eSnd, .eSnd => true
   | .eField f1, .eField f2 => f1 == f2
   | _, _ => false
 
@@ -222,9 +209,6 @@ partial def valueMaxBoundLvl? (v : Value) : Option Nat :=
   | .vPi _ _ _ dom cod =>
     maxOpt? (valueMaxBoundLvl? dom) (closureMaxBoundLvl? cod)
   | .vLam _ body => closureMaxBoundLvl? body
-  | .vSigma _ _ fst snd =>
-    maxOpt? (valueMaxBoundLvl? fst) (closureMaxBoundLvl? snd)
-  | .vPair a b => maxOpt? (valueMaxBoundLvl? a) (valueMaxBoundLvl? b)
   | .vRowExtend l t tail =>
     maxOpt? (valueMaxBoundLvl? l)
       (maxOpt? (valueMaxBoundLvl? t) (valueMaxBoundLvl? tail))
@@ -268,7 +252,7 @@ partial def neutralMaxBoundLvl? (n : Neutral) : Option Nat :=
   let spineMax := n.spine.foldl (init := none) fun acc e =>
     match e with
     | .eApp arg => maxOpt? acc (valueMaxBoundLvl? arg)
-    | .eFst | .eSnd | .eField _ => acc
+    | .eField _ => acc
   maxOpt? headMax spineMax
 
 partial def closureMaxBoundLvl? : Closure → Option Nat
@@ -312,10 +296,6 @@ where
     | .lam info n dom b => .lam info n (go dom d) (go b (d + 1))
     | .let_ n t v b => .let_ n (go t d) (go v d) (go b (d + 1))
     | .pi q info n dom c => .pi q info n (go dom d) (go c (d + 1))
-    | .sigma q info n f s => .sigma q info n (go f d) (go s (d + 1))
-    | .pair f s => .pair (go f d) (go s d)
-    | .projFst x => .projFst (go x d)
-    | .projSnd x => .projSnd (go x d)
     | .construct n t args rty => .construct n t (args.map (go · d)) (go rty d)
     | .«case» scruts motive arms =>
       .«case» (scruts.map (go · d)) (go motive d)
@@ -361,14 +341,6 @@ partial def quoteExpr (depth : DeBruijnLvl) (v : Value) : Expr :=
     let bodyExpr := quoteExpr depth.succ bodyVal
     .lam .explicit name (.sort Level.zero) bodyExpr
 
-  | .vSigma qty name fst snd =>
-    let fstExpr := quoteExpr depth fst
-    let argVal := Value.vNeutral fst (Neutral.nVar ⟨name, depth⟩)
-    let sndVal := snd.applyPure argVal
-    let sndExpr := quoteExpr depth.succ sndVal
-    .sigma qty .explicit name fstExpr sndExpr
-
-  | .vPair fst snd => .pair (quoteExpr depth fst) (quoteExpr depth snd)
   | .vNeutral _ neu => quoteNeutralExpr depth neu
   | .vPrimTy p => .primTy p
   | .vRowSort => .rowSort
@@ -443,8 +415,6 @@ partial def quoteHeadExpr (depth : DeBruijnLvl) : Head → Expr
 /-- Apply an eliminator on top of an already-quoted expression -/
 partial def quoteElimExpr (depth : DeBruijnLvl) (acc : Expr) : Elim → Expr
   | .eApp arg => .app acc (quoteExpr depth arg)
-  | .eFst => .projFst acc
-  | .eSnd => .projSnd acc
   | .eField name => .fieldAccess acc name 0
 
 /-- Quote a neutral term to an Expr by folding the spine over the head -/

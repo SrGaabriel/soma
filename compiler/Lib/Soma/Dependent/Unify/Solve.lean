@@ -107,17 +107,6 @@ partial def subtypeUnify (v1 v2 : Value) : TCM Unit := do
     TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
       subtypeUnify cod1 cod2
 
-  | .vSigma q1 n1 f1 s1, .vSigma q2 _ f2 s2 =>
-    if q1 != q2 then throwUnifyError v1' v2' "quantity mismatch"
-    subtypeUnify f1 f2
-    let lvl ← TCM.currentLevel
-    let x := Value.vNeutral f1 (.nVar ⟨n1, lvl⟩)
-    let snd1 ← applyClosure s1 x
-    let snd2 ← applyClosure s2 x
-    let bindingId ← TCM.freshLocalId n1
-    TCM.withBinding n1 bindingId f1 q1 .explicit defaultSpan do
-      subtypeUnify snd1 snd2
-
   | _, _ => unify v1 v2
 
 /-- Unify two values. May solve metavariables or postpone constraints -/
@@ -178,22 +167,6 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let bindingId ← TCM.freshLocalId n1
     TCM.withBinding n1 bindingId .type0 .omega .explicit defaultSpan do
       unify b1Val b2Val
-
-  | .vSigma q1 n1 f1 s1, .vSigma q2 _ f2 s2 =>
-    if q1 != q2 then
-      throwUnifyError v1' v2' "quantity mismatch"
-    unify f1 f2
-    let lvl ← TCM.currentLevel
-    let x := Value.vNeutral f1 (.nVar ⟨n1, lvl⟩)
-    let snd1 ← applyClosure s1 x
-    let snd2 ← applyClosure s2 x
-    let bindingId ← TCM.freshLocalId n1
-    TCM.withBinding n1 bindingId f1 q1 .explicit defaultSpan do
-      unify snd1 snd2
-
-  | .vPair a1 b1, .vPair a2 b2 =>
-    unify a1 a2
-    unify b1 b2
 
   | .vPrimTy p1, .vPrimTy p2 =>
     if p1 != p2 then throwUnifyError v1' v2' "primitive type mismatch"
@@ -351,17 +324,6 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
           if !ok then throwUnifyError v1' v2' "rigid-flex mismatch"
         | _ => throwUnifyError v1' v2' "rigid-flex mismatch"
 
-  -- Eta for pairs: v1 = v2 if (v1.1, v1.2) = (v2.1, v2.2)
-  | .vPair a1 b1, other =>
-    let (a2, b2) := etaExpandPairValue other
-    unify a1 a2
-    unify b1 b2
-
-  | other, .vPair a2 b2 =>
-    let (a1, b1) := etaExpandPairValue other
-    unify a1 a2
-    unify b1 b2
-
   | _, _ =>
     throwUnifyError v1' v2' "incompatible types"
 
@@ -419,8 +381,6 @@ partial def unifyHead (h1 h2 : Head) : TCM Unit := do
 partial def unifyElim (e1 e2 : Elim) : TCM Unit := do
   match e1, e2 with
   | .eApp a1, .eApp a2 => unify a1 a2
-  | .eFst, .eFst => return
-  | .eSnd, .eSnd => return
   | .eField f1, .eField f2 =>
     if f1 != f2 then
       let span ← TCM.getSpan
@@ -621,25 +581,6 @@ partial def buildExpectedInner (innerTy : Value) (projTail : Array Elim)
     let proj := projTail[i]'h
     let innerTy' ← force innerTy
     match proj with
-    | .eFst =>
-      match innerTy' with
-      | .vSigma _ _ fstTy sndCl =>
-        match ← buildExpectedInner fstTy projTail rhs (i + 1) with
-        | none => return none
-        | some chosen =>
-          let sndTy ← applyClosure sndCl chosen
-          let snd ← TCM.freshMetaVal sndTy
-          return some (.vPair chosen snd)
-      | _ => return none
-    | .eSnd =>
-      match innerTy' with
-      | .vSigma _ _ fstTy sndCl =>
-        let fst ← TCM.freshMetaVal fstTy
-        let sndTy ← applyClosure sndCl fst
-        match ← buildExpectedInner sndTy projTail rhs (i + 1) with
-        | none => return none
-        | some chosen => return some (.vPair fst chosen)
-      | _ => return none
     | .eField name =>
       match innerTy' with
       | .vRecord row =>
@@ -687,8 +628,6 @@ partial def solveMetaProjectionSpine (m : MetaId) (spine : Array Elim) (rhs : Va
       let firstElim := spine[0]'h
       let rest := spine.extract 1 spine.size
       match firstElim with
-      | .eFst => decomposePairMeta m true rest rhs
-      | .eSnd => decomposePairMeta m false rest rhs
       | .eField fieldName => decomposeRecordMeta m fieldName rest rhs
       | .eApp _ =>
         let span ← TCM.getSpan
@@ -726,34 +665,6 @@ partial def solveMetaProjectionSpine (m : MetaId) (spine : Array Elim) (rhs : Va
           | some expectedInner => solveMeta m leadingArgs expectedInner
   else
     solveMeta m [] rhs
-
-/-- Decompose a metavariable known to be a Sigma value -/
-partial def decomposePairMeta (m : MetaId) (fstSide : Bool)
-    (restSpine : Array Elim) (rhs : Value) : TCM Unit := do
-  match ← TCM.lookupMeta m with
-  | none =>
-    let span ← TCM.getSpan
-    TCM.throw (.internalError s!"unknown metavariable ?{m.id}" span)
-  | some info =>
-    let mTy ← force info.type
-    match mTy with
-    | .vSigma _ _ fst snd =>
-      let fstMeta ← TCM.freshMetaVal fst
-      let sndTy ← applyClosure snd fstMeta
-      let sndMeta ← TCM.freshMetaVal sndTy
-      solveMeta m [] (.vPair fstMeta sndMeta)
-      let chosen := if fstSide then fstMeta else sndMeta
-      let chosenId? : Option MetaId :=
-        match chosen with
-        | .vNeutral _ ⟨.hMeta id, _⟩ => some id
-        | _ => none
-      match chosenId? with
-      | some chosenId => solveMetaProjectionSpine chosenId restSpine rhs
-      | none =>
-        let span ← TCM.getSpan
-        TCM.throw (.internalError "freshMetaVal returned non-meta value" span)
-    | _ =>
-      markStuckOnMetaSpine m restSpine
 
 /-- Decompose a metavariable known to be a record -/
 partial def decomposeRecordMeta (m : MetaId) (fieldName : String)

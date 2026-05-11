@@ -890,13 +890,9 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
             let ftype ← lowerTypeExpr tyNode tyOff
             match nameNode? with
             | some (nNode, nOff) =>
-                match firstGreenChild nNode with
-                | some nameChild =>
-                    let fname ← getGreenTokenText nameChild nOff
-                    let fnameSpan ← spanFor nNode nOff
-                    pure (some ⟨#[], fname, fnameSpan⟩, ftype)
-                | none =>
-                    pure (none, ftype)
+                let fname ← getGreenTokenText nNode nOff
+                let fnameSpan ← spanFor nNode nOff
+                pure (some ⟨#[], fname, fnameSpan⟩, ftype)
             | none =>
                 pure (none, ftype)
         | none =>

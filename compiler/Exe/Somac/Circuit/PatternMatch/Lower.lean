@@ -153,13 +153,6 @@ end LowerT
 def getFieldType (registry : ConstructorTypeRegistry) (parentType : Value)
     (fieldIdx : Nat) : Value :=
   match parentType with
-  | .vSigma _qty _name fst snd =>
-    -- Sigma types: field 0 is fst, field 1 is snd
-    if fieldIdx == 0 then fst
-    else match snd with
-      | .const _ v => v
-      | .term _ _ _ => unitTy -- Can't evaluate dependent closure without argument
-
   | .vDataType unique params =>
     let matchingCtors := registry.fold (init := (#[] : Array ConstructorTypeInfo))
       fun acc key info => if key.unique == unique then acc.push info else acc

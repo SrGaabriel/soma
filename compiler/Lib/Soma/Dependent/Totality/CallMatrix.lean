@@ -375,61 +375,6 @@ partial def compareTermToParam (shape : TermShape) (paramIdx : Nat) (paramName :
     let results := args.map fun arg => compareTermToParam arg paramIdx paramName ctx
     analyzeConstructorArgs results ctorName
 
-  | .pair fst snd =>
-    let fstCmp := compareTermToParam fst paramIdx paramName ctx
-    let sndCmp := compareTermToParam snd paramIdx paramName ctx
-    match fstCmp with
-    | .smaller reason => .smaller reason
-    | .equal =>
-      match sndCmp with
-      | .smaller reason => .smaller reason
-      | .equal => .equal
-      | .larger => .larger
-      | .unknown => .unknown
-    | .larger => .larger
-    | .unknown =>
-      if sndCmp.isSmaller then sndCmp else .unknown
-
-  | .fstProj inner =>
-    match inner.asVar? with
-    | some name =>
-      match ctx.lookup name with
-      | some info =>
-        if info.paramIdx == paramIdx then
-          if info.depth == 0 then
-            .smaller s!"'fst {name}' is a subterm of '{paramName}'"
-          else
-            .smaller s!"'fst {name}' is a subterm (already at depth {info.depth})"
-        else
-          .unknown
-      | none => .unknown
-    | none =>
-      let innerCmp := compareTermToParam inner paramIdx paramName ctx
-      if innerCmp.isSmaller || innerCmp.isEqual then
-        .smaller "projection of parameter component"
-      else
-        .unknown
-
-  | .sndProj inner =>
-    match inner.asVar? with
-    | some name =>
-      match ctx.lookup name with
-      | some info =>
-        if info.paramIdx == paramIdx then
-          if info.depth == 0 then
-            .smaller s!"'snd {name}' is a subterm of '{paramName}'"
-          else
-            .smaller s!"'snd {name}' is a subterm (already at depth {info.depth})"
-        else
-          .unknown
-      | none => .unknown
-    | none =>
-      let innerCmp := compareTermToParam inner paramIdx paramName ctx
-      if innerCmp.isSmaller || innerCmp.isEqual then
-        .smaller "projection of parameter component"
-      else
-        .unknown
-
   | .fieldProj inner field =>
     match inner.asVar? with
     | some name =>
@@ -517,11 +462,6 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
     let acc' := collectCallsGo caller targets c ctx acc
     let acc'' := collectCallsGo caller targets th ctx acc'
     collectCallsGo caller targets el ctx acc''
-  | .pair a b =>
-    let acc' := collectCallsGo caller targets a ctx acc
-    collectCallsGo caller targets b ctx acc'
-  | .projFst e => collectCallsGo caller targets e ctx acc
-  | .projSnd e => collectCallsGo caller targets e ctx acc
   | .construct _ _ args _ => collectCallsGoArgs caller targets args.toList ctx acc
   | .«case» scruts _ arms =>
     let acc' := match scruts[0]? with
@@ -552,9 +492,6 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
   | .pi _ _ _ d c =>
     let acc' := collectCallsGo caller targets d ctx acc
     collectCallsGo caller targets c ctx acc'
-  | .sigma _ _ _ f s =>
-    let acc' := collectCallsGo caller targets f ctx acc
-    collectCallsGo caller targets s ctx acc'
   | .eqTy _ ty l r =>
     let acc' := collectCallsGo caller targets ty ctx acc
     let acc'' := collectCallsGo caller targets l ctx acc'

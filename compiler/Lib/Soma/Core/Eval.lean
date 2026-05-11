@@ -86,22 +86,6 @@ def freshVar (ctx : EvalCtx) (name : String) : Value :=
 
 end EvalCtx
 
-/-! ## Projections -/
-
-/-- First projection -/
-def vFst (v : Value) : Value :=
-  match v with
-  | .vPair fst _ => fst
-  | .vNeutral ty neu => .vNeutral ty (.nFst neu)
-  | _ => v  -- Type error
-
-/-- Second projection -/
-def vSnd (v : Value) : Value :=
-  match v with
-  | .vPair _ snd => snd
-  | .vNeutral ty neu => .vNeutral ty (.nSnd neu)
-  | _ => v  -- Type error
-
 /-- Field access on a record-style value -/
 def vFieldAccess (v : Value) (field : String) (fieldIdx : Nat := 0) : Value :=
   match v with
@@ -276,14 +260,6 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     let domVal := evalCoreExpr ctx domain
     .vPi qty _info name domVal (Closure.mkWithBody name ctx.env codomain)
 
-  | .sigma qty _info name fst snd =>
-    let fstVal := evalCoreExpr ctx fst
-    .vSigma qty name fstVal (Closure.mkWithBody name ctx.env snd)
-
-  | .pair fst snd => .vPair (evalCoreExpr ctx fst) (evalCoreExpr ctx snd)
-  | .projFst e => vFst (evalCoreExpr ctx e)
-  | .projSnd e => vSnd (evalCoreExpr ctx e)
-
   | .construct name tag args rty =>
     .vConstructor name tag (args.toList.map (evalCoreExpr ctx)) (evalCoreExpr ctx rty)
 
@@ -377,9 +353,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   | .array _elements _ => .vNeutral .type0 (.nVar ⟨"array", ctx.env.level⟩)
   | .tuple elements =>
     let vals := elements.toList.map (evalCoreExpr ctx)
-    match vals with
-    | [a, b] => .vPair a b
-    | _ => .vRecordVal (listEnumerate vals |>.map fun (i, v) => (s!"_{i}", v))
+    .vRecordVal (listEnumerate vals |>.map fun (i, v) => (s!"_{i}", v))
 
   | .proj _typeName _field _idx =>
     .vNeutral .type0 (.nVar ⟨s!"proj:{_field}", ctx.env.level⟩)
@@ -469,18 +443,6 @@ partial def Value.explicitArityFull (v : Value) (unfold? : Option (Value → Val
       | .vPi .. => Value.explicitArityFull unfolded unfold?
       | _ => 0
     | none => 0
-
-/-- Apply a Sigma type to a first-component value, computing the second-component type -/
-def Value.sigmaApply (v : Value) (arg : Value) : Option Value :=
-  match v with
-  | .vSigma _ _ _ clos => some (clos.applyPure arg)
-  | _ => none
-
-/-- Extract the second component type from a Sigma type (non-dependent shortcut) -/
-def Value.sigmaSnd? (v : Value) : Option Value :=
-  match v with
-  | .vSigma _ _ _ clos => some (clos.applyPure (.vPrimTy .unit))
-  | _ => none
 
 /-- Evaluate a closed Core expression. -/
 def evalClosed (e : Soma.Core.Expr) : Value :=
@@ -602,49 +564,10 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
 
   | .inject _ _ resultTy => evalCoreExpr { env := evalEnv, globals, metas } resultTy
 
-  | .pair fst snd =>
-    let fstTy := typeOfWith bvarCtx globals unfoldTy evalEnv metas fst
-    let sndTy := typeOfWith bvarCtx globals unfoldTy evalEnv metas snd
-    Value.prod fstTy sndTy
-
   | .tuple elems =>
-    if elems.size ≥ 2 then
-      let fstTy := typeOfWith bvarCtx globals unfoldTy evalEnv metas elems[0]!
-      let sndTy := typeOfWith bvarCtx globals unfoldTy evalEnv metas elems[1]!
-      Value.prod fstTy sndTy
-    else if elems.size = 1 then
+    if elems.size = 1 then
       typeOfWith bvarCtx globals unfoldTy evalEnv metas elems[0]!
     else .vPrimTy .unit
-
-  | .projFst expr =>
-    let sigTy := typeOfWith bvarCtx globals unfoldTy evalEnv metas expr
-    match sigTy.sigmaFst? with
-    | some ty => ty
-    | none =>
-      -- Try unfolding abbreviations to get Sigma structure
-      let unfolded := unfoldTy sigTy
-      match unfolded.sigmaFst? with
-      | some ty => ty
-      | none =>
-        -- For DataType pairs, extract first type arg
-        match sigTy with
-        | .vDataType _ (fstTy :: _) => fstTy
-        | _ => .vType .zero
-  | .projSnd expr =>
-    let sigTy := typeOfWith bvarCtx globals unfoldTy evalEnv metas expr
-    let fstVal := evalCoreExpr { env := evalEnv, globals, metas } (.projFst expr)
-    match sigTy.sigmaApply fstVal with
-    | some ty => ty
-    | none =>
-      -- Try unfolding abbreviations
-      let unfolded := unfoldTy sigTy
-      match unfolded.sigmaApply fstVal with
-      | some ty => ty
-      | none =>
-        -- For DataType pairs, extract second type arg
-        match sigTy with
-      | .vDataType _ (_ :: sndTy :: _) => sndTy
-      | _ => .vType .zero
 
   | .record fields =>
     let row := fields.foldr (init := Value.vRowEmpty) fun (name, expr) acc =>
@@ -681,7 +604,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
 
   | .closure _ _ ty => evalCoreExpr { env := evalEnv, globals, metas } ty
 
-  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
+  | .sort _ | .pi _ _ _ _ _ | .primTy _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _

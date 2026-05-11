@@ -108,24 +108,6 @@ def testRowEmptyEqual : IO TestResult := do
   | .ok false => return .failed "empty rows should be equal"
   | .error e => return .failed s!"Unexpected error: {e}"
 
-/-- Test: Pairs with equal components are equal -/
-def testPairEqual : IO TestResult := do
-  let v1 := Value.vPair (Value.vIntLit 1) (Value.vIntLit 2)
-  let v2 := Value.vPair (Value.vIntLit 1) (Value.vIntLit 2)
-  match (convert v1 v2).run' with
-  | .ok true => return .passed
-  | .ok false => return .failed "(1, 2) should equal (1, 2)"
-  | .error e => return .failed s!"Unexpected error: {e}"
-
-/-- Test: Pairs with different components are not equal -/
-def testPairNotEqual : IO TestResult := do
-  let v1 := Value.vPair (Value.vIntLit 1) (Value.vIntLit 2)
-  let v2 := Value.vPair (Value.vIntLit 1) (Value.vIntLit 3)
-  match (convert v1 v2).run' with
-  | .ok false => return .passed
-  | .ok true => return .failed "(1, 2) should not equal (1, 3)"
-  | .error e => return .failed s!"Unexpected error: {e}"
-
 /-- Test: Label literals equal themselves -/
 def testLabelLitEqual : IO TestResult := do
   let v1 := Value.vLabelLit "foo"
@@ -156,8 +138,6 @@ def run : IO TestRunner := do
   runner := runner.record "int_lit_not_equal" (← testIntLitNotEqual)
   runner := runner.record "string_lit_equal" (← testStringLitEqual)
   runner := runner.record "row_empty_equal" (← testRowEmptyEqual)
-  runner := runner.record "pair_equal" (← testPairEqual)
-  runner := runner.record "pair_not_equal" (← testPairNotEqual)
   runner := runner.record "label_lit_equal" (← testLabelLitEqual)
   runner := runner.record "label_lit_not_equal" (← testLabelLitNotEqual)
 
@@ -369,10 +349,13 @@ def testInferTuple : IO TestResult := do
     .tuple #[(.lit (.int 1 testSpan)), (.lit (.int 2 testSpan))] testSpan
   match typeInfer expr with
   | .ok (ty, _, _) =>
-    match ty with
-    | .vSigma _ _ _ _ => return .passed
-    | _ => return .failed s!"Expected Sigma-like tuple type, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
+    return .failed s!"Expected unbound-`pair` error but inference succeeded with {ty}"
+  | .error e =>
+    let msg := toString e
+    if (msg.splitOn "pair").length > 1 then
+      return .passed
+    else
+      return .failed s!"Expected error about missing `pair` wired role, got: {msg}"
 
 def run : IO TestRunner := do
   IO.println "  === Inference Tests ==="
@@ -421,13 +404,15 @@ def testCheckPairAgainstSigma : IO TestResult := do
   let fst : Soma.Syntax.Expr := .lit (.int 1 testSpan)
   let snd : Soma.Syntax.Expr := .lit (.int 2 testSpan)
   let pairExpr : Soma.Syntax.Expr := .tuple #[fst, snd] testSpan
-  -- Create a Sigma type (x : Int) × Int
-  -- The second component closure should return Int (we use primTy .int as the body)
-  let sndClosure := Closure.mkWithBody "_" Env.empty (Soma.Core.Expr.primTy .int)
-  let sigmaTy := Value.vSigma .omega "x" (.vPrimTy .int) sndClosure
-  match typeCheck pairExpr sigmaTy with
-  | .ok _ => return .passed
-  | .error e => return .failed s!"Check failed: {e}"
+  let pairTy := Value.vDataType ⟨999_999, "test", "Pair"⟩ [.vPrimTy .int, .vPrimTy .int]
+  match typeCheck pairExpr pairTy with
+  | .ok _ => return .failed "Expected unbound-`pair` error but check succeeded"
+  | .error e =>
+    let msg := toString e
+    if (msg.splitOn "pair").length > 1 then
+      return .passed
+    else
+      return .failed s!"Expected error about missing `pair` wired role, got: {msg}"
 
 /-- Test: Check if-then-else with matching branch types -/
 def testCheckIfThenElse : IO TestResult := do

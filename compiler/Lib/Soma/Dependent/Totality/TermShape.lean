@@ -21,13 +21,10 @@ private def exprName? : Expr → Option String
   | .bvar idx => some s!"_bvar{idx}"
   | _ => none
 
-/-- The structural shape of a term (for comparison purposes) -/
+/-- The structural shape of a term (for termination comparison) -/
 inductive TermShape where
   | var (name : String)                              -- Variable reference
   | ctor (name : String) (args : Array TermShape)   -- Constructor application
-  | pair (fst snd : TermShape)                       -- Pair construction
-  | fstProj (inner : TermShape)                      -- First projection
-  | sndProj (inner : TermShape)                      -- Second projection
   | fieldProj (inner : TermShape) (field : String)   -- Field access
   | lit (l : Literal)                                -- Literal value
   | app (fn : TermShape) (args : Array TermShape)   -- Application (opaque)
@@ -40,9 +37,6 @@ namespace TermShape
 partial def collectVars : TermShape → List String
   | .var name => [name]
   | .ctor _ args => args.toList.flatMap collectVars
-  | .pair fst snd => collectVars fst ++ collectVars snd
-  | .fstProj inner => collectVars inner
-  | .sndProj inner => collectVars inner
   | .fieldProj inner _ => collectVars inner
   | .lit _ => []
   | .app fn args => collectVars fn ++ args.toList.flatMap collectVars
@@ -64,9 +58,6 @@ partial def collectExprVars : Expr → List String
   | .lam _ _ dom body => collectExprVars dom ++ collectExprVars body
   | .let_ _ ty val body => collectExprVars ty ++ collectExprVars val ++ collectExprVars body
   | .if_ c t e => collectExprVars c ++ collectExprVars t ++ collectExprVars e
-  | .pair a b => collectExprVars a ++ collectExprVars b
-  | .projFst e => collectExprVars e
-  | .projSnd e => collectExprVars e
   | .construct _ _ args _ => args.toList.flatMap collectExprVars
   | .«case» scruts _ arms =>
     scruts.toList.flatMap collectExprVars ++
@@ -77,7 +68,6 @@ partial def collectExprVars : Expr → List String
   | .fieldAccess e _ _ => collectExprVars e
   | .inject _ args _ => args.toList.flatMap collectExprVars
   | .pi _ _ _ d c => collectExprVars d ++ collectExprVars c
-  | .sigma _ _ _ f s => collectExprVars f ++ collectExprVars s
   | .eqTy _ ty l r => collectExprVars ty ++ collectExprVars l ++ collectExprVars r
   | .refl ty x => collectExprVars ty ++ collectExprVars x
   | .transport _ ty m l r eq b =>
@@ -102,9 +92,6 @@ partial def analyzeExprShape : Expr → TermShape
   | .lit l => .lit l
   | .construct name _ args _ =>
     .ctor name.display (args.map analyzeExprShape)
-  | .pair fst snd => .pair (analyzeExprShape fst) (analyzeExprShape snd)
-  | .projFst e => .fstProj (analyzeExprShape e)
-  | .projSnd e => .sndProj (analyzeExprShape e)
   | .fieldAccess e field _ => .fieldProj (analyzeExprShape e) field
   | e =>
     let (head, args) := collectAppSpine e
@@ -121,7 +108,6 @@ inductive PatternShape where
   | var (name : String) -- Variable binding
   | wildcard -- Wildcard _
   | ctor (name : String) (args : Array PatternShape) -- Constructor pattern
-  | pair (fst snd : PatternShape) -- Pair pattern
   | lit (l : Literal) -- Literal pattern
   deriving Repr, Inhabited
 
@@ -130,7 +116,6 @@ inductive Pattern where
   | var (name : String)
   | wildcard
   | ctor (name : String) (args : Array Pattern)
-  | pair (fst snd : Pattern)
   | lit (l : Literal)
   | record (fields : Array (String × Pattern))
   deriving Repr, Inhabited
@@ -143,7 +128,6 @@ partial def exprToPattern : Expr → Pattern
   | .lit l => .lit l
   | .construct name _ args _ =>
     .ctor name.display (args.map exprToPattern)
-  | .pair a b => .pair (exprToPattern a) (exprToPattern b)
   | .record fields =>
     .record (fields.map fun (n, t) => (n, exprToPattern t))
   | _ => .wildcard
@@ -181,11 +165,6 @@ partial def extractPatternBindings (t : Expr) (paramIdx : Nat) (paramName : Stri
       let bindings := extractPatternBindings arg paramIdx paramName argPath
       (acc ++ bindings, idx + 1)
     ) |>.1
-
-  | .pair fst snd =>
-    let fstBindings := extractPatternBindings fst paramIdx paramName (.fst path)
-    let sndBindings := extractPatternBindings snd paramIdx paramName (.snd path)
-    fstBindings ++ sndBindings
 
   | .record fields =>
     fields.foldl (init := #[]) fun acc (fieldName, fieldVal) =>
@@ -235,11 +214,6 @@ partial def extractPatternBindingsAccurate (pat : Pattern) (paramIdx : Nat) (par
       let bindings := extractPatternBindingsAccurate arg paramIdx paramName argPath
       (acc ++ bindings, idx + 1)
     ) |>.1
-
-  | .pair fst snd =>
-    let fstBindings := extractPatternBindingsAccurate fst paramIdx paramName (.fst path)
-    let sndBindings := extractPatternBindingsAccurate snd paramIdx paramName (.snd path)
-    fstBindings ++ sndBindings
 
   | .lit _ => #[]
 

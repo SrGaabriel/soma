@@ -156,22 +156,6 @@ partial def liveCandidates (scrutTy : Value) : TCM (Bool × Array Candidate) := 
       fieldTypes := [labelTy]
     }
     return (false, cands)
-  | .vSigma _qty _name fstTy sndClos =>
-    -- Sigma types have a single inhabitant (the pair constructor)
-    let pairInfo? ← TCM.lookupWiredIn .pair
-    match pairInfo? with
-    | some info =>
-      let lvl ← TCM.currentLevel
-      let dummy := Value.vNeutral fstTy (.nVar ⟨"_pair", lvl⟩)
-      let sndTy ← applyClosure sndClos dummy
-      let cand : Candidate := {
-        display := s!"({fstTy}, {sndTy})",
-        head := .ctor info.ctorTag 2,
-        fieldTypes := [fstTy, sndTy]
-      }
-      return (false, #[cand])
-    | none =>
-      return (true, #[])
   | _ => return (true, #[])
 
 /-- Core exhaustiveness check -/

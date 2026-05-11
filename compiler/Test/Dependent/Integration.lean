@@ -128,19 +128,14 @@ partial def valueContainsMetaHead (v : Soma.Core.Value) : Bool :=
       || valueContainsMetaHead ty
       || neu.spine.any fun
         | .eApp arg => valueContainsMetaHead arg
-        | .eFst | .eSnd | .eField _ => false
+        | .eField _ => false
   | .vPi _ _ _ dom cod =>
     valueContainsMetaHead dom || match cod with
-      | .const _ v => valueContainsMetaHead v
-      | .term _ _ _ => false
-  | .vSigma _ _ fst snd =>
-    valueContainsMetaHead fst || match snd with
       | .const _ v => valueContainsMetaHead v
       | .term _ _ _ => false
   | .vLam _ body => match body with
     | .const _ v => valueContainsMetaHead v
     | .term _ _ _ => false
-  | .vPair a b => valueContainsMetaHead a || valueContainsMetaHead b
   | .vRowExtend l ft t =>
     valueContainsMetaHead l || valueContainsMetaHead ft || valueContainsMetaHead t
   | .vRecord row => valueContainsMetaHead row

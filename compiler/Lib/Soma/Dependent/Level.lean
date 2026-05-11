@@ -39,13 +39,6 @@ partial def zonkValueLevels (v : Value) : TCM Value := do
     return .vPi qty binder name dom' cod
   | .vLam name body =>
     return .vLam name body
-  | .vSigma qty name fst snd =>
-    let fst' ← zonkValueLevels fst
-    return .vSigma qty name fst' snd
-  | .vPair fst snd =>
-    let fst' ← zonkValueLevels fst
-    let snd' ← zonkValueLevels snd
-    return Value.vPair fst' snd'
   | .vNeutral ty neu =>
     let ty' ← zonkValueLevels ty
     return .vNeutral ty' neu
@@ -112,9 +105,5 @@ def piTypeLevel (domLevel codLevel : Level) : Level :=
   match codLevel with
   | .prop => .prop
   | _ => Level.mkMax domLevel codLevel
-
-/-- Create the type of a Sigma type given first and second component levels -/
-def sigmaTypeLevel (fstLevel sndLevel : Level) : Level :=
-  Level.mkMax fstLevel sndLevel
 
 end Soma.Dependent

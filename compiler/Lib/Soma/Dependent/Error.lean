@@ -223,12 +223,6 @@ inductive TCError where
       (span : Span)
       (inferredFrom : Option ConstraintOrigin)
 
-  /-- Expected a pair type (Sigma) but got something else -/
-  | expectedSigma
-      (actual : Value)
-      (span : Span)
-      (inferredFrom : Option ConstraintOrigin)
-
   /-- Expected a type (universe) but got something else -/
   | expectedType
       (actual : Value)
@@ -443,7 +437,6 @@ def span : TCError → Span
   | .unificationFailed _ _ s _ _ => s
   | .typeMismatch _ _ _ _ s _ => s
   | .expectedFunction _ s _ => s
-  | .expectedSigma _ s _ => s
   | .expectedType _ s _ => s
   | .expectedRecord _ s _ => s
   | .expectedVariant _ s => s
@@ -555,16 +548,6 @@ def toDiagnostic : TCError → Diagnostic
       |>.withCode "E1003"
       |>.withNote "function application requires a function type (Π-type)"
       |>.withHelp "did you mean field access (`.x`) or forget parentheses?"
-      |> fun d => { d with notes := d.notes ++ originNote }
-
-  | .expectedSigma actual span origin =>
-    let originNote := match origin with
-      | some o => #[s!"type was inferred from: {o.describe}"]
-      | none => #[]
-    Diagnostic.error "expected pair type" span s!"`{actual}` is not a pair"
-      |>.withCode "E1004"
-      |>.withNote "pair projection requires a dependent pair type (Σ-type)"
-      |>.withHelp "construct the pair with `(x, y)` before projecting with `.1` or `.2`"
       |> fun d => { d with notes := d.notes ++ originNote }
 
   | .expectedType actual span context =>

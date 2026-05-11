@@ -336,29 +336,6 @@ def testTypeConstructors : IO TestResult := do
   | .vType (.lit 0), .vType (.lit 1) => return .passed
   | _, _ => return .failed "type0 and type1 should be vType with correct levels"
 
-/-- Test: Value predicates -/
-def testPredicates : IO TestResult := do
-  let ty := Value.vType Level.zero
-  let pi := Value.vPi .omega .explicit "x" ty (Closure.mkEmpty "_" Env.empty)
-  let sigma := Value.vSigma .omega "x" ty (Closure.mkEmpty "_" Env.empty)
-  let neutral := Value.vNeutral ty (Neutral.nVar ⟨"x", ⟨0⟩⟩)
-
-  if !ty.isType then
-    return .failed "vType should be a type"
-  if pi.isType then
-    return .failed "vPi should not be a type"
-  if !pi.isPi then
-    return .failed "vPi should be a pi"
-  if sigma.isPi then
-    return .failed "vSigma should not be a pi"
-  if !sigma.isSigma then
-    return .failed "vSigma should be a sigma"
-  if !neutral.isNeutral then
-    return .failed "vNeutral should be neutral"
-  if ty.isNeutral then
-    return .failed "vType should not be neutral"
-  return .passed
-
 /-- Test: Primitive types -/
 def testPrimitives : IO TestResult := do
   let intTy := Value.vPrimTy .int
@@ -395,15 +372,6 @@ def testRecordVal : IO TestResult := do
     return .passed
   | _ => return .failed "should be a record value"
 
-/-- Test: Pair construction -/
-def testPair : IO TestResult := do
-  let fst := Value.vIntLit 1
-  let snd := Value.vStringLit "hello"
-  let pair := Value.vPair fst snd
-  match pair with
-  | .vPair (.vIntLit 1) (.vStringLit "hello") => return .passed
-  | _ => return .failed "pair should be constructed correctly"
-
 /-- Test: Equality type construction -/
 def testEqualityType : IO TestResult := do
   let ty := Value.vPrimTy .int
@@ -428,12 +396,10 @@ def run : IO TestRunner := do
   let mut runner := TestRunner.init
 
   runner := runner.record "type_constructors" (← testTypeConstructors)
-  runner := runner.record "predicates" (← testPredicates)
   runner := runner.record "primitives" (← testPrimitives)
   runner := runner.record "literals" (← testLiterals)
   runner := runner.record "row_types" (← testRowTypes)
   runner := runner.record "record_val" (← testRecordVal)
-  runner := runner.record "pair" (← testPair)
   runner := runner.record "equality_type" (← testEqualityType)
   runner := runner.record "refl" (← testRefl)
 
@@ -702,15 +668,6 @@ def testAppNeutral : IO TestResult := do
   | .nApp (.nVar _) (.vIntLit 1) => return .passed
   | _ => return .failed "should be an application neutral"
 
-/-- Test: projection neutrals -/
-def testProjNeutrals : IO TestResult := do
-  let pair := Neutral.var "p" ⟨0⟩
-  let fst := Neutral.nFst pair
-  let snd := Neutral.nSnd pair
-  match fst, snd with
-  | .nFst (.nVar _), .nSnd (.nVar _) => return .passed
-  | _, _ => return .failed "should be projection neutrals"
-
 def run : IO TestRunner := do
   IO.println "  === Neutral Tests ==="
   let mut runner := TestRunner.init
@@ -718,7 +675,6 @@ def run : IO TestRunner := do
   runner := runner.record "var_neutral" (← testVarNeutral)
   runner := runner.record "meta_neutral" (← testMetaNeutral)
   runner := runner.record "app_neutral" (← testAppNeutral)
-  runner := runner.record "proj_neutrals" (← testProjNeutrals)
 
   return runner
 

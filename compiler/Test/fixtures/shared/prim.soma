@@ -57,6 +57,11 @@ inductive Pair (a : Type) (b : Type) where
     @[wired_in "pair"]
     | MkPair (fst : a) (snd : b)
 
+@[wired_in "type.sigma"]
+inductive Sigma (a : Type) (b : a -> Type) where
+    @[wired_in "sigma"]
+    | MkSigma : (fst : a) -> b fst -> Sigma a b
+
 @[wired_in "type.list"]
 inductive List (a : Type) where
     @[wired_in "nil"]

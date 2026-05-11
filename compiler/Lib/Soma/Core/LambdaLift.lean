@@ -180,12 +180,6 @@ partial def substituteCtorTypeParams (v : Value) (params : Array Value) : Value 
       | .const n body => .const n (substituteCtorTypeParams body params)
       | other => other
     .vPi qty binder name dom' cod'
-  | .vSigma qty name fst snd =>
-    let fst' := substituteCtorTypeParams fst params
-    let snd' := match snd with
-      | .const n body => .const n (substituteCtorTypeParams body params)
-      | other => other
-    .vSigma qty name fst' snd'
   | .vDataType uid ps =>
     .vDataType uid (ps.map (substituteCtorTypeParams · params))
   | .vRecord row => .vRecord (substituteCtorTypeParams row params)
@@ -230,18 +224,6 @@ private def dataCtorFieldTypes (st : LiftState) (scrutTy : Value)
     | none =>
       if arity == 0 then #[]
       else panic! s!"lambda lift: missing constructor metadata for {ctorName.display} at {uid.display}#{tag}"
-  | .vSigma _ _ fst snd =>
-    if arity == 2 then
-      let sndTy := match snd with
-        | .const _ ty => ty
-        | .term name _ _ =>
-          let fstVal := Value.vNeutral fst (.nVar ⟨name, ⟨0⟩⟩)
-          snd.applyPure fstVal
-      #[fst, sndTy]
-    else if arity == 1 then
-      #[fst]
-    else if arity == 0 then #[]
-    else panic! s!"lambda lift: Sigma pattern {ctorName.display} has arity {arity}"
   | _ =>
     if arity == 0 then #[]
     else panic! s!"lambda lift: cannot compute field types for constructor {ctorName.display}"
@@ -371,16 +353,6 @@ partial def inlineIOBind (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     let opened := Soma.Core.Expr.instantiate cod (.fvar u dom')
     let cod' ← inlineIOBind opened
     return .pi q info name dom' (Soma.Core.Expr.abstractFVar cod' u)
-  | .sigma q info name fst snd =>
-    let fst' ← inlineIOBind fst
-    let u ← LiftM.freshUnique name
-    let opened := Soma.Core.Expr.instantiate snd (.fvar u fst')
-    let snd' ← inlineIOBind opened
-    return .sigma q info name fst' (Soma.Core.Expr.abstractFVar snd' u)
-  | .pair f s =>
-    return .pair (← inlineIOBind f) (← inlineIOBind s)
-  | .projFst x => return .projFst (← inlineIOBind x)
-  | .projSnd x => return .projSnd (← inlineIOBind x)
   | .construct n t args rty =>
     return .construct n t (← args.mapM inlineIOBind) (← inlineIOBind rty)
   | .«case» scruts motive arms =>
@@ -452,10 +424,6 @@ where
     | .lam _ _ d b => go b (go d acc)
     | .let_ _ t v b => go b (go v (go t acc))
     | .pi _ _ _ d c => go c (go d acc)
-    | .sigma _ _ _ f s => go s (go f acc)
-    | .pair f s => go s (go f acc)
-    | .projFst x => go x acc
-    | .projSnd x => go x acc
     | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
     | .«case» scruts motive arms =>
       let acc := scruts.foldl (fun a e => go e a) acc
@@ -512,10 +480,6 @@ where
       let (seen, acc) := go t seen acc
       let (seen, acc) := go v seen acc
       go b seen acc
-    | .sigma _ _ _ f s | .pair f s =>
-      let (seen, acc) := go f seen acc
-      go s seen acc
-    | .projFst x | .projSnd x => go x seen acc
     | .construct _ _ args rty | .inject _ args rty =>
       let (seen, acc) := args.foldl
         (fun (seen, acc) e => go e seen acc) (seen, acc)
@@ -600,16 +564,6 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     let openedC := Soma.Core.Expr.instantiate c (Soma.Core.Expr.fvar u d')
     let liftedC ← liftCoreExpr openedC
     pure (.pi q info n d' (Soma.Core.Expr.abstractFVar liftedC u))
-  | .sigma q info n f s => do
-    let f' ← liftCoreExpr f
-    let u ← LiftM.freshUnique n
-    let openedS := Soma.Core.Expr.instantiate s (Soma.Core.Expr.fvar u f')
-    let liftedS ← liftCoreExpr openedS
-    pure (.sigma q info n f' (Soma.Core.Expr.abstractFVar liftedS u))
-  | .pair f s => do
-    pure (.pair (← liftCoreExpr f) (← liftCoreExpr s))
-  | .projFst x => do pure (.projFst (← liftCoreExpr x))
-  | .projSnd x => do pure (.projSnd (← liftCoreExpr x))
   | .construct n t args rty => do
     pure (.construct n t (← args.mapM (liftCoreExpr ·)) (← liftCoreExpr rty))
   | .«case» scruts motive arms => do

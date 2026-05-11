@@ -106,14 +106,6 @@ partial def substituteParams (v : Value) (params : Array Value)
       | other => other
     .vPi qty binder name newDom newCod
 
-  | .vSigma qty name fst snd =>
-    let newFst := substituteParams fst params parentUnique
-    let newSnd := match snd with
-      | .const n result =>
-        .const n (substituteParams result params parentUnique)
-      | other => other
-    .vSigma qty name newFst newSnd
-
   | .vRecord row =>
     .vRecord (substituteParamsInRow row params parentUnique)
 
@@ -184,18 +176,6 @@ def computeFieldTypes (registry : ConstructorTypeRegistry) (scrutineeType : Valu
     | none =>
       -- Constructor not in registry, fall back to heuristic
       fallbackFieldTypes scrutineeType arity
-
-  | .vSigma _qty _name fst snd =>
-    -- Sigma types: field 0 is fst, field 1 is snd (evaluated)
-    if arity == 2 then
-      let sndTy := match snd with
-        | .const _ v => v
-        | .term _ _ _ => .vPrimTy .unit -- Can't evaluate without argument
-      #[fst, sndTy]
-    else if arity == 1 then
-      #[fst]
-    else
-      Array.mk (List.replicate arity (.vPrimTy .unit))
 
   | .vRecord row =>
     -- Record types: extract field types from row

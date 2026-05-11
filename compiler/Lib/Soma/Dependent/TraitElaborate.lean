@@ -83,14 +83,6 @@ partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
     let closureEnv := buildSubstEnv depth
     let bodyExpr := Soma.Core.quoteExpr ⟨depth + 1⟩ codVal'
     return .vPi qty binder name dom' (Closure.term name closureEnv bodyExpr)
-  | .vSigma qty name fst snd =>
-    let fst' ← substituteTypeArgsInValue fst paramNames typeArgs depth
-    let dummyArg := Value.vNeutral fst' (.nVar ⟨name, ⟨depth⟩⟩)
-    let sndVal ← applyClosure snd dummyArg
-    let sndVal' ← substituteTypeArgsInValue sndVal paramNames typeArgs (depth + 1)
-    let closureEnv := buildSubstEnv depth
-    let bodyExpr := Soma.Core.quoteExpr ⟨depth + 1⟩ sndVal'
-    return .vSigma qty name fst' (Closure.term name closureEnv bodyExpr)
   | .vRecord row =>
     let row' ← substituteTypeArgsInValue row paramNames typeArgs depth
     return .vRecord row'
@@ -123,8 +115,6 @@ partial def substituteElim (e : Elim) (paramNames : Array String)
   | .eApp arg =>
     let arg' ← substituteTypeArgsInValue arg paramNames typeArgs depth
     return .eApp arg'
-  | .eFst => return .eFst
-  | .eSnd => return .eSnd
   | .eField n => return .eField n
 
 end
@@ -301,10 +291,6 @@ private partial def valueContainsMeta : Value → Bool
   | .vPi _ _ _ dom cod => valueContainsMeta dom || match cod with
     | .const _ v => valueContainsMeta v
     | .term _ _ _ => false -- can't inspect closure bodies
-  | .vSigma _ _ fst snd => valueContainsMeta fst || match snd with
-    | .const _ v => valueContainsMeta v
-    | .term _ _ _ => false
-  | .vPair a b => valueContainsMeta a || valueContainsMeta b
   | .vRowExtend l ft t => valueContainsMeta l || valueContainsMeta ft || valueContainsMeta t
   | .vRecord row => valueContainsMeta row
   | .vVariant row => valueContainsMeta row
@@ -323,7 +309,7 @@ where
       scrutinees.any valueContainsMeta || valueContainsMeta motive
   elimContainsMeta : Elim → Bool
     | .eApp arg => valueContainsMeta arg
-    | .eFst | .eSnd | .eField _ => false
+    | .eField _ => false
 
 /-- Substitute instance type arguments into a method signature -/
 def substituteMethodType (methodTypeSyntax : Soma.Syntax.Expr)

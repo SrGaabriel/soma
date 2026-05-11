@@ -46,6 +46,10 @@ structure VarAlloc where
 /-- The unit type used for erased/void values -/
 def unitTy : Value := Value.vPrimTy .unit
 
+/-- Build the `ty` annotation for an internal CTOR node whose ports carry the given field types in positional order -/
+def ctorFieldChain (fieldTypes : Array Value) : Value :=
+  fieldTypes.foldr Value.arrow unitTy
+
 /-- The integer type -/
 def intTy : Value := Value.vPrimTy .int
 
@@ -244,9 +248,6 @@ partial def resolveMetas (v : Value) (metas : Soma.Core.MetaState) : Value :=
     else v
   | .vPi qty binder name dom cod =>
     .vPi qty binder name (resolveMetas dom metas) cod
-  | .vSigma qty name fst sndClos =>
-    .vSigma qty name (resolveMetas fst metas) sndClos
-  | .vPair a b => .vPair (resolveMetas a metas) (resolveMetas b metas)
   | .vDataType dId params =>
     .vDataType dId (params.map (resolveMetas · metas))
   | .vConstructor tag arity args rty =>
@@ -282,12 +283,10 @@ partial def isWorldTy (ctx : LowerCtx) (v : Value) : Bool :=
   | .vDataType uid _ => ctx.worldUid?.any (· == uid.id)
   | _ => false
 
-/-- True iff `v` is an IO `Pair World a` (Sigma or wired-in Pair applied
-    with World as its first parameter) -/
+/-- True iff `v` is an IO `Pair World a` (wired-in Pair applied with World as its first parameter) -/
 partial def isIOPairTy (ctx : LowerCtx) (v : Value) : Bool :=
   let v := unfoldValue v ctx.abbrevEnv
   match v with
-  | .vSigma _ _ fst _ => ctx.isWorldTy fst
   | .vDataType uid params =>
     ctx.pairUid?.any (· == uid.id) && match params with
       | fst :: _ :: _ => ctx.isWorldTy fst
@@ -306,11 +305,6 @@ partial def mentionsWorldTy (ctx : LowerCtx) (v : Value) : Bool :=
   | .vLam _ body =>
     let argTy := Value.vType .zero
     ctx.mentionsWorldTy (body.applyPure (Value.vNeutral argTy (.nVar ⟨"_", body.level?.getD ⟨0⟩⟩)))
-  | .vSigma _ name fst snd =>
-    ctx.mentionsWorldTy fst ||
-      let neutral := Value.vNeutral fst (.nVar ⟨name, snd.level?.getD ⟨0⟩⟩)
-      ctx.mentionsWorldTy (snd.applyPure neutral)
-  | .vPair fst snd => ctx.mentionsWorldTy fst || ctx.mentionsWorldTy snd
   | .vNeutral ty _ => ctx.mentionsWorldTy ty
   | .vRowExtend label fieldTy tail =>
     ctx.mentionsWorldTy label || ctx.mentionsWorldTy fieldTy || ctx.mentionsWorldTy tail
@@ -481,8 +475,6 @@ partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
     let armUses := arms.foldl (init := {}) fun acc arm => usageAdd acc (countUsesExpr arm.body)
     usageAdd scrutUses armUses
   | .fieldAccess expr _ _
-  | .projFst expr
-  | .projSnd expr
   | .ann expr _ => countUsesExpr expr
   | .record fields
   | .recordUpdate (.record fields) #[] =>
@@ -493,14 +485,13 @@ partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
     usageAdd baseUses updUses
   | .tuple elems =>
     elems.foldl (init := {}) fun acc expr => usageAdd acc (countUsesExpr expr)
-  | .pair fst snd => usageAdd (countUsesExpr fst) (countUsesExpr snd)
   | .closure _ captures _ =>
     captures.foldl (init := {}) fun acc cap => usageAdd acc (countUsesExpr cap)
   | .let_ _ _ val body => usageAdd (countUsesExpr val) (countUsesExpr body)
   | .panic _
   | .lit _
   | .const _ _
-  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _
+  | .sort _ | .pi _ _ _ _ _
   | .primTy _ | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
@@ -761,7 +752,7 @@ private partial def getCoreExprPrimOp (e : Soma.Core.Expr) : LowerM (Option Prim
 
 /-- Check if a Core.Expr is syntactically type-level -/
 private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
-  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
+  | .sort _ | .pi _ _ _ _ _ | .primTy _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
@@ -869,14 +860,6 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
     let tupleTy ← getExprType e
     lowerCoreTuple elems tupleTy
 
-  | .pair fst snd =>
-    let pairTy ← getExprType e
-    lowerCorePair fst snd pairTy
-
-  | .projFst e => lowerCoreProj e 0 ty
-
-  | .projSnd e => lowerCoreProj e 1 ty
-
   | .panic msg =>
     some <$> emitPanicCtor msg ty
 
@@ -947,7 +930,7 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
         lowerCoreExpr fvarBody ty
 
   -- Type-level constructs (erased at runtime)
-  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _
+  | .sort _ | .pi _ _ _ _ _
   | .primTy _ | .rowSort | .labelSort | .rowEmpty
   | .rowExtend _ _ _ | .recordTy _ | .variantTy _
   | .labelLit _ | .dataTy _ _ | .eqTy _ _ _ _
@@ -1382,53 +1365,6 @@ partial def lowerCoreTuple (elems : Array Soma.Core.Expr)
     LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ elemPorts[i]!
   pure (some (PortId.principal ctor))
 
-/-- Lower a Core.Expr pair -/
-partial def lowerCorePair (fst snd : Soma.Core.Expr)
-    (ty : Value) : LowerM (Option PortId) := do
-  let (fstTy, sndTy) ← do
-    match ty with
-    | .vSigma _ _ fstT clos =>
-      let fstVal := Soma.Core.evalCoreExpr Soma.Core.EvalCtx.empty fst
-      pure (fstT, clos.applyPure fstVal)
-    | _ =>
-      -- For non-Sigma pair types, infer component types
-      let fstTy ← getExprType fst
-      let sndTy ← getExprType snd
-      pure (fstTy, sndTy)
-  let fstPort? ← lowerCoreExpr fst fstTy
-  let sndPort? ← lowerCoreExpr snd sndTy
-  match fstPort?, sndPort? with
-  | none, none => pure none
-  | some fstPort, some sndPort =>
-    let ctor ← LowerM.addNode (.ctor 0 2) ty
-    LowerM.connect ⟨ctor, ⟨1⟩⟩ fstPort
-    LowerM.connect ⟨ctor, ⟨2⟩⟩ sndPort
-    pure (some (PortId.principal ctor))
-  | some fstPort, none =>
-    let era ← LowerM.addNode .era unitTy
-    let ctor ← LowerM.addNode (.ctor 0 2) ty
-    LowerM.connect ⟨ctor, ⟨1⟩⟩ fstPort
-    LowerM.connect ⟨ctor, ⟨2⟩⟩ (PortId.principal era)
-    pure (some (PortId.principal ctor))
-  | none, some sndPort =>
-    let era ← LowerM.addNode .era unitTy
-    let ctor ← LowerM.addNode (.ctor 0 2) ty
-    LowerM.connect ⟨ctor, ⟨1⟩⟩ (PortId.principal era)
-    LowerM.connect ⟨ctor, ⟨2⟩⟩ sndPort
-    pure (some (PortId.principal ctor))
-
-/-- Lower a Core.Expr projection -/
-partial def lowerCoreProj (expr : Soma.Core.Expr) (idx : Nat)
-    (ty : Value) : LowerM (Option PortId) := do
-  let pairTy ← getExprType expr
-  let exprPort? ← lowerCoreExpr expr pairTy
-  match exprPort? with
-  | none => pure none
-  | some exprPort =>
-    let proj ← LowerM.addNode (.proj idx) ty
-    LowerM.connect ⟨proj, ⟨1⟩⟩ exprPort
-    pure (some (PortId.principal proj))
-
 /-- Lower a Core.Expr closure -/
 partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
     (captures : Array Soma.Core.Expr) (ty : Value) : LowerM (Option PortId) := do
@@ -1450,7 +1386,7 @@ partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
     pure capturePairs[0]!.1
   else do
     let captureTypes := capturePairs.map (·.2)
-    let envTy := Value.tuple captureTypes
+    let envTy := ctorFieldChain captureTypes
     let ctor ← LowerM.addNode (.ctor 0 capturePairs.size) envTy
     for i in [:capturePairs.size] do
       LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ capturePairs[i]!.1
@@ -1477,7 +1413,7 @@ partial def lowerCoreArray (elems : Array Soma.Core.Expr)
   let len := elemPorts.size
   let word64Ty := Value.vPrimTy .word64
   let lenNode ← LowerM.addNode (.num .u64 len.toUInt32) word64Ty
-  let backingTy := Value.tuple (List.replicate len elemTy).toArray
+  let backingTy := ctorFieldChain (List.replicate len elemTy).toArray
   let dataNode ← LowerM.addNode (.ctor 0xFFFD len) backingTy
   for i in [:len] do
     LowerM.connect ⟨dataNode, ⟨i + 1⟩⟩ elemPorts[i]!

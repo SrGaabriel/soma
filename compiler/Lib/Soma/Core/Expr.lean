@@ -118,13 +118,6 @@ inductive Expr where
   | sort (level : Level)
   | pi (qty : Quantity) (info : BinderInfo) (name : String)
        (domain : Expr) (codomain : Expr)
-  | sigma (qty : Quantity) (info : BinderInfo) (name : String)
-          (fst : Expr) (snd : Expr)
-
-  -- Pairs (values of Sigma types)
-  | pair (fst : Expr) (snd : Expr)
-  | projFst (e : Expr)
-  | projSnd (e : Expr)
 
   -- Data types and constructors
   | construct (name : QualifiedName) (tag : Nat) (args : Array Expr) (resultTy : Expr)
@@ -195,10 +188,6 @@ partial def Expr.replaceMvar (e : Expr) (metaId : MetaId) (replacement : Expr) :
   | .lam info n d b => .lam info n (d.replaceMvar metaId replacement) (b.replaceMvar metaId replacement)
   | .let_ n ty v b => .let_ n (ty.replaceMvar metaId replacement) (v.replaceMvar metaId replacement) (b.replaceMvar metaId replacement)
   | .pi qty info n d c => .pi qty info n (d.replaceMvar metaId replacement) (c.replaceMvar metaId replacement)
-  | .sigma qty info n f s => .sigma qty info n (f.replaceMvar metaId replacement) (s.replaceMvar metaId replacement)
-  | .pair f s => .pair (f.replaceMvar metaId replacement) (s.replaceMvar metaId replacement)
-  | .projFst x => .projFst (x.replaceMvar metaId replacement)
-  | .projSnd x => .projSnd (x.replaceMvar metaId replacement)
   | .ann x t => .ann (x.replaceMvar metaId replacement) (t.replaceMvar metaId replacement)
   | .construct n t args rty =>
     .construct n t (args.map (·.replaceMvar metaId replacement)) (rty.replaceMvar metaId replacement)
@@ -238,13 +227,11 @@ partial def Expr.replaceMvar (e : Expr) (metaId : MetaId) (replacement : Expr) :
   | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .tyvar _ _ => e
 
 partial def Expr.containsPairExpr : Expr → Bool
-  | .pair _ _ => true
   | .app f a => f.containsPairExpr || a.containsPairExpr
   | .lam _ _ _ b => b.containsPairExpr
   | .let_ _ _ v b => v.containsPairExpr || b.containsPairExpr
   | .«case» scruts _ arms => scruts.any (·.containsPairExpr) || arms.any (·.body.containsPairExpr)
   | .closure _ caps _ => caps.any (·.containsPairExpr)
-  | .projFst e | .projSnd e => e.containsPairExpr
   | _ => false
 
 partial def Expr.toDebugString : Expr → String
@@ -262,10 +249,6 @@ partial def Expr.toDebugString : Expr → String
   | .lit (.bool b) => s!"{b}"
   | .sort _ => "Sort"
   | .pi _ _ name d c => s!"((${name} : {d.toDebugString}) → {c.toDebugString})"
-  | .sigma _ _ name f s => s!"((${name} : {f.toDebugString}) × {s.toDebugString})"
-  | .pair f s => s!"({f.toDebugString}, {s.toDebugString})"
-  | .projFst e => s!"{e.toDebugString}.1"
-  | .projSnd e => s!"{e.toDebugString}.2"
   | .construct n _ args _ =>
     let argsStr := args.map (·.toDebugString) |>.toList |> String.intercalate ", "
     s!"{n.display}<{argsStr}>"
@@ -319,8 +302,7 @@ def Expr.ctorName : Expr → String
   | .bvar _ => "bvar" | .fvar _ _ => "fvar" | .mvar _ => "mvar" | .const _ _ => "const"
   | .tyvar _ _ => "tyvar"
   | .app _ _ => "app" | .lam _ _ _ _ => "lam" | .let_ _ _ _ _ => "let" | .lit _ => "lit"
-  | .sort _ => "sort" | .pi _ _ _ _ _ => "pi" | .sigma _ _ _ _ _ => "sigma"
-  | .pair _ _ => "pair" | .projFst _ => "projFst" | .projSnd _ => "projSnd"
+  | .sort _ => "sort" | .pi _ _ _ _ _ => "pi"
   | .construct _ _ _ _ => "construct" | .case _ _ _ => "case"
   | .record _ => "record" | .recordUpdate _ _ => "recordUpdate"
   | .fieldAccess _ _ _ => "fieldAccess" | .inject _ _ _ => "inject"
@@ -370,11 +352,6 @@ partial def shift (e : Expr) (amount : Int) (cutoff : Nat) : Expr :=
     .let_ n (t.shift amount cutoff) (v.shift amount cutoff) (b.shift amount (cutoff + 1))
   | .pi q info n d c =>
     .pi q info n (d.shift amount cutoff) (c.shift amount (cutoff + 1))
-  | .sigma q info n f s =>
-    .sigma q info n (f.shift amount cutoff) (s.shift amount (cutoff + 1))
-  | .pair f s => .pair (f.shift amount cutoff) (s.shift amount cutoff)
-  | .projFst x => .projFst (x.shift amount cutoff)
-  | .projSnd x => .projSnd (x.shift amount cutoff)
   | .construct n t args rty =>
     .construct n t (args.map (·.shift amount cutoff)) (rty.shift amount cutoff)
   | .«case» scruts motive arms =>
@@ -427,10 +404,6 @@ where
     | .lam info n d b => .lam info n (go d depth) (go b (depth + 1))
     | .let_ n t v b => .let_ n (go t depth) (go v depth) (go b (depth + 1))
     | .pi q info n d c => .pi q info n (go d depth) (go c (depth + 1))
-    | .sigma q info n f s => .sigma q info n (go f depth) (go s (depth + 1))
-    | .pair f s => .pair (go f depth) (go s depth)
-    | .projFst x => .projFst (go x depth)
-    | .projSnd x => .projSnd (go x depth)
     | .construct n t args rty => .construct n t (args.map (go · depth)) (go rty depth)
     | .«case» scruts motive arms =>
       .«case» (scruts.map (go · depth))
@@ -471,10 +444,6 @@ where
     | .lam info n d b => .lam info n (go d depth) (go b (depth + 1))
     | .let_ n t v b => .let_ n (go t depth) (go v depth) (go b (depth + 1))
     | .pi q info n d c => .pi q info n (go d depth) (go c (depth + 1))
-    | .sigma q info n f s => .sigma q info n (go f depth) (go s (depth + 1))
-    | .pair f s => .pair (go f depth) (go s depth)
-    | .projFst x => .projFst (go x depth)
-    | .projSnd x => .projSnd (go x depth)
     | .construct n t args rty => .construct n t (args.map (go · depth)) (go rty depth)
     | .«case» scruts motive arms =>
       .«case» (scruts.map (go · depth))
@@ -519,10 +488,6 @@ where
     | .lam info n d b => .lam info n (go d depth) (go b (depth + 1))
     | .let_ n t v b => .let_ n (go t depth) (go v depth) (go b (depth + 1))
     | .pi q info n d c => .pi q info n (go d depth) (go c (depth + 1))
-    | .sigma q info n f s => .sigma q info n (go f depth) (go s (depth + 1))
-    | .pair f s => .pair (go f depth) (go s depth)
-    | .projFst x => .projFst (go x depth)
-    | .projSnd x => .projSnd (go x depth)
     | .construct n t args rty => .construct n t (args.map (go · depth)) (go rty depth)
     | .«case» scruts motive arms =>
       .«case» (scruts.map (go · depth))
@@ -565,12 +530,6 @@ partial def replaceFVar (e : Expr) (fvar : Unique) (replacement : Expr) : Expr :
            (b.replaceFVar fvar replacement)
   | .pi q info n d c =>
     .pi q info n (d.replaceFVar fvar replacement) (c.replaceFVar fvar replacement)
-  | .sigma q info n f s =>
-    .sigma q info n (f.replaceFVar fvar replacement) (s.replaceFVar fvar replacement)
-  | .pair f s =>
-    .pair (f.replaceFVar fvar replacement) (s.replaceFVar fvar replacement)
-  | .projFst x => .projFst (x.replaceFVar fvar replacement)
-  | .projSnd x => .projSnd (x.replaceFVar fvar replacement)
   | .construct n t args rty =>
     .construct n t (args.map (·.replaceFVar fvar replacement)) (rty.replaceFVar fvar replacement)
   | .«case» scruts motive arms =>
@@ -624,10 +583,6 @@ where
     | .lam _ _ d b => go b (go d acc)
     | .let_ _ t v b => go b (go v (go t acc))
     | .pi _ _ _ d c => go c (go d acc)
-    | .sigma _ _ _ f s => go s (go f acc)
-    | .pair f s => go s (go f acc)
-    | .projFst x => go x acc
-    | .projSnd x => go x acc
     | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
     | .«case» scruts motive arms =>
       let acc := scruts.foldl (fun a e => go e a) acc
@@ -668,10 +623,6 @@ where
     | .lam _ _ d b => go b (go d acc)
     | .let_ _ t v b => go b (go v (go t acc))
     | .pi _ _ _ d c => go c (go d acc)
-    | .sigma _ _ _ f s => go s (go f acc)
-    | .pair f s => go s (go f acc)
-    | .projFst x => go x acc
-    | .projSnd x => go x acc
     | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
     | .«case» scruts motive arms =>
       let acc := scruts.foldl (fun a e => go e a) acc
@@ -709,10 +660,6 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
   | .lam _ _ d b => d.hasFVar fvar || b.hasFVar fvar
   | .let_ _ t v b => t.hasFVar fvar || v.hasFVar fvar || b.hasFVar fvar
   | .pi _ _ _ d c => d.hasFVar fvar || c.hasFVar fvar
-  | .sigma _ _ _ f s => f.hasFVar fvar || s.hasFVar fvar
-  | .pair f s => f.hasFVar fvar || s.hasFVar fvar
-  | .projFst x => x.hasFVar fvar
-  | .projSnd x => x.hasFVar fvar
   | .construct _ _ args rty => args.any (·.hasFVar fvar) || rty.hasFVar fvar
   | .«case» scruts motive arms =>
     scruts.any (·.hasFVar fvar) || motive.hasFVar fvar || arms.any (fun arm => arm.body.hasFVar fvar)
@@ -745,7 +692,7 @@ private partial def isTypeUniverse : Expr → Bool
 
 /-- An expression is type-level when it inhabits the universe of types and has no runtime content -/
 partial def isTypeLevelExpr : Expr → Bool
-  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
+  | .sort _ | .pi _ _ _ _ _ | .primTy _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
@@ -785,9 +732,6 @@ partial def countBVar (e : Expr) (depth : Nat := 0) : Nat :=
     s + m + a
   | .if_ c t el => countBVar c depth + countBVar t depth + countBVar el depth
   | .construct _ _ args _ => args.foldl (fun acc e => acc + countBVar e depth) 0
-  | .pair f s => countBVar f depth + countBVar s depth
-  | .projFst x => countBVar x depth
-  | .projSnd x => countBVar x depth
   | .fieldAccess x _ _ => countBVar x depth
   | .closure _ caps ty =>
     caps.foldl (fun acc e => acc + countBVar e depth) 0 + countBVar ty depth
@@ -823,11 +767,6 @@ partial def betaReduce (e : Expr) (stripTypeArgs : Bool := false) : Expr :=
     .let_ name (betaReduce ty stripTypeArgs) (betaReduce val stripTypeArgs) (betaReduce body stripTypeArgs)
   | .pi qty info name domain codomain =>
     .pi qty info name (betaReduce domain stripTypeArgs) (betaReduce codomain stripTypeArgs)
-  | .sigma qty info name fst snd =>
-    .sigma qty info name (betaReduce fst stripTypeArgs) (betaReduce snd stripTypeArgs)
-  | .pair f s => .pair (betaReduce f stripTypeArgs) (betaReduce s stripTypeArgs)
-  | .projFst x => .projFst (betaReduce x stripTypeArgs)
-  | .projSnd x => .projSnd (betaReduce x stripTypeArgs)
   | .if_ c t el => .if_ (betaReduce c stripTypeArgs) (betaReduce t stripTypeArgs) (betaReduce el stripTypeArgs)
   | .«case» scruts motive arms =>
     .«case» (scruts.map (betaReduce · stripTypeArgs))
@@ -859,10 +798,6 @@ partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   | .lam _ _ d b => d.countFVar fvar + b.countFVar fvar
   | .let_ _ t v b => t.countFVar fvar + v.countFVar fvar + b.countFVar fvar
   | .pi _ _ _ d c => d.countFVar fvar + c.countFVar fvar
-  | .sigma _ _ _ f s => f.countFVar fvar + s.countFVar fvar
-  | .pair f s => f.countFVar fvar + s.countFVar fvar
-  | .projFst x => x.countFVar fvar
-  | .projSnd x => x.countFVar fvar
   | .construct _ _ args rty => args.foldl (fun acc a => acc + a.countFVar fvar) 0 + rty.countFVar fvar
   | .«case» scruts motive arms =>
     let scrutCount := scruts.foldl (fun acc s => acc + s.countFVar fvar) 0
@@ -897,9 +832,6 @@ partial def collectMetas : Expr → Array MetaId
   | .lam _ _ d b => collectMetas d ++ collectMetas b
   | .let_ _ t v b => collectMetas t ++ collectMetas v ++ collectMetas b
   | .pi _ _ _ d c => collectMetas d ++ collectMetas c
-  | .sigma _ _ _ f s => collectMetas f ++ collectMetas s
-  | .pair f s => collectMetas f ++ collectMetas s
-  | .projFst e | .projSnd e => collectMetas e
   | .if_ c t e => collectMetas c ++ collectMetas t ++ collectMetas e
   | .«case» scruts motive arms =>
     let m := scruts.foldl (fun acc s => acc ++ collectMetas s) #[]
