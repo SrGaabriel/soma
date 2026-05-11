@@ -150,7 +150,7 @@ private partial def specializeChildren (registry : ClassMethodRegistry) (e : Exp
     .closure name (captures.map (specializeExpr registry)) (specializeExpr registry ty)
   | .ann expr ty => .ann (specializeExpr registry expr) (specializeExpr registry ty)
   | .bvar _ | .fvar _ _ | .mvar _ | .const _ _ | .lit _ | .sort _
-  | .primTy _ | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
+  | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
   | .proj _ _ _ | .panic _ | .tyvar _ _ => e

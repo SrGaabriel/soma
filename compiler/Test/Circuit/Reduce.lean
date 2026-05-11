@@ -19,8 +19,11 @@ open Somac.Circuit.Reduce (reduce reduceNF eval ReadbackValue Config Stats
 open Soma.Core (Value)
 open Test.Fixtures
 
+/-- Synthetic test placeholders for the kernel-level primitive types -/
+private def testUnitTy : Value := .vDataType ⟨1004, "test", "Unit"⟩ []
+
 /-- Unit type placeholder for tests -/
-private def testTy : Value := Value.vPrimTy .unit
+private def testTy : Value := testUnitTy
 
 /-! ## Graph Building Helpers
 

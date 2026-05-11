@@ -80,7 +80,7 @@ partial def zonkValueLevels (v : Value) : TCM Value := do
     let body' ← zonkValueLevels body
     return .vTransport tyLevel' ty' motive' lhs' rhs' eq' body'
   -- Values without levels
-  | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
+  | .vIntLit _ | .vFloatLit _ | .vStringLit _
   | .vRowEmpty | .vLabelLit _ | .vRecordVal _
   | .vRowSort | .vLabelSort =>
     return v

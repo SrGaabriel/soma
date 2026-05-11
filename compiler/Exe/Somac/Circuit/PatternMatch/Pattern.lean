@@ -89,7 +89,6 @@ partial def format : SimplePattern → String
     s!"C{tag}({", ".intercalate argStrs})"
   | .lit (.int n) => toString n
   | .lit (.float f) => toString f
-  | .lit (.bool b) => toString b
   | .lit (.string s) => s!"\"{s}\""
   | .as _ name inner => s!"{name}@{inner.format}"
 

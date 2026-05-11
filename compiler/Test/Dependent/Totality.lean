@@ -34,6 +34,9 @@ def testSpan : Span := Span.uninhabited
 def testFnName (s : String) : QualifiedName := ⟨⟨0, "", s⟩⟩
 def testUnique (name : String) : Unique := ⟨0, "", name⟩
 
+/-- Synthetic test placeholder for the kernel-level `Int32` type -/
+def testIntTy : Soma.Core.Value := .vDataType ⟨1001, "test", "Int32"⟩ []
+
 /-- Create a free variable Expr for tests (using fvar with the given name) -/
 def testVar (name : String) : Soma.Core.Expr := .fvar ⟨0, "", name⟩ (.sort .zero)
 
@@ -500,7 +503,7 @@ namespace PositivityTests
 
 def testPrimPositive : IO TestResult := do
   let unique := testUnique "Test"
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   match checkPositivityValue unique .positive ty with
   | .ok => return .passed
   | .violated reason _ => return .failed s!"primitives should be positive: {reason}"

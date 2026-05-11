@@ -46,7 +46,6 @@ def rowStartsTrivial (row : Array Pattern) : Bool :=
 def literalEq : Literal → Literal → Bool
   | .int a, .int b => a == b
   | .string a, .string b => a == b
-  | .bool a, .bool b => a == b
   | _, _ => false
 
 /-- Specialize a row against `head` -/

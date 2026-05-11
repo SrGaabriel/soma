@@ -25,9 +25,6 @@ inductive Value where
   /-- Neutral term (stuck computation) -/
   | vNeutral (ty : Value) (neu : Neutral)
 
-  /-- Primitive type (Int, Bool, etc.) -/
-  | vPrimTy (p : PrimType)
-
   /-- Row sorts -/
   | vRowSort
   /-- Label sort -/
@@ -405,7 +402,7 @@ mutual
       Value.collectMetas dom ++ Closure.collectMetas cod
     | .vLam _ body => Closure.collectMetas body
     | .vNeutral ty neu => Value.collectMetas ty ++ Neutral.collectMetas neu
-    | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _ => #[]
+    | .vIntLit _ | .vFloatLit _ | .vStringLit _ => #[]
     | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => #[]
     | .vRowExtend label ty tail =>
       Value.collectMetas label ++ Value.collectMetas ty ++ Value.collectMetas tail

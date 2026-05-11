@@ -142,7 +142,7 @@ where
       go tail (remaining - 1) (acc.push fieldTy)
     | _ =>
       -- Pad with unit if row is shorter than expected
-      acc ++ Array.mk (List.replicate remaining (.vPrimTy .unit))
+      acc ++ Array.mk (List.replicate remaining (.vType Soma.Core.Level.zero))
 
 /-- Fallback heuristic for field types when constructor info is unavailable -/
 def fallbackFieldTypes (scrutineeType : Value) (arity : Nat) : Array Value :=
@@ -151,13 +151,13 @@ def fallbackFieldTypes (scrutineeType : Value) (arity : Nat) : Array Value :=
     -- Common pattern: first field is first param, rest are the same data type
     if arity == 0 then #[]
     else if arity == 1 then
-      #[params.head?.getD (.vPrimTy .unit)]
+      #[params.head?.getD (.vType Soma.Core.Level.zero)]
     else
       -- For arity > 1, use first param then repeat scrutinee type
-      let firstField := params.head?.getD (.vPrimTy .unit)
+      let firstField := params.head?.getD (.vType Soma.Core.Level.zero)
       #[firstField] ++ Array.mk (List.replicate (arity - 1) scrutineeType)
   | _ =>
-    Array.mk (List.replicate arity (.vPrimTy .unit))
+    Array.mk (List.replicate arity (.vType Soma.Core.Level.zero))
 
 /-- Instantiate field types by substituting type parameters -/
 def instantiateFieldTypes (fieldTypes : Array Value) (params : Array Value)
@@ -183,7 +183,7 @@ def computeFieldTypes (registry : ConstructorTypeRegistry) (scrutineeType : Valu
 
   | _ =>
     -- Unknown type, use unit placeholder
-    Array.mk (List.replicate arity (.vPrimTy .unit))
+    Array.mk (List.replicate arity (.vType Soma.Core.Level.zero))
 
 /-- Type context for pattern match compilation -/
 structure TypeContext where
@@ -204,7 +204,7 @@ def initial (registry : ConstructorTypeRegistry) (scrutineeTypes : Array Value)
 
 /-- Get the type at a specific column -/
 def getColumnType (ctx : TypeContext) (col : Nat) : Value :=
-  ctx.columnTypes[col]?.getD (.vPrimTy .unit)
+  ctx.columnTypes[col]?.getD (.vType Soma.Core.Level.zero)
 
 /-- Specialize the type context when matching a constructor -/
 def specialize (ctx : TypeContext) (col : Nat) (tag : Nat) (arity : Nat)

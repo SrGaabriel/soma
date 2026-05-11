@@ -100,7 +100,6 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
     .ok (.lam .explicit name (.sort Level.zero) bodyE)
 
   | .vNeutral _ neu => renameNeutral ren neu
-  | .vPrimTy p => .ok (.primTy p)
   | .vIntLit n => .ok (.lit (.int n))
   | .vFloatLit f => .ok (.lit (.float f))
   | .vStringLit s => .ok (.lit (.string s))
@@ -132,8 +131,7 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
 
   | .vDataType id params => do
     let paramExprs ← params.mapM (rename ren)
-    let baseExpr := Soma.Core.Expr.const ⟨⟨id.id, id.module, id.original⟩⟩ (.sort .zero)
-    .ok (paramExprs.foldl (fun acc p => .app acc p) baseExpr)
+    .ok (.dataTy id paramExprs.toArray)
 
   | .vConstructor name tag args rty => do
     let argExprs ← args.mapM (rename ren)

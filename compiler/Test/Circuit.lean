@@ -15,8 +15,11 @@ open Somac.Circuit.Pretty (ppGraph ppNode ppTerm)
 open Soma.Core (Value)
 open Test.Fixtures
 
+/-- Synthetic test placeholder for the kernel-level `Unit` type -/
+private def testUnitTy : Value := .vDataType ⟨1004, "test", "Unit"⟩ []
+
 /-- Unit type used for tests where we don't care about the type annotation -/
-private def testTy : Value := Value.vPrimTy .unit
+private def testTy : Value := testUnitTy
 
 namespace TermTests
 

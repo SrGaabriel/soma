@@ -15,8 +15,11 @@ open Soma.Core (Literal Pattern)
 open Soma.Core (Value)
 open Test.Fixtures
 
+/-- Synthetic test placeholder for the kernel-level `Unit` type -/
+private def testUnitTy : Value := .vDataType ⟨1004, "test", "Unit"⟩ []
+
 /-- Unit type used for tests where we don't care about the type annotation -/
-private def testTy : Value := Value.vPrimTy .unit
+private def testTy : Value := testUnitTy
 
 /-- Empty constructor type registry for tests -/
 private def emptyRegistry : ConstructorTypeRegistry := {}
@@ -70,7 +73,7 @@ def testCtor : IO TestResult := do
 /-- Test: Literal pattern properties -/
 def testLit : IO TestResult := do
   let intPat := SimplePattern.lit (.int 42)
-  let boolPat := SimplePattern.lit (.bool true)
+  let strPat := SimplePattern.lit (.string "hi")
 
   if intPat.isWildcardOrVar then
     return .failed "Lit should not be isWildcardOrVar"
@@ -79,9 +82,9 @@ def testLit : IO TestResult := do
   match intPat.getLit? with
   | some (.int 42) => pure ()
   | other => return .failed s!"Int lit should be 42, got {repr other}"
-  match boolPat.getLit? with
-  | some (.bool true) => pure ()
-  | other => return .failed s!"Bool lit should be true, got {repr other}"
+  match strPat.getLit? with
+  | some (.string "hi") => pure ()
+  | other => return .failed s!"String lit should be \"hi\", got {repr other}"
   return .passed
 
 /-- Test: As-pattern properties -/
@@ -668,14 +671,14 @@ end LowerTests
 
 namespace IntegrationTests
 
-/-- Test: Full pipeline - simple match -/
+/-- Test: Full pipeline -/
 def testSimpleMatch : IO TestResult := do
   -- match x with
-  -- | True -> 1
-  -- | False -> 0
+  -- | 1 -> 1
+  -- | 0 -> 0
   let matrix := PatternMatrix.empty 1
-  let matrix := matrix.addRow (Row.ofPatterns #[.lit (.bool true)] 0)
-  let matrix := matrix.addRow (Row.ofPatterns #[.lit (.bool false)] 1)
+  let matrix := matrix.addRow (Row.ofPatterns #[.lit (.int 1)] 0)
+  let matrix := matrix.addRow (Row.ofPatterns #[.lit (.int 0)] 1)
 
   let tree := compileMatrix matrix emptyRegistry #[testTy]
 
@@ -685,7 +688,7 @@ def testSimpleMatch : IO TestResult := do
     pure (PortId.principal num)
 
   let (_, graph) := GraphM.run' do
-    let scrut ← GraphM.addNode (.num .bool 1) testTy  -- True
+    let scrut ← GraphM.addNode (.num .i64 1) testTy
     lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm
 
   if graph.nodeCount < 3 then

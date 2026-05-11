@@ -821,7 +821,6 @@ end InstanceInfo
 /-- Structural discrimination key for a `Value` -/
 inductive DiscrKey where
   | dataType (id : Soma.Unique)
-  | primType (p : Soma.Core.PrimType)
   | type_ (lvl : Nat)
   | rowSort
   | labelSort
@@ -845,7 +844,6 @@ namespace DiscrKey
 /-- Compute the discrimination key of a value -/
 partial def ofValue : Value → DiscrKey
   | .vDataType id _ => .dataType id
-  | .vPrimTy p => .primType p
   | .vType (.lit n) => .type_ n
   | .vType _ => .type_ 0
   | .vRowSort => .rowSort
@@ -1634,6 +1632,45 @@ def lookupWiredPrimitiveOfTypeUnique (u : Soma.Unique) : TCM (Option Soma.Core.P
   | some role => pure (WiredRole.primType? role)
   | none => pure none
 
+/-- The `Value` for a wired-in primitive type -/
+def primTypeValue? (p : Soma.Core.PrimType) : TCM (Option Value) := do
+  let ctx ← getCtx
+  let mut found : Option Soma.Unique := none
+  for role in WiredRole.all do
+    if found.isNone && WiredRole.primTyOfRole? role == some p then
+      match ctx.globals.wiredIn.getUnique? role with
+      | some info => found := some info.name.id
+      | none => pure ()
+  pure (found.map fun uid => Value.vDataType uid [])
+
+/-- Like `primTypeValue?` but raises an internal error when the registry has no entry -/
+def primTypeValue (p : Soma.Core.PrimType) (span : Soma.Syntax.Span := Soma.Syntax.Span.uninhabited)
+    : TCM Value := do
+  match ← primTypeValue? p with
+  | some v => pure v
+  | none =>
+    throw (.internalError s!"wired primitive `{p.name}` has no `@[wired_in]` declaration in scope" span)
+
+/-- Resolve the wired-in `Bool::True`/`Bool::False` constructor by boolean value -/
+def wiredBoolConstructor (b : Bool) (span : Soma.Syntax.Span := Soma.Syntax.Span.uninhabited)
+    : TCM (Soma.Core.QualifiedName × Nat × Value) := do
+  let ctx ← getCtx
+  match ctx.globals.wiredIn.getUnique? .typeBool with
+  | none =>
+    throw (.internalError "wired type `Bool` (role `type.bool`) is not registered" span)
+  | some boolInfo =>
+    let boolTy : Value := Value.vDataType boolInfo.name.id []
+    let targetName : String := if b then "True" else "False"
+    match ctx.globals.lookupInductive boolInfo.name with
+    | none =>
+      throw (.internalError s!"wired type `Bool` ({boolInfo.name.display}) has no inductive metadata" span)
+    | some indMeta =>
+      match indMeta.ctors.find? (fun c => c.simpleName == targetName) with
+      | none =>
+        throw (.internalError s!"wired `Bool` is missing constructor `{targetName}`" span)
+      | some ctorMeta =>
+        pure (ctorMeta.name, ctorMeta.tag, boolTy)
+
 /-- Look up a type abbreviation by QualifiedName -/
 def lookupAbbrev (qn : Soma.Core.QualifiedName) : TCM (Option AbbrevInfo) := do
   let ctx ← getCtx
@@ -1744,7 +1781,7 @@ partial def wouldFormForceCycle (id : MetaId) (v : Value) : TCM Bool := do
 where
   goVal (v : Value) (visited : Std.HashSet Nat) : TCM Bool := do
     match v with
-    | .vType _ | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
+    | .vType _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
     | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => return false
     | .vPi _ _ _ dom _ => goVal dom visited
     | .vLam _ _ => return false

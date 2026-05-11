@@ -671,15 +671,13 @@ partial def convertPatternWithBindings
     let patVal ← TCM.freshMetaVal scrutTy
     pure (.wildcard, patVal, [], startLvl)
   | .lit l =>
-    let (corePat, patVal) := match l with
-      | .int n _ => ((.lit (.int n) : Soma.Core.Pattern), Value.vIntLit n)
-      | .string s _ => (.lit (.string s), Value.vStringLit s)
-      | .bool b _ =>
-        let ctor : Value :=
-          if b
-          then .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
-          else .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 [] (.vPrimTy .bool)
-        (.lit (.bool b), ctor)
+    let (corePat, patVal) ← match l with
+      | .int n _ => pure ((.lit (.int n) : Soma.Core.Pattern), Value.vIntLit n)
+      | .string s _ => pure ((.lit (.string s) : Soma.Core.Pattern), Value.vStringLit s)
+      | .bool b span =>
+        let (ctorName, ctorTag, boolTy) ← TCM.wiredBoolConstructor b span
+        let ctor : Value := .vConstructor ctorName ctorTag [] boolTy
+        pure ((.ctor ctorName ctorTag #[] : Soma.Core.Pattern), ctor)
     pure (corePat, patVal, [], startLvl)
   | .con name args span => do
     let ctorInfo? ← do
@@ -819,7 +817,9 @@ where
         return (pats, vals, bindings, curLvl)
   buildNestedPairValue (vs : List Value) (span : Span) : TCM Value := do
     match vs with
-    | [] => pure (.vNeutral (.vPrimTy .unit) (.nVar ⟨"_unit", ⟨0⟩⟩))
+    | [] =>
+      let unitTy ← TCM.primTypeValue .unit span
+      pure (.vNeutral unitTy (.nVar ⟨"_unit", ⟨0⟩⟩))
     | [v] => pure v
     | v :: rest =>
       let restV ← buildNestedPairValue rest span
@@ -851,9 +851,9 @@ where
     match v with
     | .vNeutral ty _ => pure ty
     | .vConstructor _ _ _ ty => pure ty
-    | .vIntLit _ => pure (.vPrimTy .int)
-    | .vStringLit _ => pure (.vPrimTy .string)
-    | .vFloatLit _ => pure (.vPrimTy .double)
+    | .vIntLit _ => TCM.primTypeValue .int
+    | .vStringLit _ => TCM.primTypeValue .string
+    | .vFloatLit _ => TCM.primTypeValue .double
     | _ => pure (.vType .zero)
 
 /-- Convert a pattern row against parallel scrutinee -/
@@ -1058,14 +1058,7 @@ where
               expr := .app expr metaExpr
             return (instantiatedTy, expr)
           else if info.origin == .typeDecl then
-            match ← TCM.lookupWiredPrimitiveOfGlobal qn with
-            | some primTy =>
-              if primTy.isNullary then
-                return (info.type, .primTy primTy)
-              else
-                return (info.type, .dataTy qn.id #[])
-            | none =>
-              return (info.type, .dataTy qn.id #[])
+            return (info.type, .dataTy qn.id #[])
           else
             let tyExpr ← quoteTypeAnn info.type
             return (info.type, .const qn tyExpr)
@@ -1092,15 +1085,17 @@ where
             return (tyMeta, .panic s!"unbound variable `{name.name}`")
 
     -- Literals
-    | .lit (.int n _) => return (.vPrimTy .int, .lit (.int n))
-    | .lit (.string s _) =>
-      -- Look up the String type from wired-in registry (real record, not primitive)
-      let stringTy ← do
-        match ← TCM.lookupWiredIn .typeString with
-        | some info => pure (Value.vDataType info.name.id [])
-        | none => pure (Value.vPrimTy .string)
+    | .lit (.int n span) =>
+      let intTy ← TCM.primTypeValue .int span
+      return (intTy, .lit (.int n))
+    | .lit (.string s span) =>
+      let stringTy ← TCM.primTypeValue .string span
       return (stringTy, .lit (.string s))
-    | .lit (.bool b _) => return (.vPrimTy .bool, .lit (.bool b))
+    | .lit (.bool b span) =>
+      let (ctorName, ctorTag, boolTy) ← TCM.wiredBoolConstructor b span
+      let lvl ← TCM.currentLevel
+      let boolTyExpr := Soma.Core.quoteExpr lvl boolTy
+      return (boolTy, .construct ctorName ctorTag #[] boolTyExpr)
 
     -- Application: infer fn, then apply arg
     | .app fn arg span => do
@@ -1136,7 +1131,8 @@ where
 
     -- If-then-else
     | .if_ cond then_ else_ span => do
-      let condExpr ← checkSyntax cond (.vPrimTy .bool)
+      let boolTy ← TCM.primTypeValue .bool span
+      let condExpr ← checkSyntax cond boolTy
       let ((thenTy, thenExpr), thenUsages) ← captureUsages (inferSyntax then_)
       let (elseExpr, elseUsages) ← captureUsages (checkSyntax else_ thenTy)
       let joined ← checkBranchUsages thenUsages elseUsages span
@@ -1163,7 +1159,8 @@ where
       match elemList with
       | [] =>
         -- Empty tuple = unit
-        return (.vPrimTy .unit, .tuple #[])
+        let unitTy ← TCM.primTypeValue .unit span
+        return (unitTy, .tuple #[])
       | [e] =>
         -- Single element, unwrap
         inferSyntax e
@@ -1400,7 +1397,8 @@ partial def inferTupleAsSigma (elems : List Soma.Syntax.Expr)
     : TCM Soma.Core.Expr := do
   match elems with
   | [] =>
-    pure (.primTy .unit)
+    let unitInfo ← requireUniqueWiredRole .typeUnit Span.uninhabited
+    pure (.dataTy unitInfo.name.id #[])
   | [e] =>
     elabTypePosition e
   | e :: rest => do
@@ -1789,7 +1787,9 @@ partial def checkArmBodyWithBindings
 partial def inferSyntaxTuple (elems : List Soma.Syntax.Expr) (span : Span)
     : TCM (Value × Soma.Core.Expr) := do
   match elems with
-  | [] => return (.vPrimTy .unit, .tuple #[])
+  | [] =>
+    let unitTy ← TCM.primTypeValue .unit span
+    return (unitTy, .tuple #[])
   | [e] => inferSyntax e
   | e :: rest => do
     let (fstTy, fstExpr) ← inferSyntax e
@@ -1833,12 +1833,20 @@ where
       | paramList =>
         checkSyntaxLamBody paramList body expected' span []
 
-    | .lit (.int n _), .vPrimTy pt => do
-      if pt.isIntegral then
-        return .lit (.int n)
-      else if pt.isFloating then
-        return .lit (.float (Float.ofInt n))
-      else
+    | .lit (.int n _), .vDataType uid _ => do
+      match ← TCM.lookupWiredPrimitiveOfTypeUnique uid with
+      | some pt =>
+        if pt.isIntegral then
+          return .lit (.int n)
+        else if pt.isFloating then
+          return .lit (.float (Float.ofInt n))
+        else
+          let (inferred, expr) ← inferSyntax e
+          let (inferred', expr') ← insertImplicits inferred expr e.span
+          subtypeUnify inferred' expected'
+          let _ ← solveConstraints
+          return expr'
+      | none =>
         let (inferred, expr) ← inferSyntax e
         let (inferred', expr') ← insertImplicits inferred expr e.span
         subtypeUnify inferred' expected'
@@ -1847,7 +1855,8 @@ where
 
     -- If-then-else: check both branches
     | .if_ cond then_ else_ span, _ => do
-      let condExpr ← checkSyntax cond (.vPrimTy .bool)
+      let boolTy ← TCM.primTypeValue .bool span
+      let condExpr ← checkSyntax cond boolTy
       let (thenExpr, thenUsages) ← captureUsages (checkSyntax then_ expected')
       let (elseExpr, elseUsages) ← captureUsages (checkSyntax else_ expected')
       let joined ← checkBranchUsages thenUsages elseUsages span

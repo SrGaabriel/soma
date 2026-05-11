@@ -13,7 +13,7 @@ open Soma.Syntax (Span)
 partial def collectMvarIds (e : Expr) (acc : Std.HashSet MetaId := {}) : Std.HashSet MetaId :=
   match e with
   | .mvar id => acc.insert id
-  | .bvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
+  | .bvar _ | .sort _ | .rowSort | .labelSort
   | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ | .tyvar _ _ => acc
   | .fvar _ ty => collectMvarIds ty acc
   | .const _ ty => collectMvarIds ty acc
@@ -53,7 +53,7 @@ partial def collectMvarIds (e : Expr) (acc : Std.HashSet MetaId := {}) : Std.Has
 partial def applyMvarSubst (e : Expr) (subst : Std.HashMap MetaId Expr) (depth : Nat := 0) : Expr :=
   match e with
   | .mvar id => subst.getD id e
-  | .bvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
+  | .bvar _ | .sort _ | .rowSort | .labelSort
   | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ | .tyvar _ _ => e
   | .fvar id ty => .fvar id (applyMvarSubst ty subst depth)
   | .const name ty => .const name (applyMvarSubst ty subst depth)
@@ -151,7 +151,6 @@ partial def zonkValue (v : Value) : TCM Value := do
       return .vNeutral ty'' neu''
     | other => zonkValue other
 
-  | .vPrimTy p => return .vPrimTy p
   | .vIntLit n => return .vIntLit n
   | .vFloatLit f => return .vFloatLit f
   | .vStringLit s => return .vStringLit s

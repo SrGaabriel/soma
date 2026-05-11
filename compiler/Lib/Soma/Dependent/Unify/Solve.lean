@@ -64,21 +64,10 @@ private def markStuckOnFlexFlex (m : MetaId) (spine : List Value) (m2 : MetaId)
 
 mutual
 
-/-- Normalize wired primitive data type wrappers into canonical primitive types -/
-private partial def normalizeWiredPrimitiveValue (v : Value) : TCM Value := do
-  match v with
-  | .vDataType u [] =>
-    match ← TCM.lookupWiredPrimitiveOfTypeUnique u with
-    | some prim => if prim.isNullary then pure (.vPrimTy prim) else pure v
-    | none => pure v
-  | _ => pure v
-
 /-- Cumulative value subtyping -/
 partial def subtypeUnify (v1 v2 : Value) : TCM Unit := do
-  let v1f ← force v1
-  let v2f ← force v2
-  let v1' ← normalizeWiredPrimitiveValue v1f
-  let v2' ← normalizeWiredPrimitiveValue v2f
+  let v1' ← force v1
+  let v2' ← force v2
 
   if valueEq v1' v2' then return
   let lvl0 ← TCM.currentLevel
@@ -112,10 +101,8 @@ partial def subtypeUnify (v1 v2 : Value) : TCM Unit := do
 /-- Unify two values. May solve metavariables or postpone constraints -/
 partial def unify (v1 v2 : Value) : TCM Unit := do
   -- Force both values first
-  let v1f ← force v1
-  let v2f ← force v2
-  let v1' ← normalizeWiredPrimitiveValue v1f
-  let v2' ← normalizeWiredPrimitiveValue v2f
+  let v1' ← force v1
+  let v2' ← force v2
 
   -- Early exit: if values are syntactically equal, no work needed
   if valueEq v1' v2' then
@@ -167,9 +154,6 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let bindingId ← TCM.freshLocalId n1
     TCM.withBinding n1 bindingId .type0 .omega .explicit defaultSpan do
       unify b1Val b2Val
-
-  | .vPrimTy p1, .vPrimTy p2 =>
-    if p1 != p2 then throwUnifyError v1' v2' "primitive type mismatch"
 
   | .vIntLit n1, .vIntLit n2 =>
     if n1 != n2 then throwUnifyError v1' v2' "integer mismatch"

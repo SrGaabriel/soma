@@ -18,8 +18,8 @@ open Soma.Core (Value)
 open Soma (Unique)
 open Soma.Core (Literal)
 
-/-- The unit type -/
-def unitTy : Value := Value.vPrimTy .unit
+/-- Placeholder used where the pattern-match lowering pipeline (TODO: rename) -/
+def unitTy : Value := Value.vType Soma.Core.Level.zero
 
 /-- Type class for monads that can perform graph operations -/
 class MonadGraph (M : Type → Type) where
@@ -279,7 +279,7 @@ partial def lowerTree {M : Type → Type} [Monad M] [MonadGraph M]
     -- type information from compilation (which knew the constructor tags).
     for binding in bindings do
       match binding.ty with
-      | .vPrimTy .unit => pure ()  -- No type info, skip
+      | .vType .zero => pure ()
       | ty => LowerT.cacheOccurrenceType binding.occurrence ty
 
     -- Resolve all bindings to (port, type) pairs
@@ -354,8 +354,6 @@ partial def lowerLiteralSwitch {M : Type → Type} [Monad M] [MonadGraph M]
     lowerMATChain scrutPort scrutTy litCases.toList default lowerArm usageCounts
 where
   literalToTag : Literal → Nat
-    | .bool true => 1
-    | .bool false => 0
     | .int n => n.toNat
     | .float f => f.toBits.toNat
     | .string s => s.hash.toNat

@@ -149,8 +149,11 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
   -- Lower to Circuit IR
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas) (abbrevEnv := cm.abbrevEnv)
 
-  -- Partial evaluation propagates knowledge through the graph
-  let (optimized, _) ← Circuit.partialEval graph
+  let boolUnique? := globals.wiredIn.getUnique? .typeBool |>.map (·.name.id)
+  let reduceConfig := { Circuit.Reduce.Config.forPartialEval with
+    worldUid? := worldUnique?
+    boolUid?  := boolUnique? }
+  let (optimized, _) ← Circuit.partialEval graph (config := reduceConfig)
   -- Resolve metavariables for downstream passes
   let g := Circuit.Lower.resolveGraphMetas optimized cm.metas
 

@@ -87,7 +87,6 @@ partial def traverseValue (action : TraversalAction α) (v : Value) : α :=
     | .vNeutral ty neu =>
       inst.combine (traverseValue action ty) (traverseNeutral action neu)
 
-    | .vPrimTy _ => inst.empty
     | .vIntLit _ => inst.empty
     | .vFloatLit _ => inst.empty
     | .vStringLit _ => inst.empty
@@ -251,7 +250,6 @@ partial def traverseValueM
       let r2 ← traverseNeutralM action neu
       return inst.combine r1 r2
 
-    | .vPrimTy _ => return inst.empty
     | .vIntLit _ => return inst.empty
     | .vFloatLit _ => return inst.empty
     | .vStringLit _ => return inst.empty
@@ -401,7 +399,6 @@ partial def transformValueM (t : ValueTransformer M) (v : Value) : M Value := do
       let neu' ← transformNeutralM t neu
       return .vNeutral ty' neu'
 
-    | .vPrimTy p => return .vPrimTy p
     | .vIntLit n => return .vIntLit n
     | .vFloatLit f => return .vFloatLit f
     | .vStringLit s => return .vStringLit s

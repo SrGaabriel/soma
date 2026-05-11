@@ -284,8 +284,9 @@ partial def applyAppFun (appId : NodeId) (demandPort : PortId)
       let argEntry ← match argPort with
         | some p => ReduceM.getNode p.node
         | none => ReduceM.getNode appId
+      let config ← ReduceM.getConfig
       let isWorldArg := match argEntry.ty with
-        | .vPrimTy .world => true
+        | .vDataType uid _ => config.worldUid?.any (· == uid)
         | _ => false
       if isWorldArg then
         return .done appId
@@ -470,8 +471,13 @@ partial def applyOp2Right (op2Id : NodeId) (op : Op2Code) (leftId : NodeId)
       ReduceM.modifyStats (·.incArithmetic)
       match computeOp2 op vL vR with
       | .ok result =>
+        let config ← ReduceM.getConfig
+        let boolValueTy : Value :=
+          match config.boolUid? with
+          | some uid => .vDataType uid []
+          | none     => .vType Soma.Core.Level.zero
         let (resPt, resTy) := match op with
-          | .eq | .ne | .lt | .le | .gt | .ge => (PrimType.bool, Value.vPrimTy .bool)
+          | .eq | .ne | .lt | .le | .gt | .ge => (PrimType.bool, boolValueTy)
           | _ => (ptL, leftTy)
         let resultNode ← ReduceM.addNode (.num resPt result) resTy
         ReduceM.rewirePort ⟨op2Id, .principal⟩ (PortId.principal resultNode)

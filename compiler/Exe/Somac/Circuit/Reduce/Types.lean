@@ -345,6 +345,10 @@ structure Config where
   effectHandler : EffectHandler := .allStuck
   /-- Intrinsic dispatch table -/
   intrinsics : Std.HashMap String Intrinsic := {}
+  /-- Unique id of the wired-in `World` inductive -/
+  worldUid? : Option Soma.Unique := none
+  /-- Unique id of the wired-in `Bool` inductive -/
+  boolUid?  : Option Soma.Unique := none
   deriving Inhabited
 
 /-- Configuration for compile-time partial evaluation -/
@@ -440,7 +444,7 @@ def follow (p : PortId) : ReduceM PortId := do
   | none => throw (.malformedGraph s!"disconnected port {p}")
 
 /-- Add a node to the graph -/
-def addNode (n : Node) (ty : Value := Value.vPrimTy .unit) : ReduceM NodeId := do
+def addNode (n : Node) (ty : Value := Value.vType Soma.Core.Level.zero) : ReduceM NodeId := do
   let g ← getGraph
   let (nid, g') := g.addNode n ty
   setGraph g'

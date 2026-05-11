@@ -229,7 +229,7 @@ def getOccurrence! (m : TypedOccurrenceMap) (col : Nat) : Occurrence :=
 
 /-- Get the type at a column -/
 def getType (m : TypedOccurrenceMap) (col : Nat) : Value :=
-  m.columns[col]?.map (·.ty) |>.getD (.vPrimTy .unit)
+  m.columns[col]?.map (·.ty) |>.getD (.vType Soma.Core.Level.zero)
 
 /-- Specialize the map for constructor match at `col` with `arity` fields.
 
@@ -249,7 +249,7 @@ def specialize (m : TypedOccurrenceMap) (col : Nat) (tag : Nat) (arity : Nat)
 
     -- Create typed occurrences for each field
     let fieldToccs := Array.range arity |>.map fun i =>
-      let fieldTy := fieldTypes[i]?.getD (.vPrimTy .unit)
+      let fieldTy := fieldTypes[i]?.getD (.vType Soma.Core.Level.zero)
       TypedOccurrence.field tocc i fieldTy
 
     ⟨before ++ fieldToccs ++ after, m.registry⟩

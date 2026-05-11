@@ -29,6 +29,10 @@ open Soma.Syntax (Span)
 
 def testSpan : Span := Span.uninhabited
 
+/-- Synthetic test placeholders for the kernel-level primitive types -/
+def testIntTy : Soma.Core.Value := .vDataType ⟨1001, "test", "Int32"⟩ []
+def testBoolTy : Soma.Core.Value := .vDataType ⟨1002, "test", "Bool"⟩ []
+
 /-- Run a TCM action and return the result or error -/
 def runTCM (action : TCM α) : Except TCError (α × TCState) :=
   action.run TCContext.empty TCState.empty
@@ -144,11 +148,11 @@ def testUnifyTypesSame : Bool :=
 
 def testUnifyPrimTysSame : Bool :=
   checkSucceeds do
-    unify (.vPrimTy .int) (.vPrimTy .int)
+    unify testIntTy testIntTy
 
 def testUnifyPrimTysDifferent : Bool :=
   checkFails do
-    unify (.vPrimTy .int) (.vPrimTy .bool)
+    unify testIntTy testBoolTy
 
 def testUnifyIntLitsSame : Bool :=
   checkSucceeds do
@@ -175,7 +179,7 @@ def testUnifyRowEmpty : Bool :=
 def testSolveSimpleMeta : Bool :=
   match runTCM do
     let metaId ← TCM.freshMeta (.vType .zero)
-    solveMeta metaId [] (.vPrimTy .int)
+    solveMeta metaId [] testIntTy
     let info? ← TCM.lookupMeta metaId
     match info? with
     | some info => return info.solution.isSome
@@ -187,11 +191,11 @@ def testSolveSimpleMeta : Bool :=
 def testMetaUnifySolves : Bool :=
   match runTCM do
     let metaVal ← TCM.freshMetaVal (.vType .zero)
-    unify metaVal (.vPrimTy .int)
+    unify metaVal testIntTy
     -- After unification, force should give us the solution
     let result ← force metaVal
     match result with
-    | .vPrimTy .int => return true
+    | .vDataType ⟨1001, "test", "Int32"⟩ [] => return true
     | _ => return false
   with
   | .ok (true, _) => true
@@ -201,29 +205,29 @@ def testMetaUnifySolves : Bool :=
 
 def testUnifyRowsSameLabel : Bool :=
   checkSucceeds do
-    let row1 := Value.vRowExtend (.vLabelLit "x") (.vPrimTy .int) .vRowEmpty
-    let row2 := Value.vRowExtend (.vLabelLit "x") (.vPrimTy .int) .vRowEmpty
+    let row1 := Value.vRowExtend (.vLabelLit "x") testIntTy .vRowEmpty
+    let row2 := Value.vRowExtend (.vLabelLit "x") testIntTy .vRowEmpty
     unify row1 row2
 
 def testUnifyRowsDifferentLabels : Bool :=
   -- Should succeed with rewriting
   checkSucceeds do
-    let row1 := Value.vRowExtend (.vLabelLit "x") (.vPrimTy .int)
-                  (Value.vRowExtend (.vLabelLit "y") (.vPrimTy .bool) .vRowEmpty)
-    let row2 := Value.vRowExtend (.vLabelLit "y") (.vPrimTy .bool)
-                  (Value.vRowExtend (.vLabelLit "x") (.vPrimTy .int) .vRowEmpty)
+    let row1 := Value.vRowExtend (.vLabelLit "x") testIntTy
+                  (Value.vRowExtend (.vLabelLit "y") testBoolTy .vRowEmpty)
+    let row2 := Value.vRowExtend (.vLabelLit "y") testBoolTy
+                  (Value.vRowExtend (.vLabelLit "x") testIntTy .vRowEmpty)
     unify row1 row2
 
 def testUnifyRecordTypes : Bool :=
   checkSucceeds do
-    let row := Value.vRowExtend (.vLabelLit "x") (.vPrimTy .int) .vRowEmpty
+    let row := Value.vRowExtend (.vLabelLit "x") testIntTy .vRowEmpty
     unify (.vRecord row) (.vRecord row)
 
 /-! ## Constraint Solving Tests -/
 
 def testSolveConstraintSuccess : Bool :=
   match runTCM do
-    let c := Constraint.unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+    let c := Constraint.unify testIntTy testIntTy testSpan
     trySolveBasicConstraint c
   with
   | .ok (.solved, _) => true
@@ -231,7 +235,7 @@ def testSolveConstraintSuccess : Bool :=
 
 def testSolveConstraintFail : Bool :=
   match runTCM do
-    let c := Constraint.unify (.vPrimTy .int) (.vPrimTy .bool) testSpan
+    let c := Constraint.unify testIntTy testBoolTy testSpan
     trySolveBasicConstraint c
   with
   | .ok (.failed _, _) => true
@@ -257,22 +261,22 @@ def testSolveLevelConstraintUnequal : Bool :=
 
 def testZonkValuePrimTy : Bool :=
   match runTCM do
-    zonkValue (.vPrimTy .int)
+    zonkValue testIntTy
   with
-  | .ok (.vPrimTy .int, _) => true
+  | .ok (.vDataType ⟨1001, "test", "Int32"⟩ [], _) => true
   | _ => false
 
 def testZonkSolvedMeta : Bool :=
   match runTCM do
     -- Create and solve a meta
     let metaId ← TCM.freshMeta (.vType .zero)
-    TCM.solveMeta metaId (.vPrimTy .int)
+    TCM.solveMeta metaId testIntTy
     -- Create a value containing that meta
     let v := Value.vNeutral (.vType .zero) (.nMeta metaId)
     -- Zonking should substitute the solution
     let result ← zonkValue v
     match result with
-    | .vPrimTy .int => return true
+    | .vDataType ⟨1001, "test", "Int32"⟩ [] => return true
     | _ => return false
   with
   | .ok (true, _) => true
@@ -305,7 +309,7 @@ def testZonkLevel : Bool :=
 
 def testHasUnsolvedMetasNo : Bool :=
   match runTCM do
-    hasUnsolvedMetas (.vPrimTy .int)
+    hasUnsolvedMetas testIntTy
   with
   | .ok (false, _) => true
   | _ => false
@@ -322,7 +326,7 @@ def testHasUnsolvedMetasYes : Bool :=
 def testHasUnsolvedMetasSolved : Bool :=
   match runTCM do
     let metaId ← TCM.freshMeta (.vType .zero)
-    TCM.solveMeta metaId (.vPrimTy .int)
+    TCM.solveMeta metaId testIntTy
     let v := Value.vNeutral (.vType .zero) (.nMeta metaId)
     hasUnsolvedMetas v
   with
@@ -402,7 +406,7 @@ def unsolvedMetaTests : List (String × Bool) := [
 /-! ## Metavariable Dependency Tracking Tests -/
 
 def testCollectMetasEmpty : Bool :=
-  let metas := Value.collectMetas (.vPrimTy .int)
+  let metas := Value.collectMetas testIntTy
   metas.isEmpty
 
 def testCollectMetasSingle : Bool :=
@@ -414,7 +418,7 @@ def testCollectMetasSingle : Bool :=
 def testCollectMetasPi : Bool :=
   let metaId : MetaId := ⟨0⟩
   let dom := Value.vNeutral .type0 (.nMeta metaId)
-  let clos := Closure.const "_" (.vPrimTy .int)
+  let clos := Closure.const "_" testIntTy
   let v := Value.vPi .omega .explicit "x" dom clos
   let metas := Value.collectMetas v
   metas.contains metaId
@@ -475,25 +479,25 @@ def testConstraintGraphPriority : Bool :=
     let meta3 ← TCM.freshMeta (.vType .zero)
 
     -- Solve meta1 so it doesn't count toward complexity
-    TCM.solveMeta meta1 (.vPrimTy .int)
+    TCM.solveMeta meta1 testIntTy
 
     -- Create constraints with different complexities
     let tc1 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]  -- 0 unsolved (meta1 is solved)
       origin := .unknown
       parentConstraints := #[]
     }
     let tc2 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨1⟩
       metas := #[meta2, meta3]  -- 2 unsolved
       origin := .unknown
       parentConstraints := #[]
     }
     let tc3 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨2⟩
       metas := #[meta2]  -- 1 unsolved
       origin := .unknown
@@ -533,12 +537,12 @@ def testWakeConstraintsFor : Bool :=
     -- Register a constraint referencing meta1
     let constraint := Constraint.unify
       (Value.vNeutral .type0 (.nMeta meta1))
-      (.vPrimTy .int)
+      testIntTy
       testSpan
     let _ ← TCM.postponeTracked constraint #[meta1]
 
     -- Solve meta1 and wake constraints
-    TCM.solveMeta meta1 (.vPrimTy .int)
+    TCM.solveMeta meta1 testIntTy
     TCM.wakeConstraintsFor meta1
 
     -- Check worklist has the constraint
@@ -573,7 +577,7 @@ Tests for the advanced unification techniques:
 /-! ### Free Variable Collection Tests -/
 
 def testCollectFreeVarsEmpty : Bool :=
-  let vars := collectFreeVars (.vPrimTy .int)
+  let vars := collectFreeVars testIntTy
   vars.isEmpty
 
 def testCollectFreeVarsVar : Bool :=
@@ -589,7 +593,7 @@ def testCollectFreeVarsMeta : Bool :=
 
 def testCollectFreeVarsPi : Bool :=
   let x := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
-  let clos := Closure.const "_" (.vPrimTy .int)
+  let clos := Closure.const "_" testIntTy
   let v := Value.vPi .omega .explicit "y" x clos
   let vars := collectFreeVars v
   vars.contains ⟨0⟩
@@ -625,7 +629,7 @@ def testTryPruneUnsolved : Bool :=
     let x := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
     let spine := [x]
     -- RHS doesn't mention x - pruning could be beneficial
-    let rhs := Value.vPrimTy .int
+    let rhs := testIntTy
     let result ← tryPrune meta1 spine rhs
     -- Currently returns none (full pruning not implemented)
     return result.isNone
@@ -636,9 +640,9 @@ def testTryPruneUnsolved : Bool :=
 def testTryPruneSolved : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
-    TCM.solveMeta meta1 (.vPrimTy .int)
+    TCM.solveMeta meta1 testIntTy
     let x := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
-    let result ← tryPrune meta1 [x] (.vPrimTy .bool)
+    let result ← tryPrune meta1 [x] testBoolTy
     -- Should return none for solved metas
     return result.isNone
   with
@@ -650,7 +654,7 @@ def testTryPruneSolved : Bool :=
 def testHasMetaTypeNo : Bool :=
   match runTCM do
     -- A value with a concrete type
-    let v := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"x", ⟨0⟩⟩)
+    let v := Value.vNeutral testIntTy (.nVar ⟨"x", ⟨0⟩⟩)
     hasMetaType v
   with
   | .ok (false, _) => true
@@ -669,7 +673,7 @@ def testHasMetaTypeYes : Bool :=
 def testShouldDeferMetaNo : Bool :=
   match runTCM do
     -- Create a meta with a concrete type
-    let meta1 ← TCM.freshMeta (.vPrimTy .int)
+    let meta1 ← TCM.freshMeta testIntTy
     shouldDeferMeta meta1
   with
   | .ok (false, _) => true
@@ -700,14 +704,14 @@ def testRecordMetaDependency : Bool :=
 /-! ### η-expansion Tests -/
 
 def testTryEtaExpandLambdaYes : Bool :=
-  let clos := Closure.const "x" (.vPrimTy .bool)
+  let clos := Closure.const "x" testBoolTy
   let lam := Value.vLam "x" clos
   match tryEtaExpandLambda lam with
   | some (name, _, _) => name == "x"
   | none => false
 
 def testTryEtaExpandLambdaNo : Bool :=
-  let v := Value.vPrimTy .int
+  let v := testIntTy
   match tryEtaExpandLambda v with
   | some _ => false
   | none => true
@@ -715,7 +719,7 @@ def testTryEtaExpandLambdaNo : Bool :=
 def testTryMakePatternViaEtaLambda : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
-    let clos := Closure.const "x" (.vPrimTy .bool)
+    let clos := Closure.const "x" testBoolTy
     let lam := Value.vLam "x" clos
     -- Try to make ?m = λx. body into a pattern
     let result ← tryMakePatternViaEta meta1 [] lam
@@ -727,7 +731,7 @@ def testTryMakePatternViaEtaLambda : Bool :=
 def testTryMakePatternViaEtaNonLambda : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
-    let v := Value.vPrimTy .int
+    let v := testIntTy
     let result ← tryMakePatternViaEta meta1 [] v
     return result.isNone
   with
@@ -740,7 +744,7 @@ def testUnifyMetaWithLambdaViaEta : Bool :=
   -- Test: ?m = λx. Int should solve via η-expansion
   match runTCM do
     let metaVal ← TCM.freshMetaVal (.vType .zero)
-    let clos := Closure.const "x" (.vPrimTy .bool)
+    let clos := Closure.const "x" testBoolTy
     let lam := Value.vLam "x" clos
     unify metaVal lam
     -- After unification, the meta should be solved or constraint postponed
@@ -856,11 +860,11 @@ def testComputeSpineIntersectionMultiple : Bool :=
 def testTryFlexFlexIntersectionBothUnsolved : Bool :=
   match runTCM do
     -- Create two metas with overlapping spines
-    let piTy := Value.vPi .omega .explicit "x" (.vPrimTy .int) (Closure.const "_" (.vType .zero))
+    let piTy := Value.vPi .omega .explicit "x" testIntTy (Closure.const "_" (.vType .zero))
     let meta1 ← TCM.freshMeta piTy
     let meta2 ← TCM.freshMeta piTy
-    let x := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"x", ⟨0⟩⟩)
-    let y := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"y", ⟨1⟩⟩)
+    let x := Value.vNeutral testIntTy (.nVar ⟨"x", ⟨0⟩⟩)
+    let y := Value.vNeutral testIntTy (.nVar ⟨"y", ⟨1⟩⟩)
     -- ?m1 x y and ?m2 x share variable x
     let result ← tryFlexFlexIntersection meta1 [x, y] meta2 [x]
     -- Should succeed and solve both metas
@@ -871,11 +875,11 @@ def testTryFlexFlexIntersectionBothUnsolved : Bool :=
 
 def testTryFlexFlexIntersectionNoOverlap : Bool :=
   match runTCM do
-    let piTy := Value.vPi .omega .explicit "x" (.vPrimTy .int) (Closure.const "_" (.vType .zero))
+    let piTy := Value.vPi .omega .explicit "x" testIntTy (Closure.const "_" (.vType .zero))
     let meta1 ← TCM.freshMeta piTy
     let meta2 ← TCM.freshMeta piTy
-    let x := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"x", ⟨0⟩⟩)
-    let y := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"y", ⟨1⟩⟩)
+    let x := Value.vNeutral testIntTy (.nVar ⟨"x", ⟨0⟩⟩)
+    let y := Value.vNeutral testIntTy (.nVar ⟨"y", ⟨1⟩⟩)
     -- ?m1 x and ?m2 y have no common variables
     let result ← tryFlexFlexIntersection meta1 [x] meta2 [y]
     -- Should return false (no intersection)
@@ -886,12 +890,12 @@ def testTryFlexFlexIntersectionNoOverlap : Bool :=
 
 def testTryFlexFlexIntersectionOneSolved : Bool :=
   match runTCM do
-    let piTy := Value.vPi .omega .explicit "x" (.vPrimTy .int) (Closure.const "_" (.vType .zero))
+    let piTy := Value.vPi .omega .explicit "x" testIntTy (Closure.const "_" (.vType .zero))
     let meta1 ← TCM.freshMeta piTy
     let meta2 ← TCM.freshMeta piTy
     -- Solve meta1 first
-    TCM.solveMeta meta1 (.vPrimTy .int)
-    let x := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"x", ⟨0⟩⟩)
+    TCM.solveMeta meta1 testIntTy
+    let x := Value.vNeutral testIntTy (.nVar ⟨"x", ⟨0⟩⟩)
     let result ← tryFlexFlexIntersection meta1 [x] meta2 [x]
     -- Should return false (one is already solved)
     return !result
@@ -904,7 +908,7 @@ def testTryFlexFlexIntersectionOneSolved : Bool :=
 def testDetectTwinVarsNone : Bool :=
   let x := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
   -- RHS doesn't reference x
-  let rhs := Value.vPrimTy .int
+  let rhs := testIntTy
   let twins := detectTwinVars [x] rhs
   twins.isEmpty
 
@@ -925,7 +929,7 @@ def testAllVarsCoveredByTwinsYes : Bool :=
 
 def testCollectMetaOccurrencesNone : Bool :=
   let m : MetaId := ⟨0⟩
-  let v := Value.vPrimTy .int
+  let v := testIntTy
   let occs := collectMetaOccurrences m v 0 #[]
   occs.isEmpty
 
@@ -940,7 +944,7 @@ def testTryOccursCheckPruningNoOccurrences : Bool :=
     let meta1 ← TCM.freshMeta (.vType .zero)
     let x := Value.vNeutral .type0 (.nVar ⟨"x", ⟨0⟩⟩)
     -- RHS doesn't contain the meta
-    let rhs := Value.vPrimTy .int
+    let rhs := testIntTy
     let result ← tryOccursCheckPruning meta1 [x] rhs
     return !result  -- Should return false (no occurrences)
   with
@@ -952,12 +956,12 @@ def testTryOccursCheckPruningNoOccurrences : Bool :=
 def testFlexFlexWithIntersectionSolves : Bool :=
   -- ?m1 x y = ?m2 x z should be solvable via intersection on x
   match runTCM do
-    let x := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"x", ⟨0⟩⟩)
-    let y := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"y", ⟨1⟩⟩)
-    let z := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"z", ⟨2⟩⟩)
+    let x := Value.vNeutral testIntTy (.nVar ⟨"x", ⟨0⟩⟩)
+    let y := Value.vNeutral testIntTy (.nVar ⟨"y", ⟨1⟩⟩)
+    let z := Value.vNeutral testIntTy (.nVar ⟨"z", ⟨2⟩⟩)
     -- Create function types for the metas
-    let piTy2 := Value.vPi .omega .explicit "a" (.vPrimTy .int)
-      (Closure.const "_" (Value.vPi .omega .explicit "b" (.vPrimTy .int)
+    let piTy2 := Value.vPi .omega .explicit "a" testIntTy
+      (Closure.const "_" (Value.vPi .omega .explicit "b" testIntTy
         (Closure.const "_" (.vType .zero))))
     let meta1 ← TCM.freshMeta piTy2
     let meta2 ← TCM.freshMeta piTy2
@@ -978,15 +982,15 @@ def testDependentPatternWithTwins : Bool :=
   -- Simulates: ?X n = Vec n Bool where n is both in spine and RHS
   match runTCM do
     let vecId : Unique := ⟨200, "test", "Vec"⟩
-    let n := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"n", ⟨0⟩⟩)
+    let n := Value.vNeutral testIntTy (.nVar ⟨"n", ⟨0⟩⟩)
     -- Create meta ?X with type (n : Int) -> Type
-    let piTy := Value.vPi .omega .explicit "n" (.vPrimTy .int)
+    let piTy := Value.vPi .omega .explicit "n" testIntTy
       (Closure.const "_" (.vType .zero))
     let metaId ← TCM.freshMeta piTy
     -- ?X n
     let metaApp := Value.vNeutral (.vType .zero) (.nApp (.nMeta metaId) n)
     -- Vec n Bool
-    let vecType := Value.vDataType vecId [n, .vPrimTy .bool]
+    let vecType := Value.vDataType vecId [n, testBoolTy]
     -- Unify: ?X n = Vec n Bool
     unify metaApp vecType
     -- Check if meta is solved
@@ -1032,9 +1036,9 @@ def testUnifyDataTypesSameIndices : Bool :=
     -- Create Uniques for a Vec-like type
     let vecId : Unique := ⟨100, "test", "Vec"⟩
     -- Vec 5 Int
-    let vec1 := Value.vDataType vecId [.vIntLit 5, .vPrimTy .int]
+    let vec1 := Value.vDataType vecId [.vIntLit 5, testIntTy]
     -- Vec 5 Int (same)
-    let vec2 := Value.vDataType vecId [.vIntLit 5, .vPrimTy .int]
+    let vec2 := Value.vDataType vecId [.vIntLit 5, testIntTy]
     unify vec1 vec2
     return true
   with
@@ -1046,9 +1050,9 @@ def testUnifyDataTypesDifferentIndices : Bool :=
   match runTCM do
     let vecId : Unique := ⟨100, "test", "Vec"⟩
     -- Vec 5 Int
-    let vec1 := Value.vDataType vecId [.vIntLit 5, .vPrimTy .int]
+    let vec1 := Value.vDataType vecId [.vIntLit 5, testIntTy]
     -- Vec 3 Int (different length)
-    let vec2 := Value.vDataType vecId [.vIntLit 3, .vPrimTy .int]
+    let vec2 := Value.vDataType vecId [.vIntLit 3, testIntTy]
     unify vec1 vec2
     return true
   with
@@ -1060,11 +1064,11 @@ def testUnifyDataTypeMetaIndex : Bool :=
   match runTCM do
     let vecId : Unique := ⟨100, "test", "Vec"⟩
     -- Create a meta for the length index
-    let lenMeta ← TCM.freshMetaVal (.vPrimTy .int)
+    let lenMeta ← TCM.freshMetaVal testIntTy
     -- Vec ?len Int
-    let vec1 := Value.vDataType vecId [lenMeta, .vPrimTy .int]
+    let vec1 := Value.vDataType vecId [lenMeta, testIntTy]
     -- Vec 5 Int
-    let vec2 := Value.vDataType vecId [.vIntLit 5, .vPrimTy .int]
+    let vec2 := Value.vDataType vecId [.vIntLit 5, testIntTy]
     unify vec1 vec2
     -- The meta should be solved to 5
     let lenMeta' ← force lenMeta
@@ -1084,12 +1088,12 @@ def testUnifyDataTypeMetaTypeParam : Bool :=
     -- Maybe ?a
     let maybe1 := Value.vDataType maybeId [tyMeta]
     -- Maybe Int
-    let maybe2 := Value.vDataType maybeId [.vPrimTy .int]
+    let maybe2 := Value.vDataType maybeId [testIntTy]
     unify maybe1 maybe2
     -- The meta should be solved to Int
     let tyMeta' ← force tyMeta
     match tyMeta' with
-    | .vPrimTy .int => return true
+    | .vDataType ⟨1001, "test", "Int32"⟩ [] => return true
     | _ => return false
   with
   | .ok (true, _) => true
@@ -1101,20 +1105,20 @@ def testUnifyNestedIndexedTypes : Bool :=
     let vecId : Unique := ⟨100, "test", "Vec"⟩
     let pairId : Unique := ⟨102, "test", "Pair"⟩
     -- Create metas
-    let lenMeta ← TCM.freshMetaVal (.vPrimTy .int)
+    let lenMeta ← TCM.freshMetaVal testIntTy
     let tyMeta ← TCM.freshMetaVal (.vType .zero)
     -- Pair (Vec ?len ?a) Int
     let vec1 := Value.vDataType vecId [lenMeta, tyMeta]
-    let pair1 := Value.vDataType pairId [vec1, .vPrimTy .int]
+    let pair1 := Value.vDataType pairId [vec1, testIntTy]
     -- Pair (Vec 3 Bool) Int
-    let vec2 := Value.vDataType vecId [.vIntLit 3, .vPrimTy .bool]
-    let pair2 := Value.vDataType pairId [vec2, .vPrimTy .int]
+    let vec2 := Value.vDataType vecId [.vIntLit 3, testBoolTy]
+    let pair2 := Value.vDataType pairId [vec2, testIntTy]
     unify pair1 pair2
     -- Check both metas are solved
     let lenMeta' ← force lenMeta
     let tyMeta' ← force tyMeta
     match lenMeta', tyMeta' with
-    | .vIntLit 3, .vPrimTy .bool => return true
+    | .vIntLit 3, .vDataType ⟨1002, "test", "Bool"⟩ [] => return true
     | _, _ => return false
   with
   | .ok (true, _) => true
@@ -1126,9 +1130,9 @@ def testUnifyDataTypesDifferentUniques : Bool :=
     let vecId : Unique := ⟨100, "test", "Vec"⟩
     let listId : Unique := ⟨103, "test", "List"⟩
     -- Vec 5 Int
-    let vec := Value.vDataType vecId [.vIntLit 5, .vPrimTy .int]
+    let vec := Value.vDataType vecId [.vIntLit 5, testIntTy]
     -- List Int (different type)
-    let list := Value.vDataType listId [.vPrimTy .int]
+    let list := Value.vDataType listId [testIntTy]
     unify vec list
     return true
   with
@@ -1140,12 +1144,12 @@ def testBidirectionalIndexConstraint : Bool :=
   match runTCM do
     let vecId : Unique := ⟨100, "test", "Vec"⟩
     -- Create two metas for length indices
-    let lenMeta1 ← TCM.freshMetaVal (.vPrimTy .int)
-    let lenMeta2 ← TCM.freshMetaVal (.vPrimTy .int)
+    let lenMeta1 ← TCM.freshMetaVal testIntTy
+    let lenMeta2 ← TCM.freshMetaVal testIntTy
     -- Vec ?n1 Int
-    let vec1 := Value.vDataType vecId [lenMeta1, .vPrimTy .int]
+    let vec1 := Value.vDataType vecId [lenMeta1, testIntTy]
     -- Vec ?n2 Int
-    let vec2 := Value.vDataType vecId [lenMeta2, .vPrimTy .int]
+    let vec2 := Value.vDataType vecId [lenMeta2, testIntTy]
     -- Unify them - this should make ?n1 = ?n2
     unify vec1 vec2
     -- Now solve ?n1 = 7

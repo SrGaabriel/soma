@@ -55,6 +55,10 @@ def insertPrimTyInductive (env : GlobalEnv) (p : PrimType) (typeId : Unique) : G
 def lookupPrimTyInductive (env : GlobalEnv) (p : PrimType) : Option Unique :=
   env.primTyToInductiveId.get? p
 
+/-- Return the canonical `vDataType` representation of a wired-in primitive type -/
+def primTypeValue? (env : GlobalEnv) (p : PrimType) : Option Value :=
+  env.lookupPrimTyInductive p |>.map fun uid => Value.vDataType uid []
+
 end GlobalEnv
 
 /-- Evaluation context -/
@@ -142,11 +146,6 @@ partial def matchPattern (pat : Pattern) (val : Value) : PatMatchResult :=
     | .vFloatLit f =>
       match l with
       | .float g => if f == g then .matched #[] else .mismatch
-      | _ => .mismatch
-    | .vConstructor _ tag _ _ =>
-      match l with
-      | .bool true => if tag == 0 then .matched #[] else .mismatch
-      | .bool false => if tag == 1 then .matched #[] else .mismatch
       | _ => .mismatch
     | .vNeutral _ _ => .stuck
     | _ => .mismatch
@@ -251,8 +250,6 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     | .int n => .vIntLit n
     | .float f => .vFloatLit f
     | .string s => .vStringLit s
-    | .bool true => .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
-    | .bool false => .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 [] (.vPrimTy .bool)
 
   | .sort level => .vType level
 
@@ -312,7 +309,6 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     -- Inject into variant: create a constructor-like value
     .vNeutral .type0 (.nVar ⟨s!"inject:{_label}", ctx.env.level⟩)
 
-  | .primTy p => .vPrimTy p
   | .rowSort => .vRowSort
   | .labelSort => .vLabelSort
   | .rowEmpty => .vRowEmpty
@@ -518,10 +514,9 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
     | some ty => ty
     | none => panic! s!"Expr.typeOfWith: bvar({idx}) out of range (context size {bvarCtx.size})"
 
-  | .lit (.int _) => .vPrimTy .int
-  | .lit (.float _) => .vPrimTy .double
-  | .lit (.string _) => .vPrimTy .string
-  | .lit (.bool _) => .vPrimTy .bool
+  | .lit (.int _) => globals.primTypeValue? .int |>.getD (.vType .zero)
+  | .lit (.float _) => globals.primTypeValue? .double |>.getD (.vType .zero)
+  | .lit (.string _) => globals.primTypeValue? .string |>.getD (.vType .zero)
 
   | .app fn arg =>
     let fnTy := typeOfWith bvarCtx globals unfoldTy evalEnv metas fn
@@ -567,7 +562,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
   | .tuple elems =>
     if elems.size = 1 then
       typeOfWith bvarCtx globals unfoldTy evalEnv metas elems[0]!
-    else .vPrimTy .unit
+    else globals.primTypeValue? .unit |>.getD (.vType .zero)
 
   | .record fields =>
     let row := fields.foldr (init := Value.vRowEmpty) fun (name, expr) acc =>
@@ -587,10 +582,6 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
           match resolveClassFieldType globals typeId args field with
           | some fieldTy => some fieldTy
           | none => resolveRecordFieldType globals typeId args field
-        | .vPrimTy p =>
-          match globals.lookupPrimTyInductive p with
-          | some typeId => resolveRecordFieldType globals typeId [] field
-          | none => none
         | _ => none
       match resolved with
       | some fieldTy => fieldTy
@@ -604,7 +595,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
 
   | .closure _ _ ty => evalCoreExpr { env := evalEnv, globals, metas } ty
 
-  | .sort _ | .pi _ _ _ _ _ | .primTy _
+  | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _

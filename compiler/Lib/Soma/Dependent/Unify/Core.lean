@@ -58,7 +58,6 @@ partial def occursIn (m : MetaId) (v : Value) : Bool :=
   | .vLam _ body =>
     occursInClosure m body
   | .vNeutral _ neu => occursInNeutral m neu
-  | .vPrimTy _ => false
   | .vIntLit _ => false
   | .vFloatLit _ => false
   | .vStringLit _ => false
@@ -153,7 +152,6 @@ partial def inScope (allowedLevels : List DeBruijnLvl) (v : Value) : Bool :=
   | .vLam _ body =>
     inScopeClosure allowedLevels body
   | .vNeutral _ neu => inScopeNeutral allowedLevels neu
-  | .vPrimTy _ => true
   | .vIntLit _ => true
   | .vFloatLit _ => true
   | .vStringLit _ => true
@@ -212,7 +210,6 @@ partial def collectFreeVars (v : Value) : Array DeBruijnLvl :=
   | .vLam _ body =>
     collectFreeVarsClosure body
   | .vNeutral _ neu => collectFreeVarsNeutral neu
-  | .vPrimTy _ => #[]
   | .vIntLit _ => #[]
   | .vFloatLit _ => #[]
   | .vStringLit _ => #[]
@@ -318,7 +315,6 @@ def getValueKind : Value → String
   | .vPi _ _ _ _ _ => "vPi"
   | .vLam _ _ => "vLam"
   | .vNeutral _ n => s!"vNeutral({getNeutralKind n})"
-  | .vPrimTy p => s!"vPrimTy({p})"
   | .vIntLit _ => "vIntLit"
   | .vFloatLit _ => "vFloatLit"
   | .vStringLit _ => "vStringLit"

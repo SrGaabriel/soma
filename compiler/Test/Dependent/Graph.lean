@@ -27,6 +27,10 @@ open Std (HashMap HashSet)
 
 def testSpan : Span := Span.uninhabited
 
+/-- Synthetic test placeholders for the kernel-level primitive types -/
+def testIntTy : Soma.Core.Value := .vDataType ⟨1001, "test", "Int32"⟩ []
+def testBoolTy : Soma.Core.Value := .vDataType ⟨1002, "test", "Bool"⟩ []
+
 /-- Run a TCM action and return the result or error -/
 def runTCM (action : TCM α) : Except TCError (α × TCState) :=
   action.run TCContext.empty TCState.empty
@@ -90,7 +94,7 @@ def testGraphInsertAndSize : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
     let tc : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]
       origin := .unknown
@@ -108,7 +112,7 @@ def testGraphRemove : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
     let tc : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]
       origin := .unknown
@@ -129,7 +133,7 @@ def testGraphExtractMin : Bool :=
     let meta2 ← TCM.freshMeta (.vType .zero)
     -- tc1 has 1 unsolved meta
     let tc1 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]
       origin := .unknown
@@ -137,7 +141,7 @@ def testGraphExtractMin : Bool :=
     }
     -- tc2 has 2 unsolved metas (higher complexity)
     let tc2 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .bool) (.vPrimTy .bool) testSpan
+      constraint := .unify testBoolTy testBoolTy testSpan
       constraintId := ⟨1⟩
       metas := #[meta1, meta2]
       origin := .unknown
@@ -167,7 +171,7 @@ def testBuildClustersSingleConstraint : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
     let tc : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]
       origin := .unknown
@@ -184,14 +188,14 @@ def testBuildClustersSharedMeta : Bool :=
   match runTCM do
     let sharedMeta ← TCM.freshMeta (.vType .zero)
     let tc1 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[sharedMeta]
       origin := .unknown
       parentConstraints := #[]
     }
     let tc2 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .bool) (.vPrimTy .bool) testSpan
+      constraint := .unify testBoolTy testBoolTy testSpan
       constraintId := ⟨1⟩
       metas := #[sharedMeta]  -- Same meta!
       origin := .unknown
@@ -210,14 +214,14 @@ def testBuildClustersDisjoint : Bool :=
     let meta1 ← TCM.freshMeta (.vType .zero)
     let meta2 ← TCM.freshMeta (.vType .zero)
     let tc1 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]
       origin := .unknown
       parentConstraints := #[]
     }
     let tc2 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .bool) (.vPrimTy .bool) testSpan
+      constraint := .unify testBoolTy testBoolTy testSpan
       constraintId := ⟨1⟩
       metas := #[meta2]  -- Different meta
       origin := .unknown
@@ -238,7 +242,7 @@ def testBuildClustersTransitive : Bool :=
     let meta3 ← TCM.freshMeta (.vType .zero)
     -- tc1 uses meta1, meta2
     let tc1 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1, meta2]
       origin := .unknown
@@ -246,7 +250,7 @@ def testBuildClustersTransitive : Bool :=
     }
     -- tc2 uses meta2, meta3 (shares meta2 with tc1)
     let tc2 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .bool) (.vPrimTy .bool) testSpan
+      constraint := .unify testBoolTy testBoolTy testSpan
       constraintId := ⟨1⟩
       metas := #[meta2, meta3]
       origin := .unknown
@@ -254,7 +258,7 @@ def testBuildClustersTransitive : Bool :=
     }
     -- tc3 uses only meta3 (transitively connected via tc2)
     let tc3 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨2⟩
       metas := #[meta3]
       origin := .unknown
@@ -274,14 +278,14 @@ def testGetRelatedConstraintsWithClusters : Bool :=
   match runTCM do
     let sharedMeta ← TCM.freshMeta (.vType .zero)
     let tc1 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[sharedMeta]
       origin := .unknown
       parentConstraints := #[]
     }
     let tc2 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .bool) (.vPrimTy .bool) testSpan
+      constraint := .unify testBoolTy testBoolTy testSpan
       constraintId := ⟨1⟩
       metas := #[sharedMeta]
       origin := .unknown
@@ -302,7 +306,7 @@ def testGetRelatedConstraintsNoClusters : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
     let tc1 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]
       origin := .unknown
@@ -320,7 +324,7 @@ def testSmartWakeBlocked : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
     let tc1 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]
       origin := .unknown
@@ -341,7 +345,7 @@ def testInvalidateClusters : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
     let tc1 : TrackedConstraint := {
-      constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+      constraint := .unify testIntTy testIntTy testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]
       origin := .unknown
@@ -397,7 +401,7 @@ def testWithStrategy : Bool :=
 def testSolveConstraintGraphBasic : Bool :=
   match runTCM do
     -- Create a simple solvable constraint
-    let constraint := Constraint.unify (.vPrimTy .int) (.vPrimTy .int) testSpan
+    let constraint := Constraint.unify testIntTy testIntTy testSpan
     TCM.postpone constraint
     -- Solve it
     let remaining ← solveConstraintGraph trySolveBasicConstraint
@@ -411,14 +415,14 @@ def testSolveConstraintGraphWithMeta : Bool :=
     -- Create a meta and unify with a concrete type
     let metaVal ← TCM.freshMetaVal (.vType .zero)
     let metas := Value.collectMetas metaVal
-    let constraint := Constraint.unify metaVal (.vPrimTy .int) testSpan
+    let constraint := Constraint.unify metaVal testIntTy testSpan
     let _ ← TCM.postponeTracked constraint metas
     -- Solve
     let remaining ← solveConstraintGraph trySolveBasicConstraint
     -- The meta should be solved
     let metaVal' ← force metaVal
     match metaVal' with
-    | .vPrimTy .int => return remaining.isEmpty
+    | .vDataType ⟨1001, "test", "Int32"⟩ [] => return remaining.isEmpty
     | _ => return false
   with
   | .ok (true, _) => true
@@ -429,8 +433,8 @@ def testSolveConstraintGraphMultiple : Bool :=
     -- Create multiple constraints
     let meta1 ← TCM.freshMetaVal (.vType .zero)
     let meta2 ← TCM.freshMetaVal (.vType .zero)
-    let c1 := Constraint.unify meta1 (.vPrimTy .int) testSpan
-    let c2 := Constraint.unify meta2 (.vPrimTy .bool) testSpan
+    let c1 := Constraint.unify meta1 testIntTy testSpan
+    let c2 := Constraint.unify meta2 testBoolTy testSpan
     let _ ← TCM.postponeTracked c1 (Value.collectMetas meta1)
     let _ ← TCM.postponeTracked c2 (Value.collectMetas meta2)
     -- Solve
@@ -439,7 +443,8 @@ def testSolveConstraintGraphMultiple : Bool :=
     let m1 ← force meta1
     let m2 ← force meta2
     match m1, m2 with
-    | .vPrimTy .int, .vPrimTy .bool => return remaining.isEmpty
+    | .vDataType ⟨1001, "test", "Int32"⟩ [], .vDataType ⟨1002, "test", "Bool"⟩ [] =>
+      return remaining.isEmpty
     | _, _ => return false
   with
   | .ok (true, _) => true
@@ -449,8 +454,8 @@ def testSolveConstraintGraphClustered : Bool :=
   match runTCM do
     -- Create constraints that share a meta (will be clustered)
     let sharedMeta ← TCM.freshMetaVal (.vType .zero)
-    let c1 := Constraint.unify sharedMeta (.vPrimTy .int) testSpan
-    let c2 := Constraint.unify sharedMeta (.vPrimTy .int) testSpan
+    let c1 := Constraint.unify sharedMeta testIntTy testSpan
+    let c2 := Constraint.unify sharedMeta testIntTy testSpan
     let _ ← TCM.postponeTracked c1 (Value.collectMetas sharedMeta)
     let _ ← TCM.postponeTracked c2 (Value.collectMetas sharedMeta)
     -- Solve using clustered strategy

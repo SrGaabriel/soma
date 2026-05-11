@@ -16,6 +16,11 @@ namespace Test.Dependent.Core
 open Soma.Core
 open Test.Fixtures
 
+/-- Synthetic test placeholders for the kernel-level primitive types -/
+def testIntTy : Soma.Core.Value := .vDataType ⟨1001, "test", "Int32"⟩ []
+def testBoolTy : Soma.Core.Value := .vDataType ⟨1002, "test", "Bool"⟩ []
+def testStringTy : Soma.Core.Value := .vDataType ⟨1003, "test", "String"⟩ []
+
 /-! ## Quantity Tests -/
 
 namespace QuantityTests
@@ -338,11 +343,13 @@ def testTypeConstructors : IO TestResult := do
 
 /-- Test: Primitive types -/
 def testPrimitives : IO TestResult := do
-  let intTy := Value.vPrimTy .int
-  let boolTy := Value.vPrimTy .bool
-  let strTy := Value.vPrimTy .string
+  let intTy := testIntTy
+  let boolTy := testBoolTy
+  let strTy := testStringTy
   match intTy, boolTy, strTy with
-  | .vPrimTy .int, .vPrimTy .bool, .vPrimTy .string => return .passed
+  | .vDataType ⟨1001, "test", "Int32"⟩ [],
+    .vDataType ⟨1002, "test", "Bool"⟩ [],
+    .vDataType ⟨1003, "test", "String"⟩ [] => return .passed
   | _, _, _ => return .failed "primitive types should be constructed correctly"
 
 /-- Test: Literals -/
@@ -356,9 +363,11 @@ def testLiterals : IO TestResult := do
 /-- Test: Row types -/
 def testRowTypes : IO TestResult := do
   let empty := Value.vRowEmpty
-  let extended := Value.vRowExtend (Value.vLabelLit "x") (Value.vPrimTy .int) empty
+  let extended := Value.vRowExtend (Value.vLabelLit "x") testIntTy empty
   match empty, extended with
-  | .vRowEmpty, .vRowExtend (.vLabelLit "x") (.vPrimTy .int) .vRowEmpty => return .passed
+  | .vRowEmpty,
+    .vRowExtend (.vLabelLit "x") (.vDataType ⟨1001, "test", "Int32"⟩ []) .vRowEmpty =>
+    return .passed
   | _, _ => return .failed "row types should be constructed correctly"
 
 /-- Test: Record value -/
@@ -374,21 +383,22 @@ def testRecordVal : IO TestResult := do
 
 /-- Test: Equality type construction -/
 def testEqualityType : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 1
   let eq := Value.vEq Level.zero ty lhs rhs
   match eq with
-  | .vEq (.lit 0) (.vPrimTy .int) (.vIntLit 1) (.vIntLit 1) => return .passed
+  | .vEq (.lit 0) (.vDataType ⟨1001, "test", "Int32"⟩ []) (.vIntLit 1) (.vIntLit 1) =>
+    return .passed
   | _ => return .failed "equality type should be constructed correctly"
 
 /-- Test: Refl construction -/
 def testRefl : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let x := Value.vIntLit 42
   let refl := Value.vRefl ty x
   match refl with
-  | .vRefl (.vPrimTy .int) (.vIntLit 42) => return .passed
+  | .vRefl (.vDataType ⟨1001, "test", "Int32"⟩ []) (.vIntLit 42) => return .passed
   | _ => return .failed "refl should be constructed correctly"
 
 def run : IO TestRunner := do
@@ -544,14 +554,14 @@ def testSolve : IO TestResult := do
   let (m, state) := state.fresh ty []
   if state.isSolved m then
     return .failed "fresh meta should not be solved"
-  let solution := Value.vPrimTy .int
+  let solution := testIntTy
   let state := state.solve m solution
   if !state.isSolved m then
     return .failed "meta should be solved after solve"
   match state.lookup m with
   | some info =>
     match info.solution with
-    | some (.vPrimTy .int) => return .passed
+    | some (.vDataType ⟨1001, "test", "Int32"⟩ []) => return .passed
     | some v => return .failed s!"solution should be Int, got {v}"
     | none => return .failed "solution should be some, got none"
   | none => return .failed "should find the meta"
@@ -562,7 +572,7 @@ def testIsSolved : IO TestResult := do
   let ty := Value.vType Level.zero
   let (m1, state) := state.fresh ty []
   let (m2, state) := state.fresh ty []
-  let state := state.solve m1 (Value.vPrimTy .int)
+  let state := state.solve m1 testIntTy
   if !state.isSolved m1 then
     return .failed "m1 should be solved"
   if state.isSolved m2 then

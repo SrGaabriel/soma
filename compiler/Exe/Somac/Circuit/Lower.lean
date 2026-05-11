@@ -43,21 +43,13 @@ structure VarAlloc where
   erased : Bool := false
   deriving Inhabited
 
-/-- The unit type used for erased/void values -/
-def unitTy : Value := Value.vPrimTy .unit
+/-- Look up the canonical `Value` for a wired-in primitive type by kind -/
+private def wiredPrimTy (globals : Soma.Core.GlobalEnv) (p : Soma.Core.PrimType) : Value :=
+  globals.primTypeValue? p |>.getD (.vType .zero)
 
-/-- Build the `ty` annotation for an internal CTOR node whose ports carry the given field types in positional order -/
-def ctorFieldChain (fieldTypes : Array Value) : Value :=
-  fieldTypes.foldr Value.arrow unitTy
-
-/-- The integer type -/
-def intTy : Value := Value.vPrimTy .int
-
-/-- The boolean type -/
-def boolTy : Value := Value.vPrimTy .bool
-
-/-- The string type -/
-def stringTy : Value := Value.vPrimTy .string
+/-- Build the `ty` annotation for an internal CTOR node -/
+def ctorFieldChain (globals : Soma.Core.GlobalEnv) (fieldTypes : Array Value) : Value :=
+  fieldTypes.foldr Value.arrow (wiredPrimTy globals .unit)
 
 /-- Variant label registry: assigns collision-free deterministic tags to variant -/
 structure VariantTagRegistry where
@@ -136,6 +128,8 @@ structure LowerCtx where
   worldUid? : Option Nat := none
   /-- Unique id of the wired-in `Pair` type -/
   pairUid? : Option Nat := none
+  /-- Unique id of the wired-in `Bool` type -/
+  boolUid? : Option Nat := none
   /-- Qualified name of `io_bind` for call-site inlining -/
   ioBindName? : Option QualifiedName := none
   /-- Qualified name of `pure_io` for call-site inlining -/
@@ -220,6 +214,29 @@ def pushBvar (ctx : LowerCtx) (name : String) (ty : Value) : LowerCtx :=
     bvarCtx := ctx.bvarCtx.push ty
     bvarEnv := ctx.bvarEnv.extend name neutral }
 
+/-- Look up a wired-in primitive type's canonical `Value` -/
+def primTy (ctx : LowerCtx) (p : Soma.Core.PrimType) : Value :=
+  wiredPrimTy ctx.evalGlobalEnv p
+
+/-- The unit type used for erased/void values -/
+def unitTy (ctx : LowerCtx) : Value := ctx.primTy .unit
+
+/-- The boolean type -/
+def boolTy (ctx : LowerCtx) : Value := ctx.primTy .bool
+
+/-- The 32-bit integer type -/
+def intTy (ctx : LowerCtx) : Value := ctx.primTy .int
+
+/-- The string type -/
+def stringTy (ctx : LowerCtx) : Value := ctx.primTy .string
+
+/-- Reverse lookup -/
+def primTypeOf? (ctx : LowerCtx) (uid : Soma.Unique) : Option Soma.Core.PrimType :=
+  ctx.evalGlobalEnv.primTyToInductiveId.fold (init := none) fun found p typeUid =>
+    match found with
+    | some _ => found
+    | none => if typeUid == uid then some p else none
+
 end LowerCtx
 
 /-- Apply a list of arguments to a value by peeling vLam/vPi closures -/
@@ -279,7 +296,6 @@ namespace LowerCtx
 partial def isWorldTy (ctx : LowerCtx) (v : Value) : Bool :=
   let v := unfoldValue v ctx.abbrevEnv
   match v with
-  | .vPrimTy .world => true
   | .vDataType uid _ => ctx.worldUid?.any (· == uid.id)
   | _ => false
 
@@ -425,7 +441,8 @@ instance : PatternMatch.MonadGraph LowerM where
 def buildDupChain (sourcePort : PortId) (n : Nat) (ty : Value) : LowerM (Array PortId × Bool) := do
   if n == 0 then
     -- Erased: connect to ERA
-    let era ← LowerM.addNode .era unitTy
+    let unit := (← LowerM.getCtx).unitTy
+    let era ← LowerM.addNode .era unit
     LowerM.connect (PortId.principal era) sourcePort
     pure (#[], true)
   else if n == 1 then
@@ -492,7 +509,7 @@ partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
   | .lit _
   | .const _ _
   | .sort _ | .pi _ _ _ _ _
-  | .primTy _ | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
+  | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
   | .mvar _ | .bvar _ | .proj _ _ _ | .tyvar _ _ => {}
@@ -528,12 +545,14 @@ def consumeVar (id : Unique) : LowerM (Option (PortId × Value)) := do
 
 /-- Produce an erased runtime placeholder for a computationally absent term -/
 def erasedRuntimePort : LowerM PortId := do
-  let era ← addNode .era unitTy
+  let unit := (← getCtx).unitTy
+  let era ← addNode .era unit
   pure (PortId.principal era)
 
 /-- Explicitly consume an unused lambda parameter slot -/
 def eraseParamPort (port : PortId) : LowerM Unit := do
-  let era ← addNode .era unitTy
+  let unit := (← getCtx).unitTy
+  let era ← addNode .era unit
   connect (PortId.principal era) port
 
 /-- Split a source value into N owned outputs at the current control-flow split site -/
@@ -604,38 +623,39 @@ def encodeSignedInt (n : Int) : UInt32 :=
 
 /-- Lower a literal to a node -/
 def lowerLiteral (lit : Literal) (targetTy? : Option Value := none) : LowerM PortId := do
+  let ctx ← LowerM.getCtx
   match lit with
   | .int n =>
     let encoded := encodeSignedInt n
+    let targetPrim? : Option Soma.Core.PrimType :=
+      match targetTy?.map (resolveMetas · ctx.metaState) with
+      | some (.vDataType uid _) => ctx.primTypeOf? uid
+      | _ => none
     let (primTy, valTy) : Somac.Circuit.Term.PrimType × Value :=
-      match targetTy?.map (resolveMetas · (← LowerM.getCtx).metaState) with
-      | some (.vPrimTy .int64) => (.i64, .vPrimTy .int64)
-      | some (.vPrimTy .int16) => (.i16, .vPrimTy .int16)
-      | some (.vPrimTy .int8) => (.i8, .vPrimTy .int8)
-      | some (.vPrimTy .word) => (.u32, .vPrimTy .word)
-      | some (.vPrimTy .word8) => (.u8, .vPrimTy .word8)
-      | some (.vPrimTy .word16) => (.u16, .vPrimTy .word16)
-      | some (.vPrimTy .word64) => (.u64, .vPrimTy .word64)
-      | _ => (.i32, intTy)
+      match targetPrim? with
+      | some .int64  => (.i64, ctx.primTy .int64)
+      | some .int16  => (.i16, ctx.primTy .int16)
+      | some .int8   => (.i8,  ctx.primTy .int8)
+      | some .word   => (.u32, ctx.primTy .word)
+      | some .word8  => (.u8,  ctx.primTy .word8)
+      | some .word16 => (.u16, ctx.primTy .word16)
+      | some .word64 => (.u64, ctx.primTy .word64)
+      | _            => (.i32, ctx.intTy)
     let node := Node.num primTy encoded
     let nid ← LowerM.addNode node valTy
     pure (PortId.principal nid)
   | .float f =>
-    let doubleTy := Value.vPrimTy .double
+    let doubleTy := ctx.primTy .double
     let bits := f.toBits
     let lo := (bits &&& 0xFFFFFFFF).toUInt32
     let hi := (bits >>> 32).toUInt32
     let nid ← LowerM.addNode (.num64 .f64 lo hi) doubleTy
     pure (PortId.principal nid)
-  | .bool b =>
-    let node := Node.num .bool (if b then 1 else 0)
-    let nid ← LowerM.addNode node boolTy
-    pure (PortId.principal nid)
   | .string s =>
     -- String literals: use STRING node
     -- Length is the byte length of the UTF-8 encoded string
     let len := s.utf8ByteSize.toUInt32
-    let word64Ty := Value.vPrimTy .word64
+    let word64Ty := ctx.primTy .word64
     let lenNode ← LowerM.addNode (.num .u64 len) word64Ty
 
     -- Intern the string and store its index (not hash) so Alloy can reference it
@@ -643,7 +663,7 @@ def lowerLiteral (lit : Literal) (targetTy? : Option Value := none) : LowerM Por
     let dataNode ← LowerM.addNode (.num .u64 stringIdx.toUInt32) word64Ty
 
     -- Create STRING node
-    let stringNode ← LowerM.addNode .string stringTy
+    let stringNode ← LowerM.addNode .string ctx.stringTy
     LowerM.connect ⟨stringNode, ⟨1⟩⟩ (PortId.principal lenNode) -- aux0 = length
     LowerM.connect ⟨stringNode, ⟨2⟩⟩ (PortId.principal dataNode) -- aux1 = string table index
 
@@ -752,7 +772,7 @@ private partial def getCoreExprPrimOp (e : Soma.Core.Expr) : LowerM (Option Prim
 
 /-- Check if a Core.Expr is syntactically type-level -/
 private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
-  | .sort _ | .pi _ _ _ _ _ | .primTy _
+  | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
@@ -819,8 +839,9 @@ private def panicTag : Nat := 0xFFFF
 
 /-- Emit a panic-carrying ctor node: `ctor(panicTag, msgHash, line)` -/
 private def emitPanicCtor (msg : String) (ty : Value) : LowerM PortId := do
-  let word64Ty := Value.vPrimTy .word64
-  let word32Ty := Value.vPrimTy .word
+  let ctx ← LowerM.getCtx
+  let word64Ty := ctx.primTy .word64
+  let word32Ty := ctx.primTy .word
   let msgNode ← LowerM.addNode (Node.num .u64 msg.hash.toUInt32) word64Ty
   let lineNode ← LowerM.addNode (Node.num .u32 0) word32Ty
   let panicCtor ← LowerM.addNode (.ctor panicTag 2) ty
@@ -916,7 +937,8 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
         match bodyPort? with
         | none =>
           -- Body is type-level: still force val for effects
-          let era ← LowerM.addNode .era unitTy
+          let unit := (← LowerM.getCtx).unitTy
+          let era ← LowerM.addNode .era unit
           LowerM.connect (PortId.principal era) valPort
           pure none
         | some bodyPort =>
@@ -931,7 +953,7 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   -- Type-level constructs (erased at runtime)
   | .sort _ | .pi _ _ _ _ _
-  | .primTy _ | .rowSort | .labelSort | .rowEmpty
+  | .rowSort | .labelSort | .rowEmpty
   | .rowExtend _ _ _ | .recordTy _ | .variantTy _
   | .labelLit _ | .dataTy _ _ | .eqTy _ _ _ _
   | .refl _ _ | .transport _ _ _ _ _ _ _
@@ -1132,24 +1154,35 @@ partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
 /-- Lower a Core.Expr constructor application -/
 partial def lowerCoreConstruct (tag : Nat) (args : Array Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
-  let mut argPorts : Array PortId := #[]
-  for arg in args do
-    let argTy ← getExprType arg
-    let port? ← lowerCoreExpr arg argTy
-    match port? with
-    | some port => argPorts := argPorts.push port
-    | none => pure ()
+  let ctx ← LowerM.getCtx
+  let resolvedTy := resolveMetas ty ctx.metaState
+  let isBoolCtor : Bool :=
+    match ctx.boolUid?, resolvedTy with
+    | some bid, .vDataType uid _ => uid.id == bid && args.isEmpty
+    | _, _ => false
+  if isBoolCtor then
+    let nid ← LowerM.addNode (.num .bool tag.toUInt32) resolvedTy
+    pure (some (PortId.principal nid))
+  else
+    let mut argPorts : Array PortId := #[]
+    for arg in args do
+      let argTy ← getExprType arg
+      let port? ← lowerCoreExpr arg argTy
+      match port? with
+      | some port => argPorts := argPorts.push port
+      | none => pure ()
 
-  let ctor ← LowerM.addNode (.ctor tag argPorts.size) ty
-  for i in [:argPorts.size] do
-    LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ argPorts[i]!
+    let ctor ← LowerM.addNode (.ctor tag argPorts.size) resolvedTy
+    for i in [:argPorts.size] do
+      LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ argPorts[i]!
 
-  pure (some (PortId.principal ctor))
+    pure (some (PortId.principal ctor))
 
 /-- Lower a Core.Expr if-then-else -/
 partial def lowerCoreIf (cond then_ else_ : Soma.Core.Expr) (ty : Value)
     : LowerM (Option PortId) := do
-  let condPort? ← lowerCoreExpr cond boolTy
+  let bool := (← LowerM.getCtx).boolTy
+  let condPort? ← lowerCoreExpr cond bool
   match condPort? with
   | none => pure none
   | some condPort =>
@@ -1263,7 +1296,8 @@ where
         let era ← LowerM.addNode .era ty
         pure (PortId.principal era)
     else
-      let era ← LowerM.addNode .era unitTy
+      let unit := (← LowerM.getCtx).unitTy
+      let era ← LowerM.addNode .era unit
       pure (PortId.principal era)
 
 /-- Lower a Core.Expr field access -/
@@ -1379,14 +1413,15 @@ partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
     | some port => capturePairs := capturePairs.push (port, capTy)
     | none => pure ()
 
+  let ctx ← LowerM.getCtx
   let envPort ← if capturePairs.isEmpty then do
-    let era ← LowerM.addNode .era unitTy
+    let era ← LowerM.addNode .era ctx.unitTy
     pure (PortId.principal era)
   else if capturePairs.size == 1 then do
     pure capturePairs[0]!.1
   else do
     let captureTypes := capturePairs.map (·.2)
-    let envTy := ctorFieldChain captureTypes
+    let envTy := ctorFieldChain ctx.evalGlobalEnv captureTypes
     let ctor ← LowerM.addNode (.ctor 0 capturePairs.size) envTy
     for i in [:capturePairs.size] do
       LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ capturePairs[i]!.1
@@ -1411,9 +1446,10 @@ partial def lowerCoreArray (elems : Array Soma.Core.Expr)
     | none => pure ()
 
   let len := elemPorts.size
-  let word64Ty := Value.vPrimTy .word64
+  let ctx ← LowerM.getCtx
+  let word64Ty := ctx.primTy .word64
   let lenNode ← LowerM.addNode (.num .u64 len.toUInt32) word64Ty
-  let backingTy := ctorFieldChain (List.replicate len elemTy).toArray
+  let backingTy := ctorFieldChain ctx.evalGlobalEnv (List.replicate len elemTy).toArray
   let dataNode ← LowerM.addNode (.ctor 0xFFFD len) backingTy
   for i in [:len] do
     LowerM.connect ⟨dataNode, ⟨i + 1⟩⟩ elemPorts[i]!
@@ -1555,7 +1591,8 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
     match bodyPort? with
     | some port => pure port.node
     | none =>
-      let era ← LowerM.addNode .era unitTy
+      let unit := (← LowerM.getCtx).unitTy
+      let era ← LowerM.addNode .era unit
       pure era
   else
     let innermost := lamNodes[lamNodes.size - 1]!
@@ -1633,10 +1670,11 @@ def shouldLowerBody (fn : Soma.Core.TypedFunction) : Bool :=
 
 /-- Generate a proper Circuit IR function body for a primitive operation -/
 def generatePrimOpBody (op : PrimOp) (fnTy : Value) : LowerM (NodeId × Nat) := do
+  let ctx ← LowerM.getCtx
   match primOpToOp2Code op with
   | some op2 =>
     -- Binary operation: 2 parameters
-    let paramTy := fnTy.piDomain?.getD intTy
+    let paramTy := fnTy.piDomain?.getD ctx.intTy
     let lamOuter ← LowerM.addNode (.lam false) fnTy
     -- Compute inner type (codomain after applying first param)
     let innerTy := match fnTy.piApply (Value.vNeutral paramTy (.nVar ⟨"x", ⟨0⟩⟩)) with
@@ -1660,7 +1698,7 @@ def generatePrimOpBody (op : PrimOp) (fnTy : Value) : LowerM (NodeId × Nat) := 
     match primOpToOp1Code op with
     | some op1 =>
       -- Unary operation: 1 parameter
-      let resultTy := match fnTy.piApply (Value.vNeutral unitTy (.nVar ⟨"x", ⟨0⟩⟩)) with
+      let resultTy := match fnTy.piApply (Value.vNeutral ctx.unitTy (.nVar ⟨"x", ⟨0⟩⟩)) with
         | some t => t
         | none => fnTy
       let lamNode ← LowerM.addNode (.lam false) fnTy
@@ -1672,7 +1710,7 @@ def generatePrimOpBody (op : PrimOp) (fnTy : Value) : LowerM (NodeId × Nat) := 
       pure (lamNode, 1)
     | none =>
       -- Unknown op: fallback to ERA placeholder
-      let era ← LowerM.addNode .era unitTy
+      let era ← LowerM.addNode .era ctx.unitTy
       pure (era, 0)
 
 /-- Lower an entire module using typed functions from type checking -/
@@ -1692,6 +1730,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
       metaState := metas
       worldUid?   := g.wiredIn.getUnique? .typeWorld |>.map (·.name.id.id)
       pairUid?    := g.wiredIn.getUnique? .typePair  |>.map (·.name.id.id)
+      boolUid?    := g.wiredIn.getUnique? .typeBool  |>.map (·.name.id.id)
       ioBindName? := g.wiredIn.getUnique? .bindIO    |>.map (·.name)
       pureIOName? := g.wiredIn.getUnique? .pureIO    |>.map (·.name)
     }
@@ -1765,7 +1804,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
       let _ ← LowerM.addDefinition fn.name root arity fn.fnType
         (effectful := ctx.mentionsWorldTy fn.fnType)
     | _ =>
-      let era ← LowerM.addNode .era unitTy
+      let era ← LowerM.addNode .era ctx.unitTy
       let arity := runtimeArityFull ctx fn.fnType
       let _ ← LowerM.addDefinition fn.name era arity fn.fnType
         (reducibility := .external) (effectful := ctx.mentionsWorldTy fn.fnType)
@@ -1781,7 +1820,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
         && info.origin != .typeDecl && info.origin != .projection
     for (_, info) in externals do
       let ctx ← LowerM.getCtx
-      let era ← LowerM.addNode .era unitTy
+      let era ← LowerM.addNode .era ctx.unitTy
       let arity := runtimeArityFull ctx info.type
       let _ ← LowerM.addDefinition info.name era arity info.type
         (reducibility := .external) (effectful := ctx.mentionsWorldTy info.type)
@@ -1794,13 +1833,13 @@ def lowerModule (types : Array Soma.Core.TypeDef)
   | some (_, idx) =>
     let mainTy := match typedFunctions.get? "main" with
       | some typedFn => typedFn.fnType
-      | none => unitTy
+      | none => ctx.unitTy
     let alo ← LowerM.addNode (.alo idx) mainTy
-    let era ← LowerM.addNode .era unitTy
+    let era ← LowerM.addNode .era ctx.unitTy
     LowerM.connect (PortId.principal era) (PortId.principal alo)
     LowerM.setRoot (PortId.principal era)
   | none =>
-    let era ← LowerM.addNode .era unitTy
+    let era ← LowerM.addNode .era ctx.unitTy
     LowerM.setRoot (PortId.principal era)
 
 /-- Lower typed functions to Circuit IR -/

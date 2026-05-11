@@ -63,7 +63,6 @@ partial def checkPositivityFields (unique : Unique) (pol : Polarity)
 partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value) : PositivityResult :=
   match ty with
   | .vType _ => .ok
-  | .vPrimTy _ => .ok
   | .vIntLit _ => .ok
   | .vFloatLit _ => .ok
   | .vStringLit _ => .ok

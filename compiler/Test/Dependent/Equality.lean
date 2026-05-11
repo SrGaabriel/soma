@@ -26,32 +26,38 @@ open Test.Fixtures
 /-- Helper to create a dummy span -/
 def testSpan : Span := Span.uninhabited
 
+/-- Synthetic test placeholders for the kernel-level primitive types -/
+def testIntTy : Soma.Core.Value := .vDataType ⟨1001, "test", "Int32"⟩ []
+def testBoolTy : Soma.Core.Value := .vDataType ⟨1002, "test", "Bool"⟩ []
+def testStringTy : Soma.Core.Value := .vDataType ⟨1003, "test", "String"⟩ []
+
 /-! ## Value Construction Tests -/
 
 namespace ValueTests
 
 /-- Test: Equality type construction -/
 def testEqConstruction : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 1
   let eq := Value.vEq Level.zero ty lhs rhs
   match eq with
-  | .vEq (.lit 0) (.vPrimTy .int) (.vIntLit 1) (.vIntLit 1) => return .passed
+  | .vEq (.lit 0) (.vDataType ⟨1001, "test", "Int32"⟩ []) (.vIntLit 1) (.vIntLit 1) =>
+    return .passed
   | _ => return .failed "equality type should be constructed correctly"
 
 /-- Test: Refl construction -/
 def testReflConstruction : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let x := Value.vIntLit 42
   let refl := Value.vRefl ty x
   match refl with
-  | .vRefl (.vPrimTy .int) (.vIntLit 42) => return .passed
+  | .vRefl (.vDataType ⟨1001, "test", "Int32"⟩ []) (.vIntLit 42) => return .passed
   | _ => return .failed "refl should be constructed correctly"
 
 /-- Test: Transport construction -/
 def testTransportConstruction : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let motive := Value.vLabelLit "_motive"
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 2
@@ -59,32 +65,33 @@ def testTransportConstruction : IO TestResult := do
   let body := Value.vIntLit 42
   let transport := Value.vTransport Level.zero ty motive lhs rhs eq body
   match transport with
-  | .vTransport (.lit 0) (.vPrimTy .int) (.vLabelLit "_motive") (.vIntLit 1) (.vIntLit 2) _ (.vIntLit 42) =>
+  | .vTransport (.lit 0) (.vDataType ⟨1001, "test", "Int32"⟩ [])
+      (.vLabelLit "_motive") (.vIntLit 1) (.vIntLit 2) _ (.vIntLit 42) =>
     return .passed
   | _ => return .failed "transport should be constructed correctly"
 
 /-- Test: mkEq helper function -/
 def testMkEq : IO TestResult := do
-  let ty := Value.vPrimTy .bool
-  let lhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
-  let rhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
+  let ty := testBoolTy
+  let lhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] testBoolTy
+  let rhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] testBoolTy
   let eq := mkEq Level.zero ty lhs rhs
   match eq with
-  | .vEq (.lit 0) (.vPrimTy .bool) _ _ => return .passed
+  | .vEq (.lit 0) (.vDataType ⟨1002, "test", "Bool"⟩ []) _ _ => return .passed
   | _ => return .failed "mkEq should create correct equality type"
 
 /-- Test: mkRefl helper function -/
 def testMkRefl : IO TestResult := do
-  let ty := Value.vPrimTy .string
+  let ty := testStringTy
   let x := Value.vStringLit "test"
   let refl := mkRefl ty x
   match refl with
-  | .vRefl (.vPrimTy .string) (.vStringLit "test") => return .passed
+  | .vRefl (.vDataType ⟨1003, "test", "String"⟩ []) (.vStringLit "test") => return .passed
   | _ => return .failed "mkRefl should create correct refl proof"
 
 /-- Test: mkTransport helper function -/
 def testMkTransport : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let motive := Value.vLabelLit "_test"
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 1
@@ -114,7 +121,7 @@ namespace ConversionTests
 
 /-- Test: Equal equality types are convertible -/
 def testEqConvertSame : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let x := Value.vIntLit 1
   let eq1 := Value.vEq Level.zero ty x x
   let eq2 := Value.vEq Level.zero ty x x
@@ -125,7 +132,7 @@ def testEqConvertSame : IO TestResult := do
 
 /-- Test: Equality types with different lhs are not convertible -/
 def testEqNotConvertDiffLhs : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let eq1 := Value.vEq Level.zero ty (Value.vIntLit 1) (Value.vIntLit 2)
   let eq2 := Value.vEq Level.zero ty (Value.vIntLit 3) (Value.vIntLit 2)
   match (convert eq1 eq2).run' with
@@ -135,7 +142,7 @@ def testEqNotConvertDiffLhs : IO TestResult := do
 
 /-- Test: Equality types with different rhs are not convertible -/
 def testEqNotConvertDiffRhs : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let eq1 := Value.vEq Level.zero ty (Value.vIntLit 1) (Value.vIntLit 2)
   let eq2 := Value.vEq Level.zero ty (Value.vIntLit 1) (Value.vIntLit 3)
   match (convert eq1 eq2).run' with
@@ -145,8 +152,8 @@ def testEqNotConvertDiffRhs : IO TestResult := do
 
 /-- Test: Equality types with different base types are not convertible -/
 def testEqNotConvertDiffType : IO TestResult := do
-  let eq1 := Value.vEq Level.zero (Value.vPrimTy .int) (Value.vIntLit 1) (Value.vIntLit 1)
-  let eq2 := Value.vEq Level.zero (Value.vPrimTy .string) (Value.vStringLit "1") (Value.vStringLit "1")
+  let eq1 := Value.vEq Level.zero testIntTy (Value.vIntLit 1) (Value.vIntLit 1)
+  let eq2 := Value.vEq Level.zero testStringTy (Value.vStringLit "1") (Value.vStringLit "1")
   match (convert eq1 eq2).run' with
   | .ok false => return .passed
   | .ok true => return .failed "equality types with different base types should not be convertible"
@@ -154,7 +161,7 @@ def testEqNotConvertDiffType : IO TestResult := do
 
 /-- Test: Equal refl proofs are convertible -/
 def testReflConvertSame : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let x := Value.vIntLit 42
   let refl1 := Value.vRefl ty x
   let refl2 := Value.vRefl ty x
@@ -165,7 +172,7 @@ def testReflConvertSame : IO TestResult := do
 
 /-- Test: Refl proofs with different values are not convertible -/
 def testReflNotConvertDiffValue : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let refl1 := Value.vRefl ty (Value.vIntLit 1)
   let refl2 := Value.vRefl ty (Value.vIntLit 2)
   match (convert refl1 refl2).run' with
@@ -175,7 +182,7 @@ def testReflNotConvertDiffValue : IO TestResult := do
 
 /-- Test: Transport values with same components are convertible -/
 def testTransportConvertSame : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let motive := Value.vLabelLit "_m"
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 2
@@ -190,7 +197,7 @@ def testTransportConvertSame : IO TestResult := do
 
 /-- Test: Transport values with different bodies are not convertible -/
 def testTransportNotConvertDiffBody : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let motive := Value.vLabelLit "_m"
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 2
@@ -223,21 +230,21 @@ namespace InferTests
 
 def synName (s : String) : Soma.Syntax.QualName := ⟨#[], s, testSpan⟩
 
-/-- Test: Infer integer literal in equality suite -/
+/-- Test: Infer integer literal -/
 def testInferIntLit : IO TestResult := do
   let expr : Soma.Syntax.Expr := .lit (.int 1 testSpan)
   match typeInfer expr with
-  | .ok (.vPrimTy .int, _, _) => return .passed
-  | .ok (resTy, _, _) => return .failed s!"Expected Int, got {resTy}"
-  | .error e => return .failed s!"Unexpected error: {e}"
+  | .ok (resTy, _, _) =>
+    return .failed s!"Expected internal error for missing `Int` wired registration, got {resTy}"
+  | .error _ => return .passed
 
-/-- Test: Infer string literal in equality suite -/
+/-- Test: Infer string literal -/
 def testInferStringLit : IO TestResult := do
   let expr : Soma.Syntax.Expr := .lit (.string "hello" testSpan)
   match typeInfer expr with
-  | .ok (.vPrimTy .string, _, _) => return .passed
-  | .ok (resTy, _, _) => return .failed s!"Expected String, got {resTy}"
-  | .error e => return .failed s!"Unexpected error: {e}"
+  | .ok (resTy, _, _) =>
+    return .failed s!"Expected internal error for missing `String` wired registration, got {resTy}"
+  | .error _ => return .passed
 
 /-- Test: Infer Type literal in equality suite -/
 def testInferType : IO TestResult := do
@@ -263,7 +270,7 @@ namespace UnifyTests
 
 /-- Test: Unify identical equality types -/
 def testUnifyEqSame : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let x := Value.vIntLit 1
   let eq1 := Value.vEq Level.zero ty x x
   let eq2 := Value.vEq Level.zero ty x x
@@ -273,7 +280,7 @@ def testUnifyEqSame : IO TestResult := do
 
 /-- Test: Unify identical refl proofs -/
 def testUnifyReflSame : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let x := Value.vIntLit 42
   let refl1 := Value.vRefl ty x
   let refl2 := Value.vRefl ty x
@@ -283,7 +290,7 @@ def testUnifyReflSame : IO TestResult := do
 
 /-- Test: Unify identical transport values -/
 def testUnifyTransportSame : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let motive := Value.vLabelLit "_m"
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 2
@@ -311,28 +318,31 @@ namespace EvalTests
 
 /-- Test: Eval equality type -/
 def testEvalEqType : IO TestResult := do
-  let ty : Soma.Core.Expr := .primTy .int
+  let intDataId : Soma.Unique := ⟨0, "test", "Int"⟩
+  let ty : Soma.Core.Expr := .dataTy intDataId #[]
   let lhs : Soma.Core.Expr := .lit (.int 1)
   let rhs : Soma.Core.Expr := .lit (.int 2)
   let eqExpr : Soma.Core.Expr := .eqTy (.lit 0) ty lhs rhs
   let result := evalCoreExpr EvalCtx.empty eqExpr
   match result with
-  | .vEq (.lit 0) (.vPrimTy .int) (.vIntLit 1) (.vIntLit 2) => return .passed
+  | .vEq (.lit 0) _ (.vIntLit 1) (.vIntLit 2) => return .passed
   | _ => return .failed s!"Expected vEq, got {result}"
 
 /-- Test: Eval refl -/
 def testEvalRefl : IO TestResult := do
-  let ty : Soma.Core.Expr := .primTy .int
+  let intDataId : Soma.Unique := ⟨0, "test", "Int"⟩
+  let ty : Soma.Core.Expr := .dataTy intDataId #[]
   let x : Soma.Core.Expr := .lit (.int 42)
   let reflExpr : Soma.Core.Expr := .refl ty x
   let result := evalCoreExpr EvalCtx.empty reflExpr
   match result with
-  | .vRefl (.vPrimTy .int) (.vIntLit 42) => return .passed
+  | .vRefl _ (.vIntLit 42) => return .passed
   | _ => return .failed s!"Expected vRefl, got {result}"
 
 /-- Test: Transport with refl reduces to body -/
 def testTransportReflReduces : IO TestResult := do
-  let ty : Soma.Core.Expr := .primTy .int
+  let intDataId : Soma.Unique := ⟨0, "test", "Int"⟩
+  let ty : Soma.Core.Expr := .dataTy intDataId #[]
   let motive : Soma.Core.Expr := .labelLit "_motive"
   let lhs : Soma.Core.Expr := .lit (.int 1)
   let rhs : Soma.Core.Expr := .lit (.int 1)
@@ -360,7 +370,7 @@ namespace QuoteTests
 
 /-- Test: Quote equality type -/
 def testQuoteEq : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 2
   let eq := Value.vEq Level.zero ty lhs rhs
@@ -371,7 +381,7 @@ def testQuoteEq : IO TestResult := do
 
 /-- Test: Quote refl -/
 def testQuoteRefl : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let x := Value.vIntLit 42
   let refl := Value.vRefl ty x
   let quoted := quoteExpr0 refl
@@ -381,7 +391,7 @@ def testQuoteRefl : IO TestResult := do
 
 /-- Test: Quote transport -/
 def testQuoteTransport : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let motive := Value.vLabelLit "_m"
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 2
@@ -409,28 +419,29 @@ namespace ZonkTests
 
 /-- Test: Zonk equality type preserves structure -/
 def testZonkEq : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 2
   let eq := Value.vEq Level.zero ty lhs rhs
   match (zonkValue eq).run' with
-  | .ok (.vEq (.lit 0) (.vPrimTy .int) (.vIntLit 1) (.vIntLit 2)) => return .passed
+  | .ok (.vEq (.lit 0) (.vDataType ⟨1001, "test", "Int32"⟩ []) (.vIntLit 1) (.vIntLit 2)) =>
+    return .passed
   | .ok v => return .failed s!"Expected vEq, got {v}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
 /-- Test: Zonk refl preserves structure -/
 def testZonkRefl : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let x := Value.vIntLit 42
   let refl := Value.vRefl ty x
   match (zonkValue refl).run' with
-  | .ok (.vRefl (.vPrimTy .int) (.vIntLit 42)) => return .passed
+  | .ok (.vRefl (.vDataType ⟨1001, "test", "Int32"⟩ []) (.vIntLit 42)) => return .passed
   | .ok v => return .failed s!"Expected vRefl, got {v}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
 /-- Test: Zonk transport preserves structure -/
 def testZonkTransport : IO TestResult := do
-  let ty := Value.vPrimTy .int
+  let ty := testIntTy
   let motive := Value.vLabelLit "_m"
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 2

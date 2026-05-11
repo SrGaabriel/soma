@@ -105,7 +105,7 @@ private def defProcessingOrder (g : Graph) : Array Nat := Id.run do
   result
 
 /-- Run one pass of partial evaluation over all definitions -/
-private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) := do
+private def partialEvalPass (graph : Graph) (fuel : Nat) (config : Config) : IO (Graph × Stats) := do
   let order := defProcessingOrder graph
   let mut g := graph
   let mut stats : Stats := {}
@@ -122,7 +122,7 @@ private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) :
             ReduceM.updateDefinitionRoot i resultId
           ReduceM.disconnect (PortId.principal era)
           ReduceM.removeNode era
-        ) g { Config.forPartialEval with fuel }
+        ) g { config with fuel }
         match result with
         | .ok _ =>
           g := state.graph
@@ -132,13 +132,14 @@ private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) :
   return (g, stats)
 
 /-- Partially evaluate each definition in the graph's book -/
-def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8) : IO (Graph × Stats) := do
+def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8)
+    (config : Config := .forPartialEval) : IO (Graph × Stats) := do
   let mut g := graph
   let mut totalStats : Stats := {}
   let mut remainingFuel := fuel
   for _ in [:maxPasses] do
     if remainingFuel == 0 then break
-    let (g', passStats) ← partialEvalPass g remainingFuel
+    let (g', passStats) ← partialEvalPass g remainingFuel config
     totalStats := totalStats.merge passStats
     if passStats.totalSteps == 0 then
       g := g'

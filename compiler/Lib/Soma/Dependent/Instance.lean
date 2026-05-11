@@ -42,7 +42,6 @@ partial def normKey (v : Value) (depth : Nat) (m : NormMap)
   let v' ← force v
   match v' with
   | .vType lvl         => return (s!"T{toString lvl}", m)
-  | .vPrimTy p         => return (s!"P{toString p}", m)
   | .vRowSort          => return ("RS", m)
   | .vLabelSort        => return ("LS", m)
   | .vRowEmpty         => return ("RE", m)
@@ -820,12 +819,6 @@ end InstanceEnv
 private def mkSimpleClosure (name : String) : Closure :=
   Closure.mkEmpty name Env.empty
 
-/-- Create a placeholder function value for instance methods -/
-private def mkMethodPlaceholder (name : String) : Value :=
-  -- Create a lambda that returns a placeholder
-  -- todo: use the actual method implementation
-  Value.vLam name (mkSimpleClosure name)
-
 /-- Build the default instance environment with common classes -/
 def defaultInstanceEnv : InstanceEnv := Id.run do
   let mut env := InstanceEnv.forModule builtinModule
@@ -900,46 +893,6 @@ def defaultInstanceEnv : InstanceEnv := Id.run do
     superclasses := #[(BuiltinClass.applicative, #[0])]  -- Monad m requires Applicative m
     span := Span.uninhabited
   }
-
-  for prim in [PrimType.int, .int8, .int16, .int64, .float, .double, .bool,
-               .word, .word8, .word16, .word64] do
-    let primTy := Value.vPrimTy prim
-    -- Create an instance value that's a record with the eq method
-    let eqMethod := mkMethodPlaceholder "eq"
-    let instValue := Value.vRecordVal [("eq", eqMethod)]
-    env := env.addInstance BuiltinClass.eq #[primTy] #[.omega] #[] instValue
-
-  for prim in [PrimType.int, .int8, .int16, .int64, .float, .double,
-               .word, .word8, .word16, .word64] do
-    let primTy := Value.vPrimTy prim
-    let compareMethod := mkMethodPlaceholder "compare"
-    let instValue := Value.vRecordVal [("compare", compareMethod)]
-    env := env.addInstance BuiltinClass.ord #[primTy] #[.omega]
-      #[(BuiltinClass.eq, #[primTy])] instValue
-
-  for prim in [PrimType.int, .int8, .int16, .int64, .float, .double, .bool,
-               .word, .word8, .word16, .word64] do
-    let primTy := Value.vPrimTy prim
-    let showMethod := mkMethodPlaceholder "show"
-    let instValue := Value.vRecordVal [("show", showMethod)]
-    env := env.addInstance BuiltinClass.show_ #[primTy] #[.omega] #[] instValue
-
-  for prim in [PrimType.int, .int8, .int16, .int64, .float, .double,
-               .word, .word8, .word16, .word64] do
-    let primTy := Value.vPrimTy prim
-    let addMethod := mkMethodPlaceholder "add"
-    let subMethod := mkMethodPlaceholder "sub"
-    let mulMethod := mkMethodPlaceholder "mul"
-    let negMethod := mkMethodPlaceholder "neg"
-    let fromIntMethod := mkMethodPlaceholder "fromInt"
-    let instValue := Value.vRecordVal [
-      ("add", addMethod),
-      ("sub", subMethod),
-      ("mul", mulMethod),
-      ("neg", negMethod),
-      ("fromInt", fromIntMethod)
-    ]
-    env := env.addInstance BuiltinClass.num #[primTy] #[.omega] #[] instValue
 
   return env
 

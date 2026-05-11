@@ -417,7 +417,7 @@ where
     match e with
     | .fvar u ty => go ty (acc.insert u ty)
     | .const _ ty => go ty acc
-    | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
+    | .bvar _ | .mvar _ | .sort _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
     | .lit _ | .tyvar _ _ => acc
     | .app f a => go a (go f acc)
@@ -467,7 +467,7 @@ where
       let (seen, acc) := add u ty seen acc
       go ty seen acc
     | .const _ ty => go ty seen acc
-    | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
+    | .bvar _ | .mvar _ | .sort _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
     | .lit _ | .tyvar _ _ => (seen, acc)
     | .app f a =>
@@ -537,7 +537,7 @@ mutual
 
 partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   match e with
-  | .fvar _ _ | .bvar _ | .mvar _ | .const _ _ | .sort _ | .primTy _ | .rowSort
+  | .fvar _ _ | .bvar _ | .mvar _ | .const _ _ | .sort _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _
   | .tyvar _ _ =>
     pure e
@@ -713,7 +713,6 @@ private partial def peelExplicitParams (ty : Value) (n : Nat) (st : LiftState) :
 private def isWorldTyValue (ty : Value) (st : LiftState) : Bool :=
   let ty := st.unfoldTy ty
   match ty with
-  | .vPrimTy .world => true
   | .vDataType uid _ => st.worldUnique?.any (· == uid)
   | _ => false
 
@@ -753,7 +752,10 @@ def liftTypedFunction (fn : TypedFunction) : LiftM TypedFunction := do
   let (etaParams, etaBody) ← if needsEta then do
       let wName := "_w"
       let wId ← LiftM.freshUnique wName
-      let wTyExpr : Soma.Core.Expr := .primTy .world
+      let wTyExpr : Soma.Core.Expr :=
+        match st0.worldUnique? with
+        | some uid => .dataTy uid #[]
+        | none => .sort .zero
       let body' := applyPushingDown fn.body (.fvar wId wTyExpr)
       pure (fn.params ++ #[(wId, wName)], body')
     else

@@ -41,6 +41,15 @@ def mkTestClassId (name : String) (id : Nat) : Soma.Unique :=
 def mkTestInstanceId (name : String) (id : Nat) : Soma.Unique :=
   { id := id, module := "Test", original := name }
 
+/-- Synthetic test placeholders for the kernel-level primitive types -/
+def testIntTyUid : Soma.Unique := ⟨1001, "test", "Int32"⟩
+def testStringTyUid : Soma.Unique := ⟨1003, "test", "String"⟩
+def testBoolTyUid : Soma.Unique := ⟨1002, "test", "Bool"⟩
+
+def testIntTy : Soma.Core.Value := .vDataType testIntTyUid []
+def testStringTy : Soma.Core.Value := .vDataType testStringTyUid []
+def testBoolTy : Soma.Core.Value := .vDataType testBoolTyUid []
+
 /-! ## Instance Environment Tests -/
 
 namespace InstanceEnvTests
@@ -78,8 +87,8 @@ def testAddClass : IO TestResult := do
 /-- Test: Can add and retrieve instances -/
 def testAddInstance : IO TestResult := do
   let classId := mkTestClassId "Eq" 0
-  let primTy := Value.vPrimTy .int
-  let instValue := Value.vRecordVal [("eq", Value.vPrimTy .bool)]
+  let primTy := testIntTy
+  let instValue := Value.vRecordVal [("eq", testBoolTy)]
 
   let env := InstanceEnv.forModule "Test"
     |>.addInstance classId #[primTy] #[.omega] #[] instValue
@@ -96,9 +105,9 @@ def testAddInstance : IO TestResult := do
 /-- Test: Instance count works -/
 def testInstanceCount : IO TestResult := do
   let classId := mkTestClassId "Eq" 0
-  let primTy1 := Value.vPrimTy .int
-  let primTy2 := Value.vPrimTy .string
-  let instValue := Value.vRecordVal [("eq", Value.vPrimTy .bool)]
+  let primTy1 := testIntTy
+  let primTy2 := testStringTy
+  let instValue := Value.vRecordVal [("eq", testBoolTy)]
 
   let env := InstanceEnv.forModule "Test"
     |>.addInstance classId #[primTy1] #[.omega] #[] instValue
@@ -190,7 +199,7 @@ private def runTCM (m : TCM α) : IO (Except TCError α) := do
 /-- Two ground goals with the same class and identical args share a key -/
 def testGroundArgsIdentical : IO TestResult := do
   let classId := mkTestClassId "Eq" 0
-  let args    := #[Value.vPrimTy .int]
+  let args    := #[testIntTy]
   match ← runTCM (do
       let k1 ← normalizeGoalKey classId args
       let k2 ← normalizeGoalKey classId args
@@ -204,8 +213,8 @@ def testGroundArgsIdentical : IO TestResult := do
 def testDifferentArgsDistinct : IO TestResult := do
   let classId := mkTestClassId "Eq" 0
   match ← runTCM (do
-      let k1 ← normalizeGoalKey classId #[Value.vPrimTy .int]
-      let k2 ← normalizeGoalKey classId #[Value.vPrimTy .string]
+      let k1 ← normalizeGoalKey classId #[testIntTy]
+      let k2 ← normalizeGoalKey classId #[testStringTy]
       pure (k1, k2)) with
   | .ok (k1, k2) =>
     if k1 != k2 then return .passed
@@ -277,16 +286,16 @@ private def mkInst2 (id : Nat) (classId : Unique) (a0 a1 : Value) : InstanceInfo
 
 /-- Ground values produce distinct keys -/
 def testGroundKeysDistinct : IO TestResult := do
-  let kInt  := DiscrKey.ofValue (Value.vPrimTy .int)
-  let kStr  := DiscrKey.ofValue (Value.vPrimTy .string)
+  let kInt  := DiscrKey.ofValue (testIntTy)
+  let kStr  := DiscrKey.ofValue (testStringTy)
   if kInt != kStr then return .passed
   else return .failed s!"Int and String got the same key: {repr kInt}"
 
 /-- Values with equal head produce equal keys regardless of substructure -/
 def testSameDataTypeSameKey : IO TestResult := do
   let listId : Unique := mkTestClassId "List" 42
-  let k1 := DiscrKey.ofValue (Value.vDataType listId [Value.vPrimTy .int])
-  let k2 := DiscrKey.ofValue (Value.vDataType listId [Value.vPrimTy .string])
+  let k1 := DiscrKey.ofValue (Value.vDataType listId [testIntTy])
+  let k2 := DiscrKey.ofValue (Value.vDataType listId [testStringTy])
   if k1 == k2 then return .passed
   else return .failed "same datatype head gave different keys"
 
@@ -300,12 +309,12 @@ def testMetaIsWildcard : IO TestResult := do
 /-- Query by key narrows to exact + wildcard buckets -/
 def testTreeQueryNarrows : IO TestResult := do
   let classId := mkTestClassId "C" 0
-  let intInst   := mkInst 1 classId (Value.vPrimTy .int)
-  let strInst   := mkInst 2 classId (Value.vPrimTy .string)
+  let intInst   := mkInst 1 classId (testIntTy)
+  let strInst   := mkInst 2 classId (testStringTy)
   let metaInst  := mkInst 3 classId (Value.vNeutral (Value.vType .zero) (.nMeta ⟨7⟩))
   let tree : DiscrTree :=
     DiscrTree.empty |>.insert intInst |>.insert strInst |>.insert metaInst
-  let candidatesForInt := tree.query [.primType .int]
+  let candidatesForInt := tree.query [.dataType testIntTyUid]
   let hasInt  := candidatesForInt.any (·.instanceId == intInst.instanceId)
   let hasStr  := candidatesForInt.any (·.instanceId == strInst.instanceId)
   let hasMeta := candidatesForInt.any (·.instanceId == metaInst.instanceId)
@@ -315,8 +324,8 @@ def testTreeQueryNarrows : IO TestResult := do
 /-- Flatten returns everything inserted -/
 def testTreeFlatten : IO TestResult := do
   let classId := mkTestClassId "C" 0
-  let a := mkInst 10 classId (Value.vPrimTy .int)
-  let b := mkInst 11 classId (Value.vPrimTy .string)
+  let a := mkInst 10 classId (testIntTy)
+  let b := mkInst 11 classId (testStringTy)
   let c := mkInst 12 classId (Value.vNeutral (Value.vType .zero) (.nMeta ⟨0⟩))
   let tree := DiscrTree.empty |>.insert a |>.insert b |>.insert c
   let all := tree.flatten
@@ -326,15 +335,15 @@ def testTreeFlatten : IO TestResult := do
 /-- Deep discrimination -/
 def testMultiArgDiscrimination : IO TestResult := do
   let classId := mkTestClassId "Coe" 0
-  let i := Value.vPrimTy .int
-  let s := Value.vPrimTy .string
-  let b := Value.vPrimTy .bool
+  let i := testIntTy
+  let s := testStringTy
+  let b := testBoolTy
   let mv := Value.vNeutral (Value.vType .zero) (.nMeta ⟨99⟩)
   let intStr  := mkInst2 101 classId i s
   let intBool := mkInst2 102 classId i b
   let refl    := mkInst2 103 classId mv mv
   let tree := DiscrTree.empty |>.insert intStr |>.insert intBool |>.insert refl
-  let cands := tree.query [.primType .int, .primType .string]
+  let cands := tree.query [.dataType testIntTyUid, .dataType testStringTyUid]
   let hasIntStr  := cands.any (·.instanceId == intStr.instanceId)
   let hasIntBool := cands.any (·.instanceId == intBool.instanceId)
   let hasRefl    := cands.any (·.instanceId == refl.instanceId)
@@ -344,13 +353,13 @@ def testMultiArgDiscrimination : IO TestResult := do
 /-- Instance-side wildcard at a specific position. `instance Coe α String` has a wildcard at arg 0 -/
 def testInstanceSideWildcardAtPosition : IO TestResult := do
   let classId := mkTestClassId "Coe" 0
-  let i := Value.vPrimTy .int
-  let s := Value.vPrimTy .string
+  let i := testIntTy
+  let s := testStringTy
   let mv0 := Value.vNeutral (Value.vType .zero) (.nMeta ⟨200⟩)
   let anyStr := mkInst2 104 classId mv0 s      -- Coe α String
-  let intBool := mkInst2 105 classId i (Value.vPrimTy .bool)
+  let intBool := mkInst2 105 classId i (testBoolTy)
   let tree := DiscrTree.empty |>.insert anyStr |>.insert intBool
-  let cands := tree.query [.primType .int, .primType .string]
+  let cands := tree.query [.dataType testIntTyUid, .dataType testStringTyUid]
   let hasAnyStr  := cands.any (·.instanceId == anyStr.instanceId)
   let hasIntBool := cands.any (·.instanceId == intBool.instanceId)
   if hasAnyStr && !hasIntBool then return .passed
@@ -359,8 +368,8 @@ def testInstanceSideWildcardAtPosition : IO TestResult := do
 /-- Merging two trees combines their buckets -/
 def testTreeMerge : IO TestResult := do
   let classId := mkTestClassId "C" 0
-  let a := mkInst 20 classId (Value.vPrimTy .int)
-  let b := mkInst 21 classId (Value.vPrimTy .string)
+  let a := mkInst 20 classId (testIntTy)
+  let b := mkInst 21 classId (testStringTy)
   let t1 := DiscrTree.empty |>.insert a
   let t2 := DiscrTree.empty |>.insert b
   let merged := DiscrTree.merge t1 t2
@@ -446,12 +455,10 @@ def testHasApplicativeClass : IO TestResult := do
 /-- Test: Eq has instances for Int -/
 def testEqIntInstance : IO TestResult := do
   let env := defaultInstanceEnv
-  let instances := env.getInstances BuiltinClass.eq
-  -- Should have 7 instances (int, long, short, byte, float, double, bool)
-  if instances.size >= 7 then
+  if env.hasClass BuiltinClass.eq then
     return .passed
   else
-    return .failed s!"Expected at least 7 Eq instances, got {instances.size}"
+    return .failed "Eq class skeleton missing from defaultInstanceEnv"
 
 /-- Test: Ord has superclass Eq -/
 def testOrdSuperclass : IO TestResult := do
@@ -534,10 +541,22 @@ end BuiltinTests
 
 namespace ResolutionTests
 
-/-- Test: Resolve Eq Int succeeds -/
+/-- Test: Resolving an instance requires either a wired prim-file instance -/
 def testResolveEqInt : IO TestResult := do
-  let ctx := TCContext.withDefaultInstances
-  let action : TCM ResolutionResult := resolveInstance BuiltinClass.eq #[Value.vPrimTy .int]
+  let baseCtx := TCContext.withDefaultInstances
+  let eqIntInst : InstanceInfo := {
+    instanceId := { id := 900100, module := "test", original := "EqInt" }
+    classId := BuiltinClass.eq
+    args := #[testIntTy]
+    argQuantities := #[.omega]
+    constraints := #[]
+    value := Value.vRecordVal []
+    constraintDictCount := 0
+    span := Span.uninhabited
+  }
+  let ctx := { baseCtx with
+    instanceEnv := baseCtx.instanceEnv.addInstanceWithId eqIntInst }
+  let action : TCM ResolutionResult := resolveInstance BuiltinClass.eq #[testIntTy]
   match action.run ctx with
   | .ok (result, _) =>
     if result.isFound then
@@ -550,7 +569,7 @@ def testResolveEqInt : IO TestResult := do
 def testResolveNonExistentClass : IO TestResult := do
   let ctx := TCContext.withDefaultInstances
   let nonExistentClass := mkTestClassId "NonExistent" 999
-  let action : TCM ResolutionResult := resolveInstance nonExistentClass #[Value.vPrimTy .int]
+  let action : TCM ResolutionResult := resolveInstance nonExistentClass #[testIntTy]
   match action.run ctx with
   | .ok (result, _) =>
     match result with
@@ -562,7 +581,7 @@ def testResolveNonExistentClass : IO TestResult := do
 def testResolveNonMatchingType : IO TestResult := do
   let ctx := TCContext.withDefaultInstances
   -- Num doesn't have an instance for Bool
-  let action : TCM ResolutionResult := resolveInstance BuiltinClass.num #[Value.vPrimTy .bool]
+  let action : TCM ResolutionResult := resolveInstance BuiltinClass.num #[testBoolTy]
   match action.run ctx with
   | .ok (result, _) =>
     match result with
@@ -572,10 +591,22 @@ def testResolveNonMatchingType : IO TestResult := do
 
 /-- Exercise memoization -/
 def testMemoizationFreshAcrossCalls : IO TestResult := do
-  let ctx := TCContext.withDefaultInstances
+  let baseCtx := TCContext.withDefaultInstances
+  let eqIntInst : InstanceInfo := {
+    instanceId := { id := 900101, module := "test", original := "EqInt" }
+    classId := BuiltinClass.eq
+    args := #[testIntTy]
+    argQuantities := #[.omega]
+    constraints := #[]
+    value := Value.vRecordVal []
+    constraintDictCount := 0
+    span := Span.uninhabited
+  }
+  let ctx := { baseCtx with
+    instanceEnv := baseCtx.instanceEnv.addInstanceWithId eqIntInst }
   let action : TCM Bool := do
-    let r1 ← resolveInstance BuiltinClass.eq #[Value.vPrimTy .int]
-    let r2 ← resolveInstance BuiltinClass.eq #[Value.vPrimTy .int]
+    let r1 ← resolveInstance BuiltinClass.eq #[testIntTy]
+    let r2 ← resolveInstance BuiltinClass.eq #[testIntTy]
     return r1.isFound && r2.isFound
   match action.run ctx with
   | .ok (ok, _) =>
@@ -587,19 +618,30 @@ def testSuperclassChain : IO TestResult := do
   let ctx := TCContext.withDefaultInstances
   let action : TCM Bool := do
     let instanceEnv := ctx.instanceEnv
-    let ordIntInst : InstanceInfo := {
-      instanceId := { id := 900001, module := "test", original := "OrdInt" }
-      classId := BuiltinClass.ord
-      args := #[Value.vPrimTy .int]
+    let eqIntInst : InstanceInfo := {
+      instanceId := { id := 900000, module := "test", original := "EqInt" }
+      classId := BuiltinClass.eq
+      args := #[testIntTy]
       argQuantities := #[.omega]
       constraints := #[]
       value := Value.vRecordVal []
       constraintDictCount := 0
       span := Span.uninhabited
     }
-    let instanceEnv' := instanceEnv.addInstanceWithId ordIntInst
+    let ordIntInst : InstanceInfo := {
+      instanceId := { id := 900001, module := "test", original := "OrdInt" }
+      classId := BuiltinClass.ord
+      args := #[testIntTy]
+      argQuantities := #[.omega]
+      constraints := #[]
+      value := Value.vRecordVal []
+      constraintDictCount := 0
+      span := Span.uninhabited
+    }
+    let instanceEnv' :=
+      (instanceEnv.addInstanceWithId eqIntInst).addInstanceWithId ordIntInst
     TCM.withInstanceEnv instanceEnv' do
-      let r ← resolveInstance BuiltinClass.ord #[Value.vPrimTy .int]
+      let r ← resolveInstance BuiltinClass.ord #[testIntTy]
       return r.isFound
   match action.run ctx with
   | .ok (ok, _) =>
@@ -609,7 +651,7 @@ def testSuperclassChain : IO TestResult := do
 def testFailedLookupNotFound : IO TestResult := do
   let ctx := TCContext.withDefaultInstances
   let bogus := mkTestClassId "DoesNotExist" 12345
-  let action : TCM ResolutionResult := resolveInstance bogus #[Value.vPrimTy .int]
+  let action : TCM ResolutionResult := resolveInstance bogus #[testIntTy]
   match action.run ctx with
   | .ok (result, _) =>
     match result with

@@ -129,7 +129,6 @@ where
       | none => pure ()
     | .lit _ => pure ()
     | .sort _ => pure ()
-    | .primTy _ => pure ()
     | .rowSort => pure ()
     | .labelSort => pure ()
     | .rowEmpty => pure ()

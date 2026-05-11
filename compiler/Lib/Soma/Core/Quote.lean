@@ -52,8 +52,6 @@ partial def valueToString (v : Value) : String :=
   | .vNeutral _ neu =>
     neutralToString neu
 
-  | .vPrimTy p => p.name
-
   | .vRowSort => "Row"
   | .vLabelSort => "Label"
 
@@ -113,7 +111,6 @@ mutual
 partial def valueEq (v1 v2 : Value) : Bool :=
   match v1, v2 with
   | .vType l1, .vType l2 => l1 == l2
-  | .vPrimTy p1, .vPrimTy p2 => p1 == p2
   | .vRowSort, .vRowSort => true
   | .vLabelSort, .vLabelSort => true
   | .vIntLit n1, .vIntLit n2 => n1 == n2
@@ -204,7 +201,7 @@ mutual
 /-- The largest De Bruijn level referenced by any `hVar` head reachable -/
 partial def valueMaxBoundLvl? (v : Value) : Option Nat :=
   match v with
-  | .vType _ | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
+  | .vType _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
   | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => none
   | .vPi _ _ _ dom cod =>
     maxOpt? (valueMaxBoundLvl? dom) (closureMaxBoundLvl? cod)
@@ -289,7 +286,7 @@ where
             .bvar (j - replacements.size)
     | .fvar id ty => .fvar id (go ty d)
     | .const name ty => .const name (go ty d)
-    | .mvar _ | .sort _ | .primTy _ | .rowSort
+    | .mvar _ | .sort _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
     | .lit _ | .tyvar _ _ => e
     | .app f a => .app (go f d) (go a d)
@@ -342,7 +339,6 @@ partial def quoteExpr (depth : DeBruijnLvl) (v : Value) : Expr :=
     .lam .explicit name (.sort Level.zero) bodyExpr
 
   | .vNeutral _ neu => quoteNeutralExpr depth neu
-  | .vPrimTy p => .primTy p
   | .vRowSort => .rowSort
   | .vLabelSort => .labelSort
   | .vIntLit n => .lit (.int n)

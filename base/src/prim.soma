@@ -4,8 +4,8 @@ record Int32
 
 @[wired_in "type.bool"]
 inductive Bool where
-    | True
     | False
+    | True
 
 @[wired_in "type.unit"]
 @[intrinsic]

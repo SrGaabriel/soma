@@ -325,7 +325,7 @@ mutual
 partial def substValue (σ : LevelSubst) (v : Value) : TCM Value := do
   if σ.isEmpty then return v
   match v with
-  | .vType _ | .vPrimTy _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
+  | .vType _| .vIntLit _ | .vFloatLit _ | .vStringLit _
   | .vLabelLit _ | .vRowSort | .vLabelSort | .vRowEmpty => return v
   | .vPi q b n d c =>
     let d' ← substValue σ d
@@ -431,16 +431,13 @@ private def scrutineeTypeOf (v : Value) : Value :=
   match v with
   | .vNeutral ty _ => ty
   | .vConstructor _ _ _ ty => ty
-  | .vIntLit _ => .vPrimTy .int
-  | .vFloatLit _ => .vPrimTy .double
-  | .vStringLit _ => .vPrimTy .string
+  | .vIntLit _ | .vFloatLit _ | .vStringLit _ => .type0
   | _ => .type0
 
 private def literalPatternValue? : Literal → Option Value
   | .int n => some (.vIntLit n)
   | .float f => some (.vFloatLit f)
   | .string s => some (.vStringLit s)
-  | .bool _ => none
 
 mutual
 
@@ -657,15 +654,6 @@ partial def findAndRemoveLabel (label : String) (row : Value) : TCM (Option (Val
 
 mutual
 
-/-- Normalize wired primitive data type wrappers into canonical primitive types -/
-private partial def normalizeWiredPrimitiveValue (v : Value) : TCM Value := do
-  match v with
-  | .vDataType u [] =>
-    match ← TCM.lookupWiredPrimitiveOfTypeUnique u with
-    | some prim => if prim.isNullary then pure (.vPrimTy prim) else pure v
-    | none => pure v
-  | _ => pure v
-
 /-- Does a value live in the `Prop` universe -/
 partial def valueInPropUniverse (v : Value) : TCM Bool := do
   let v' ← force v
@@ -739,10 +727,8 @@ partial def isTheoremType (v : Value) : TCM Bool := do
 /-- Check if two values are convertible (definitionally equal) -/
 partial def convert (v1 v2 : Value) : TCM Bool := do
   -- Force both values to resolve metavariables
-  let v1f ← force v1
-  let v2f ← force v2
-  let v1' ← normalizeWiredPrimitiveValue v1f
-  let v2' ← normalizeWiredPrimitiveValue v2f
+  let v1' ← force v1
+  let v2' ← force v2
 
   -- Proof-irrelevance short-circuit
   let irrelevanceTy? : Option Value ←
@@ -780,9 +766,6 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     let b1Val ← applyClosure body1 x
     let b2Val ← applyClosure body2 x
     convert b1Val b2Val
-
-  -- Primitives
-  | .vPrimTy p1, .vPrimTy p2 => return p1 == p2
 
   -- Literals
   | .vIntLit n1, .vIntLit n2 => return n1 == n2
@@ -1088,20 +1071,8 @@ partial def convertRecordFields (fs1 fs2 : List (String × Value)) : TCM Bool :=
 partial def recordTypeId? (ty : Value) : TCM (Option Soma.Unique) := do
   let ty' ← force ty
   let ctx ← TCM.getCtx
-  let candidate? : Option Soma.Unique :=
-    match ty' with
-    | .vDataType id _ => some id
-    | .vPrimTy p =>
-      Id.run do
-        for role in WiredRole.all do
-          if WiredRole.primTyOfRole? role == some p then
-            if let some info := ctx.globals.wiredIn.getUnique? role then
-              return some info.name.id
-        return none
-    | _ => none
-  match candidate? with
-  | none => return none
-  | some uid =>
+  match ty' with
+  | .vDataType uid _ =>
     match ctx.globals.lookupInductive ⟨uid⟩ with
     | some indMeta =>
       if indMeta.ctors.size == 1 && indMeta.fieldNames.size > 0 then
@@ -1109,6 +1080,7 @@ partial def recordTypeId? (ty : Value) : TCM (Option Soma.Unique) := do
       else
         return none
     | none => return none
+  | _ => return none
 
 /-- Eta-expand a value of an inductive `record` type into a list of field projections -/
 partial def recordEtaProjections (neu : Neutral) (fieldNames : Array String)
@@ -1166,7 +1138,6 @@ partial def structurallyIncompatible (v1 v2 : Value) : TCM Bool := do
   | .vIntLit n1, .vIntLit n2 => return n1 != n2
   | .vFloatLit f1, .vFloatLit f2 => return f1 != f2
   | .vStringLit s1, .vStringLit s2 => return s1 != s2
-  | .vPrimTy p1, .vPrimTy p2 => return p1 != p2
   | .vDataType id1 ps1, .vDataType id2 ps2 =>
     if id1 != id2 then return true
     if ps1.length != ps2.length then return true

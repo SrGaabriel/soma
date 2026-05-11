@@ -131,7 +131,6 @@ inductive Expr where
   | inject (label : String) (args : Array Expr) (resultTy : Expr)
 
   -- Primitive types as expressions
-  | primTy (p : PrimType)
   | rowSort
   | labelSort
   | rowEmpty
@@ -223,7 +222,7 @@ partial def Expr.replaceMvar (e : Expr) (metaId : MetaId) (replacement : Expr) :
       (ep.replaceMvar metaId replacement) (b.replaceMvar metaId replacement)
   | .fvar id ty => .fvar id (ty.replaceMvar metaId replacement)
   | .const n ty => .const n (ty.replaceMvar metaId replacement)
-  | .bvar _ | .sort _ | .lit _ | .primTy _ | .rowSort | .labelSort
+  | .bvar _ | .sort _ | .lit _ | .rowSort | .labelSort
   | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .tyvar _ _ => e
 
 partial def Expr.containsPairExpr : Expr → Bool
@@ -246,7 +245,6 @@ partial def Expr.toDebugString : Expr → String
   | .lit (.string s) => s!"\"{s}\""
   | .lit (.int n) => s!"{n}"
   | .lit (.float f) => s!"{f}"
-  | .lit (.bool b) => s!"{b}"
   | .sort _ => "Sort"
   | .pi _ _ name d c => s!"((${name} : {d.toDebugString}) → {c.toDebugString})"
   | .construct n _ args _ =>
@@ -267,7 +265,6 @@ partial def Expr.toDebugString : Expr → String
   | .inject l args _ =>
     let argsStr := args.map (·.toDebugString) |>.toList |> String.intercalate ", "
     s!".{l}<{argsStr}>"
-  | .primTy p => p.name
   | .rowSort => "Row"
   | .labelSort => "Label"
   | .rowEmpty => "{}"
@@ -306,7 +303,7 @@ def Expr.ctorName : Expr → String
   | .construct _ _ _ _ => "construct" | .case _ _ _ => "case"
   | .record _ => "record" | .recordUpdate _ _ => "recordUpdate"
   | .fieldAccess _ _ _ => "fieldAccess" | .inject _ _ _ => "inject"
-  | .primTy _ => "primTy" | .rowSort => "rowSort" | .labelSort => "labelSort"
+  | .rowSort => "rowSort" | .labelSort => "labelSort"
   | .rowEmpty => "rowEmpty" | .rowExtend _ _ _ => "rowExtend"
   | .recordTy _ => "recordTy" | .variantTy _ => "variantTy"
   | .labelLit _ => "labelLit" | .dataTy _ _ => "dataTy"
@@ -342,7 +339,7 @@ partial def shift (e : Expr) (amount : Int) (cutoff : Nat) : Expr :=
     else e
   | .fvar id ty => .fvar id (ty.shift amount cutoff)
   | .const name ty => .const name (ty.shift amount cutoff)
-  | .mvar _ | .sort _ | .primTy _ | .rowSort
+  | .mvar _ | .sort _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
   | .lit _ | .tyvar _ _ => e
   | .app f a => .app (f.shift amount cutoff) (a.shift amount cutoff)
@@ -398,7 +395,7 @@ where
     | .bvar i => if i >= depth then .bvar (i + 1) else e
     | .fvar id ty => .fvar id (go ty depth)
     | .const name ty => .const name (go ty depth)
-    | .mvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
+    | .mvar _ | .sort _ | .rowSort | .labelSort
     | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ => e
     | .app f a => .app (go f depth) (go a depth)
     | .lam info n d b => .lam info n (go d depth) (go b (depth + 1))
@@ -438,7 +435,7 @@ where
     | .fvar u ty => if u == fvar then .bvar depth else .fvar u (go ty depth)
     | .bvar i => if i >= depth then .bvar (i + 1) else e
     | .const name ty => .const name (go ty depth)
-    | .mvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
+    | .mvar _ | .sort _ | .rowSort | .labelSort
     | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ | .tyvar _ _ => e
     | .app f a => .app (go f depth) (go a depth)
     | .lam info n d b => .lam info n (go d depth) (go b (depth + 1))
@@ -481,7 +478,7 @@ where
       else e
     | .fvar id ty => .fvar id (go ty depth)
     | .const name ty => .const name (go ty depth)
-    | .mvar _ | .sort _ | .primTy _ | .rowSort
+    | .mvar _ | .sort _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
     | .lit _ | .tyvar _ _ => e
     | .app f a => .app (go f depth) (go a depth)
@@ -518,7 +515,7 @@ partial def replaceFVar (e : Expr) (fvar : Unique) (replacement : Expr) : Expr :
   match e with
   | .fvar u ty => if u == fvar then replacement else .fvar u (ty.replaceFVar fvar replacement)
   | .const name ty => .const name (ty.replaceFVar fvar replacement)
-  | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
+  | .bvar _ | .mvar _ | .sort _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
   | .lit _ | .tyvar _ _ => e
   | .app f a =>
@@ -576,7 +573,7 @@ where
     match e with
     | .fvar u ty => go ty (acc.insert u)
     | .const _ ty => go ty acc
-    | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
+    | .bvar _ | .mvar _ | .sort _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
     | .lit _ | .tyvar _ _ => acc
     | .app f a => go a (go f acc)
@@ -616,7 +613,7 @@ where
     match e with
     | .const name ty => go ty (acc.insert name)
     | .fvar _ ty => go ty acc
-    | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
+    | .bvar _ | .mvar _ | .sort _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
     | .lit _ | .tyvar _ _ => acc
     | .app f a => go a (go f acc)
@@ -653,7 +650,7 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
   match e with
   | .fvar u ty => u == fvar || ty.hasFVar fvar
   | .const _ ty => ty.hasFVar fvar
-  | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
+  | .bvar _ | .mvar _ | .sort _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
   | .lit _ | .tyvar _ _ => false
   | .app f a => f.hasFVar fvar || a.hasFVar fvar
@@ -692,7 +689,7 @@ private partial def isTypeUniverse : Expr → Bool
 
 /-- An expression is type-level when it inhabits the universe of types and has no runtime content -/
 partial def isTypeLevelExpr : Expr → Bool
-  | .sort _ | .pi _ _ _ _ _ | .primTy _
+  | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
@@ -791,7 +788,7 @@ partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   match e with
   | .fvar u ty => (if u == fvar then 1 else 0) + ty.countFVar fvar
   | .const _ ty => ty.countFVar fvar
-  | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
+  | .bvar _ | .mvar _ | .sort _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
   | .lit _ | .tyvar _ _ => 0
   | .app f a => f.countFVar fvar + a.countFVar fvar

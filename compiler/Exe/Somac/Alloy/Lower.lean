@@ -95,7 +95,6 @@ def isListValue (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Bool :=
 def isStringValue (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Bool :=
   match v with
   | .vDataType uid _ => primTypes.get? uid == some .string
-  | .vPrimTy .string => true
   | .vStringLit _ => true
   | _ => false
 
@@ -535,9 +534,13 @@ partial def extractRowVariantsWithMapping (row : Value) (ctx : TypeConvCtx n)
   match row with
   | Value.vRowEmpty => acc
   | Value.vRowExtend _label fieldTy tail =>
-    let fields := match fieldTy with
-      | Value.vPrimTy (.unit) => #[]
-      | other => #[convertValueTypeWithMapping other ctx]
+    let isUnit : Bool :=
+      match fieldTy with
+      | Value.vDataType uid _ => ctx.primTypes.get? uid == some .unit
+      | _ => false
+    let fields :=
+      if isUnit then #[]
+      else #[convertValueTypeWithMapping fieldTy ctx]
     extractRowVariantsWithMapping tail ctx (idx + 1) (acc.push (idx, fields))
   | _ => acc
 
@@ -557,8 +560,6 @@ partial def extractRowFieldsForStruct (row : Value) (ctx : TypeConvCtx n)
 /-- Convert a Soma Value type to an Alloy Ty -/
 partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty n :=
   match val with
-  | Value.vPrimTy prim => convertPrimToAlloyTy prim [] ctx
-
   | Value.vPi _qty _binder name dom cod =>
     let domTy := convertValueTypeWithMapping dom ctx
     let codTy := match cod with

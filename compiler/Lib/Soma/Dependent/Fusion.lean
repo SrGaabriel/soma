@@ -36,6 +36,14 @@ structure ListCtorInfo where
   nilTag   : Nat
   listTyId : Unique
 
+/-- Resolved wired `Bool` constructor info -/
+structure BoolCtorInfo where
+  trueName  : QualifiedName
+  trueTag   : Nat
+  falseName : QualifiedName
+  falseTag  : Nat
+  boolTyId  : Unique
+
 /-- Fusion context -/
 structure FusionCtx where
   /-- Map from wired-in Unique → FusionRole -/
@@ -52,6 +60,10 @@ structure FusionCtx where
   mulConst : Option Expr := none
   /-- List constructor info for cross-producer fusion (Cons, Nil, List type) -/
   listCtors : Option ListCtorInfo := none
+  /-- The wired-in `Int` type -/
+  intTyExpr : Option Expr := none
+  /-- The wired-in `Bool` constructor info -/
+  boolCtors : Option BoolCtorInfo := none
 
 /-- Resolve the fusion role of a `.const` expression via wired-in Uniques -/
 private def constFusionRole (ctx : FusionCtx) : Expr → Option FusionRole
@@ -97,7 +109,6 @@ def buildFusionCtx
       infos.foldl (fun m info => m.insert info.name.id role) acc
   let isInt32Ty (v : Soma.Core.Value) : Bool :=
     match v with
-    | .vPrimTy .int => true
     | .vDataType uid _ =>
       match uniqueToRole.get? uid with
       | some r => Soma.Dependent.WiredRole.primType? r == some PrimType.int
@@ -131,8 +142,19 @@ def buildFusionCtx
     pure { consName := consInfo.name, consTag := consDef.ctorTag,
            nilName := nilInfo.name, nilTag := nilDef.ctorTag,
            listTyId := listInfo.name.id }
+  let intTyExpr : Option Expr :=
+    globals.wiredIn.getUnique? .typeInt |>.map fun info =>
+      Expr.dataTy info.name.id #[]
+  let boolCtors : Option BoolCtorInfo := do
+    let boolInfo ← globals.wiredIn.getUnique? .typeBool
+    let indMeta  ← globals.lookupInductive boolInfo.name
+    let trueCtor  ← indMeta.ctors.find? (fun c => c.simpleName == "True")
+    let falseCtor ← indMeta.ctors.find? (fun c => c.simpleName == "False")
+    pure { trueName := trueCtor.name, trueTag := trueCtor.tag,
+           falseName := falseCtor.name, falseTag := falseCtor.tag,
+           boolTyId := boolInfo.name.id }
   return { roles, consumerBodies := bodies, foldlConst, reverseConst,
-           addConst, mulConst, listCtors }
+           addConst, mulConst, listCtors, intTyExpr, boolCtors }
 
 /-- Check if an expression is a known list producer call (map, filter) -/
 private def isProducerCall (ctx : FusionCtx) (e : Expr) : Bool :=
@@ -192,6 +214,22 @@ private def mkCons (lci : ListCtorInfo) (elemTy x acc : Expr) : Expr :=
 /-- Helper: build `Nil` as `construct nilName nilTag #[] (dataTy listTyId [elemTy])` -/
 private def mkNil (lci : ListCtorInfo) (elemTy : Expr) : Expr :=
   .construct lci.nilName lci.nilTag #[] (.dataTy lci.listTyId #[elemTy])
+
+/-- Resolve the wired `Int` type as a Core Expr for accumulator annotations -/
+private def fusionIntTyExpr (ctx : FusionCtx) : Expr :=
+  match ctx.intTyExpr with
+  | some e => e
+  | none   => dummyTy
+
+/-- Build the wired `Bool` Core Expr type form -/
+private def fusionBoolTyExpr (bci : BoolCtorInfo) : Expr :=
+  .dataTy bci.boolTyId #[]
+
+/-- Synthesize a literal Boolean Core term as the wired `Bool` constructor application -/
+private def mkBoolLit (bci : BoolCtorInfo) (b : Bool) : Expr :=
+  let (name, tag) := if b then (bci.trueName, bci.trueTag)
+                          else (bci.falseName, bci.falseTag)
+  .construct name tag #[] (fusionBoolTyExpr bci)
 
 mutual
 
@@ -356,6 +394,7 @@ private partial def fuseNamedConsumerDirect
     | _ => (none, dummyTy)
   match opConst?, ctx.foldlConst with
   | some opConst, some foldlConst =>
+    let intTy := fusionIntTyExpr ctx
     let (innerHead, innerArgs) := listArg.collectAppSpine
     let (innerTyArgs, innerValArgs) := splitTypeValueArgs innerArgs
     match constFusionRole ctx innerHead with
@@ -366,12 +405,12 @@ private partial def fuseNamedConsumerDirect
         let xs := innerValArgs[1]!
         let f' := f.shiftUp 2
         -- For sum (map @A @B f xs): acc : B (= Int), x : A (map input type)
-        let accTy := Expr.primTy .int
-        let elemTy := if innerTyArgs.size >= 1 then innerTyArgs[0]! else Expr.primTy .int
+        let accTy := intTy
+        let elemTy := if innerTyArgs.size >= 1 then innerTyArgs[0]! else intTy
         let fusedG := Expr.lam .explicit "acc" accTy
           (.lam .explicit "x" elemTy
             (.app (.app opConst (.bvar 1)) (.app f' (.bvar 0))))
-        let foldlTyArgs := #[elemTy, Expr.primTy .int]
+        let foldlTyArgs := #[elemTy, intTy]
         some (Expr.rebuildAppSpine foldlConst (foldlTyArgs ++ #[fusedG, identity, xs]))
     | some .filter =>
       if innerValArgs.size != 2 then none
@@ -380,14 +419,14 @@ private partial def fuseNamedConsumerDirect
         let xs := innerValArgs[1]!
         let p' := p.shiftUp 2
         -- For sum (filter @A p xs): acc : Int, x : A (element type)
-        let accTy := Expr.primTy .int
-        let elemTy := if innerTyArgs.size >= 1 then innerTyArgs[0]! else Expr.primTy .int
+        let accTy := intTy
+        let elemTy := if innerTyArgs.size >= 1 then innerTyArgs[0]! else intTy
         let fusedG := Expr.lam .explicit "acc" accTy
           (.lam .explicit "x" elemTy
             (.if_ (.app p' (.bvar 0))
               (.app (.app opConst (.bvar 1)) (.bvar 0))
               (.bvar 1)))
-        let foldlTyArgs := #[elemTy, Expr.primTy .int]
+        let foldlTyArgs := #[elemTy, intTy]
         some (Expr.rebuildAppSpine foldlConst (foldlTyArgs ++ #[fusedG, identity, xs]))
     | _ => none
   | _, _ => none
@@ -413,17 +452,18 @@ private partial def fuseLengthWithProducer
       -- length (filter p xs) → foldl (λ acc x → if p x then acc+1 else acc) 0 xs
       match ctx.foldlConst, ctx.addConst with
       | some foldlConst, some addConst =>
+        let intTy := fusionIntTyExpr ctx
         let p := innerValArgs[0]!
         let xs := innerValArgs[1]!
         let p' := p.shiftUp 2
-        let accTy := Expr.primTy .int
-        let elemTy := if innerTyArgs.size >= 1 then innerTyArgs[0]! else Expr.primTy .int
+        let accTy := intTy
+        let elemTy := if innerTyArgs.size >= 1 then innerTyArgs[0]! else intTy
         let countG := Expr.lam .explicit "acc" accTy
           (.lam .explicit "x" elemTy
             (.if_ (.app p' (.bvar 0))
               (.app (.app addConst (.bvar 1)) (.lit (.int 1)))
               (.bvar 1)))
-        let foldlTyArgs := #[elemTy, Expr.primTy .int]
+        let foldlTyArgs := #[elemTy, intTy]
         some (Expr.rebuildAppSpine foldlConst (foldlTyArgs ++ #[countG, .lit (.int 0), xs]))
       | _, _ => none
   | _ => none
@@ -488,17 +528,20 @@ private partial def fuseFilterWithProducer
   | some .filter =>
     if innerValArgs.size != 2 then none
     else
-      let q := innerValArgs[0]!
-      let xs := innerValArgs[1]!
-      let p' := p.shiftUp 1
-      let q' := q.shiftUp 1
-      -- x has element type a (same for both filters)
-      let elemTy := outerTyArgs[0]?.getD dummyTy
-      let newP := Expr.lam .explicit "x" elemTy
-        (.if_ (.app q' (.bvar 0))
-              (.app p' (.bvar 0))
-              (.lit (.bool false)))
-      some (Expr.rebuildAppSpine outerHead (outerTyArgs ++ #[newP, xs]))
+      match ctx.boolCtors with
+      | none => none
+      | some bci =>
+        let q := innerValArgs[0]!
+        let xs := innerValArgs[1]!
+        let p' := p.shiftUp 1
+        let q' := q.shiftUp 1
+        -- x has element type a (same for both filters)
+        let elemTy := outerTyArgs[0]?.getD dummyTy
+        let newP := Expr.lam .explicit "x" elemTy
+          (.if_ (.app q' (.bvar 0))
+                (.app p' (.bvar 0))
+                (mkBoolLit bci false))
+        some (Expr.rebuildAppSpine outerHead (outerTyArgs ++ #[newP, xs]))
   | some .map =>
     -- filter p (map f xs): eliminate intermediate mapped list
     -- → reverse (foldl (λ acc x → let y = f x in if p y then Cons y acc else acc) Nil xs)
@@ -556,29 +599,32 @@ private partial def fusePredicateWithProducer
   | some .filter =>
     if innerValArgs.size != 2 then none
     else
-      let p := innerValArgs[0]!
-      let xs := innerValArgs[1]!
-      let pred' := pred.shiftUp 1
-      let p' := p.shiftUp 1
-      -- x has element type a (filter preserves it)
-      let elemTy := outerTyArgs[0]?.getD dummyTy
-      -- Determine the role to pick the right combinator
-      let role := constFusionRole ctx outerHead
-      let newPred := match role with
-        | some .any =>
-          -- any pred (filter p xs) → any (λ x → if p x then pred x else false) xs
-          Expr.lam .explicit "x" elemTy
-            (.if_ (.app p' (.bvar 0))
-                  (.app pred' (.bvar 0))
-                  (.lit (.bool false)))
-        | _ =>
-          -- all pred (filter p xs) → all (λ x → if p x then pred x else true) xs
-          Expr.lam .explicit "x" elemTy
-            (.if_ (.app p' (.bvar 0))
-                  (.app pred' (.bvar 0))
-                  (.lit (.bool true)))
-      -- filter preserves element type, so keep outerTyArgs
-      some (Expr.rebuildAppSpine outerHead (outerTyArgs ++ #[newPred, xs]))
+      match ctx.boolCtors with
+      | none => none
+      | some bci =>
+        let p := innerValArgs[0]!
+        let xs := innerValArgs[1]!
+        let pred' := pred.shiftUp 1
+        let p' := p.shiftUp 1
+        -- x has element type a (filter preserves it)
+        let elemTy := outerTyArgs[0]?.getD dummyTy
+        -- Determine the role to pick the right combinator
+        let role := constFusionRole ctx outerHead
+        let newPred := match role with
+          | some .any =>
+            -- any pred (filter p xs) → any (λ x → if p x then pred x else false) xs
+            Expr.lam .explicit "x" elemTy
+              (.if_ (.app p' (.bvar 0))
+                    (.app pred' (.bvar 0))
+                    (mkBoolLit bci false))
+          | _ =>
+            -- all pred (filter p xs) → all (λ x → if p x then pred x else true) xs
+            Expr.lam .explicit "x" elemTy
+              (.if_ (.app p' (.bvar 0))
+                    (.app pred' (.bvar 0))
+                    (mkBoolLit bci true))
+        -- filter preserves element type, so keep outerTyArgs
+        some (Expr.rebuildAppSpine outerHead (outerTyArgs ++ #[newPred, xs]))
   | _ => none
 
 end

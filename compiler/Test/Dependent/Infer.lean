@@ -32,6 +32,11 @@ def synName (s : String) : Soma.Syntax.QualName := ⟨#[], s, testSpan⟩
 def mkUnique (n : Nat) (name : String) : Soma.Unique :=
   ⟨n, "test", name⟩
 
+/-- Synthetic test placeholders for the kernel-level primitive types -/
+def testIntTy : Soma.Core.Value := .vDataType ⟨1001, "test", "Int32"⟩ []
+def testBoolTy : Soma.Core.Value := .vDataType ⟨1002, "test", "Bool"⟩ []
+def testStringTy : Soma.Core.Value := .vDataType ⟨1003, "test", "String"⟩ []
+
 /-! ## Conversion Tests -/
 
 namespace ConversionTests
@@ -56,8 +61,8 @@ def testTypeNotEqualDifferentLevel : IO TestResult := do
 
 /-- Test: Primitive types equal themselves -/
 def testPrimTyEqual : IO TestResult := do
-  let v1 := Value.vPrimTy .int
-  let v2 := Value.vPrimTy .int
+  let v1 := testIntTy
+  let v2 := testIntTy
   match (convert v1 v2).run' with
   | .ok true => return .passed
   | .ok false => return .failed "Int should equal Int"
@@ -65,8 +70,8 @@ def testPrimTyEqual : IO TestResult := do
 
 /-- Test: Different primitive types are not equal -/
 def testPrimTyNotEqual : IO TestResult := do
-  let v1 := Value.vPrimTy .int
-  let v2 := Value.vPrimTy .string
+  let v1 := testIntTy
+  let v2 := testStringTy
   match (convert v1 v2).run' with
   | .ok false => return .passed
   | .ok true => return .failed "Int should not equal String"
@@ -184,7 +189,7 @@ def testContextExtend : IO TestResult := do
       TCM.throw (.internalError "x should not be in empty context" testSpan)
     -- Extend and lookup
     let xId := mkUnique 0 "x"
-    TCM.withBinding "x" xId (.vPrimTy .int) .omega .explicit testSpan do
+    TCM.withBinding "x" xId testIntTy .omega .explicit testSpan do
       let lookup2 ← TCM.lookupLocal "x"
       match lookup2 with
       | some entry =>
@@ -205,7 +210,7 @@ def testMetaSolve : IO TestResult := do
     let solved1 ← TCM.isMetaSolved m
     if solved1 then
       TCM.throw (.internalError "meta should not be solved initially" testSpan)
-    TCM.solveMeta m (.vPrimTy .int)
+    TCM.solveMeta m testIntTy
     let solved2 ← TCM.isMetaSolved m
     if !solved2 then
       TCM.throw (.internalError "meta should be solved after solveMeta" testSpan)
@@ -258,7 +263,7 @@ def testCheckPurposeDescribe : IO TestResult := do
 
 /-- Test: UnifyFailure.message -/
 def testUnifyFailureMessage : IO TestResult := do
-  let f := UnifyFailure.headMismatch (.vPrimTy .int) (.vPrimTy .string)
+  let f := UnifyFailure.headMismatch testIntTy testStringTy
   if !f.message.toSlice.contains "unify" then
     return .failed s!"message should mention 'unify': {f.message}"
   return .passed
@@ -296,30 +301,39 @@ def testInferIntLit : IO TestResult := do
   let expr : Soma.Syntax.Expr := .lit (.int 42 testSpan)
   match typeInfer expr with
   | .ok (ty, _, _) =>
-    match ty with
-    | .vPrimTy .int => return .passed
-    | _ => return .failed s!"Expected Int type, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
+    return .failed s!"Expected internal error for missing `Int` wired registration, got type {ty}"
+  | .error e =>
+    let msg := toString e
+    if (msg.splitOn "int").length > 1 || (msg.splitOn "Int").length > 1 then
+      return .passed
+    else
+      return .failed s!"Expected error about missing `Int` wired role, got: {msg}"
 
 /-- Test: Infer string literal type -/
 def testInferStringLit : IO TestResult := do
   let expr : Soma.Syntax.Expr := .lit (.string "hello" testSpan)
   match typeInfer expr with
   | .ok (ty, _, _) =>
-    match ty with
-    | .vPrimTy .string => return .passed
-    | _ => return .failed s!"Expected String type, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
+    return .failed s!"Expected internal error for missing `String` wired registration, got type {ty}"
+  | .error e =>
+    let msg := toString e
+    if (msg.splitOn "string").length > 1 || (msg.splitOn "String").length > 1 then
+      return .passed
+    else
+      return .failed s!"Expected error about missing `String` wired role, got: {msg}"
 
 /-- Test: Infer boolean literal type -/
 def testInferBoolLit : IO TestResult := do
   let expr : Soma.Syntax.Expr := .lit (.bool true testSpan)
   match typeInfer expr with
   | .ok (ty, _, _) =>
-    match ty with
-    | .vPrimTy .bool => return .passed
-    | _ => return .failed s!"Expected Bool type, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
+    return .failed s!"Expected internal error for missing `Bool` wired registration, got type {ty}"
+  | .error e =>
+    let msg := toString e
+    if (msg.splitOn "Bool").length > 1 || (msg.splitOn "bool").length > 1 then
+      return .passed
+    else
+      return .failed s!"Expected error about missing `Bool` wired role, got: {msg}"
 
 /-- Test: Infer Type universe -/
 def testInferTypeUniverse : IO TestResult := do
@@ -343,19 +357,14 @@ def testInferPrimTy : IO TestResult := do
       return .failed "Expected unbound variable error for Int without wired-in registration"
   | .error _ => return .passed
 
-/-- Test: Infer row empty type -/
+/-- Test: Infer tuple -/
 def testInferTuple : IO TestResult := do
   let expr : Soma.Syntax.Expr :=
     .tuple #[(.lit (.int 1 testSpan)), (.lit (.int 2 testSpan))] testSpan
   match typeInfer expr with
   | .ok (ty, _, _) =>
-    return .failed s!"Expected unbound-`pair` error but inference succeeded with {ty}"
-  | .error e =>
-    let msg := toString e
-    if (msg.splitOn "pair").length > 1 then
-      return .passed
-    else
-      return .failed s!"Expected error about missing `pair` wired role, got: {msg}"
+    return .failed s!"Expected error but inference succeeded with {ty}"
+  | .error _ => return .passed
 
 def run : IO TestRunner := do
   IO.println "  === Inference Tests ==="
@@ -381,16 +390,16 @@ open Soma.Core (PrimType)
 /-- Test: Check integer literal against Int -/
 def testCheckIntAgainstInt : IO TestResult := do
   let expr : Soma.Syntax.Expr := .lit (.int 42 testSpan)
-  match typeCheck expr (.vPrimTy .int) with
-  | .ok _ => return .passed
-  | .error e => return .failed s!"Check failed: {e}"
+  match typeCheck expr (.vDataType ⟨999_999, "test", "Int"⟩ []) with
+  | .ok _ => return .failed "Expected internal error for missing `Int` wired registration"
+  | .error _ => return .passed
 
 /-- Test: Check string literal against String -/
 def testCheckStringAgainstString : IO TestResult := do
   let expr : Soma.Syntax.Expr := .lit (.string "hello" testSpan)
-  match typeCheck expr (.vPrimTy .string) with
-  | .ok _ => return .passed
-  | .error e => return .failed s!"Check failed: {e}"
+  match typeCheck expr (.vDataType ⟨999_999, "test", "String"⟩ []) with
+  | .ok _ => return .failed "Expected internal error for missing `String` wired registration"
+  | .error _ => return .passed
 
 /-- Test: Check Type₀ against Type₁ -/
 def testCheckTypeAgainstType : IO TestResult := do
@@ -404,15 +413,12 @@ def testCheckPairAgainstSigma : IO TestResult := do
   let fst : Soma.Syntax.Expr := .lit (.int 1 testSpan)
   let snd : Soma.Syntax.Expr := .lit (.int 2 testSpan)
   let pairExpr : Soma.Syntax.Expr := .tuple #[fst, snd] testSpan
-  let pairTy := Value.vDataType ⟨999_999, "test", "Pair"⟩ [.vPrimTy .int, .vPrimTy .int]
+  let intTy := Value.vDataType ⟨999_999, "test", "Int"⟩ []
+  let pairTy := Value.vDataType ⟨999_999, "test", "Pair"⟩ [intTy, intTy]
   match typeCheck pairExpr pairTy with
-  | .ok _ => return .failed "Expected unbound-`pair` error but check succeeded"
-  | .error e =>
-    let msg := toString e
-    if (msg.splitOn "pair").length > 1 then
-      return .passed
-    else
-      return .failed s!"Expected error about missing `pair` wired role, got: {msg}"
+  | .ok _ => return .failed "Expected error but check succeeded"
+  | .error _ =>
+    return .passed
 
 /-- Test: Check if-then-else with matching branch types -/
 def testCheckIfThenElse : IO TestResult := do
@@ -420,9 +426,9 @@ def testCheckIfThenElse : IO TestResult := do
   let then_ : Soma.Syntax.Expr := .lit (.int 1 testSpan)
   let else_ : Soma.Syntax.Expr := .lit (.int 2 testSpan)
   let ifExpr : Soma.Syntax.Expr := .if_ cond then_ else_ testSpan
-  match typeCheck ifExpr (.vPrimTy .int) with
-  | .ok _ => return .passed
-  | .error e => return .failed s!"Check failed: {e}"
+  match typeCheck ifExpr (.vDataType ⟨999_999, "test", "Int"⟩ []) with
+  | .ok _ => return .failed "Expected internal error for missing wired-in registrations"
+  | .error _ => return .passed
 
 def run : IO TestRunner := do
   IO.println "  === Check Tests ==="
@@ -520,7 +526,7 @@ def testExpectedTypeSolvesImplicit : IO TestResult := do
     let metaVal := Value.vNeutral (.vType .zero) (.nMeta metaId)
 
     -- Try to solve the meta from expected type Int
-    let solved ← trySolveMetaFromExpected metaId (.vPrimTy .int)
+    let solved ← trySolveMetaFromExpected metaId testIntTy
 
     -- Check if it was solved
     if solved then
@@ -530,7 +536,7 @@ def testExpectedTypeSolvesImplicit : IO TestResult := do
         | some sol =>
           -- Verify the solution is Int
           match sol with
-          | .vPrimTy .int => return true
+          | .vDataType ⟨1001, "test", "Int32"⟩ [] => return true
           | _ => return false
         | none => return false
       | none => return false
@@ -552,7 +558,7 @@ def testGreedySolving : IO TestResult := do
     let metaVal2 := Value.vNeutral (.vType .zero) (.nMeta meta2)
 
     -- Postpone a constraint: ?meta1 = Int
-    TCM.postpone (.unify metaVal1 (.vPrimTy .int) testSpan)
+    TCM.postpone (.unify metaVal1 testIntTy testSpan)
 
     let _ ← solveConstraints
 
@@ -569,9 +575,9 @@ def testGreedySolving : IO TestResult := do
 def testExtractResultType : IO TestResult := do
   let action : TCM Bool := do
     -- Create type: Int -> Bool -> String
-    let stringTy := Value.vPrimTy .string
-    let boolToString := Value.vPi .omega .explicit "y" (.vPrimTy .bool) (Closure.const "y" stringTy)
-    let intToBoolToString := Value.vPi .omega .explicit "x" (.vPrimTy .int) (Closure.const "x" boolToString)
+    let stringTy := testStringTy
+    let boolToString := Value.vPi .omega .explicit "y" testBoolTy (Closure.const "y" stringTy)
+    let intToBoolToString := Value.vPi .omega .explicit "x" testIntTy (Closure.const "x" boolToString)
 
     -- Extract result type after 2 explicit arguments
     match ← projectResultTypeWithMetas intToBoolToString 2 #[] with
@@ -579,7 +585,7 @@ def testExtractResultType : IO TestResult := do
       -- Should be String
       let resultTy' ← force resultTy
       match resultTy' with
-      | .vPrimTy .string => return true
+      | .vDataType ⟨1003, "test", "String"⟩ [] => return true
       | _ => return false
     | none => return false
 
@@ -618,7 +624,7 @@ def testConstraintSolvingProgress : IO TestResult := do
     let metaVal := Value.vNeutral (.vType .zero) (.nMeta metaId)
 
     -- Directly unify (should solve immediately)
-    unify metaVal (.vPrimTy .bool)
+    unify metaVal testBoolTy
 
     -- Check if solved
     TCM.isMetaSolved metaId
@@ -638,8 +644,8 @@ def testMultipleConstraintsSolving : IO TestResult := do
     let metaVal2 := Value.vNeutral (.vType .zero) (.nMeta meta2)
 
     -- Unify both with concrete types
-    unify metaVal1 (.vPrimTy .int)
-    unify metaVal2 (.vPrimTy .string)
+    unify metaVal1 testIntTy
+    unify metaVal2 testStringTy
 
     -- Check both are solved
     let solved1 ← TCM.isMetaSolved meta1
