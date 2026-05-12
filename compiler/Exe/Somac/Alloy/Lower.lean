@@ -646,21 +646,18 @@ end
 def computeStringTy (wiredIn : Soma.Dependent.WiredIn)
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta)
     (primTypes : PrimTypeRegistry)
-    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : ClosedTy :=
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Except String ClosedTy :=
   match wiredIn.getUnique? .typeString with
   | none =>
-    panic! "Soma compiler bug: missing wired-in `type.string`. \
-            Declare `@[wired_in \"type.string\"] record String` in the base package."
+    .error "missing wired-in `type.string`: declare `@[wired_in \"type.string\"] record String` in the base package (or import it)"
   | some info =>
     let qn := info.name
     match inductives.get? qn with
     | none =>
-      panic! s!"Soma compiler bug: wired-in `type.string` ({qn.display}) \
-                is not registered in the inductive metadata."
+      .error s!"wired-in `type.string` ({qn.display}) is not registered in the inductive metadata"
     | some ind =>
       if ind.ctors.size != 1 then
-        panic! s!"Soma compiler bug: wired-in `type.string` ({qn.display}) \
-                  must have exactly one constructor, found {ind.ctors.size}."
+        .error s!"wired-in `type.string` ({qn.display}) must have exactly one constructor, found {ind.ctors.size}"
       else
         let ctor := ind.ctors[0]!
         -- A placeholder `stringTy` is fed back into the recursive
@@ -678,9 +675,9 @@ def computeStringTy (wiredIn : Soma.Dependent.WiredIn)
           let name := if h : i < fieldNames.size then fieldNames[i] else s!"field{i}"
           (name, ty)
         let kept := namedFields.filter fun (_, ty) => !Ty.isZeroWidth ty
-        if kept.isEmpty then .prim .unit
-        else if kept.size == 1 then kept[0]!.2
-        else .struct kept
+        if kept.isEmpty then .ok (.prim .unit)
+        else if kept.size == 1 then .ok kept[0]!.2
+        else .ok (.struct kept)
 
 
 mutual

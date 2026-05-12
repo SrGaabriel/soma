@@ -20,11 +20,14 @@ structure MetadataResult where
   success : Bool
   diagnostics : Array Diagnostic
   metadata : Option ProjectMetadata
+  sourceFiles : Soma.Syntax.SourceFileMap := Soma.Syntax.SourceFileMap.empty
 
 namespace MetadataResult
 
-def failed (diags : Array Diagnostic) : MetadataResult :=
-  { success := false, diagnostics := diags, metadata := none }
+def failed (diags : Array Diagnostic)
+    (sourceFiles : Soma.Syntax.SourceFileMap := Soma.Syntax.SourceFileMap.empty)
+    : MetadataResult :=
+  { success := false, diagnostics := diags, metadata := none, sourceFiles }
 
 def succeeded (pm : ProjectMetadata) : MetadataResult :=
   { success := true, diagnostics := #[], metadata := some pm }
@@ -55,6 +58,6 @@ def metadata (opts : MetadataOptions) (loadDeps : Array (String × System.FilePa
     }
     pure (MetadataResult.succeeded pm)
   else
-    pure (MetadataResult.failed result.diagnostics)
+    pure (MetadataResult.failed result.diagnostics result.sourceFiles)
 
 end Somac.Build.Metadata

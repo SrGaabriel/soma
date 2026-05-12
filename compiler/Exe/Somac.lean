@@ -56,11 +56,8 @@ def runLex (p : Parsed) : IO UInt32 := do
   -- Lex it
   let (tokens, diags) := Syntax.lexCode sourceFile
 
-  -- Print diagnostics if any
   if diags.size > 0 then
-    IO.eprintln s!"Found {diags.size} diagnostic(s):"
-    for diag in diags do
-      IO.eprintln s!"  {diag.severity}: {diag.message}"
+    Soma.Logging.Error.printDiagnostics diags sourceFile
 
   -- Print tokens
   IO.println s!"Lexed {tokens.size} tokens from {input}:"
@@ -194,8 +191,7 @@ def runMetadata (p : Parsed) : IO UInt32 := do
       IO.eprintln "Internal error: metadata generation succeeded but no metadata produced"
       return 1
   else
-    for diag in result.diagnostics do
-      IO.eprintln s!"{diag.severity}: {diag.message}"
+    Soma.Logging.Error.printDiagnosticsWithMap result.diagnostics result.sourceFiles
     return 1
 
 /-- Handler for the `llvm` command -/
@@ -254,7 +250,12 @@ def runLLVM (p : Parsed) : IO UInt32 := do
 
   -- Phase 7: Lower to Alloy MIR
   let primTypes := Somac.Alloy.Lower.buildPrimTypeRegistry tcResult.globals.wiredIn
-  let stringTy := Somac.Alloy.Lower.computeStringTy tcResult.globals.wiredIn tcResult.globals.inductives primTypes
+  let stringTy ← match Somac.Alloy.Lower.computeStringTy tcResult.globals.wiredIn tcResult.globals.inductives primTypes with
+    | .ok ty => pure ty
+    | .error msg =>
+      let diag : Soma.Syntax.Diagnostic := Soma.Syntax.Diagnostic.error msg Soma.Syntax.Span.uninhabited
+      Soma.Logging.Error.printDiagnostic diag parseRes.sourceFile
+      return 1
   let alloyModule := Somac.Alloy.Lower.lower graph moduleName primTypes stringTy tcResult.globals.inductives tcResult.globals.intrinsics
 
   -- Phase 8: Monomorphize the Alloy module
@@ -326,7 +327,12 @@ def runAlloy (p : Parsed) : IO UInt32 := do
 
   -- Phase 7: Lower to Alloy MIR
   let primTypes := Somac.Alloy.Lower.buildPrimTypeRegistry tcResult.globals.wiredIn
-  let stringTy := Somac.Alloy.Lower.computeStringTy tcResult.globals.wiredIn tcResult.globals.inductives primTypes
+  let stringTy ← match Somac.Alloy.Lower.computeStringTy tcResult.globals.wiredIn tcResult.globals.inductives primTypes with
+    | .ok ty => pure ty
+    | .error msg =>
+      let diag : Soma.Syntax.Diagnostic := Soma.Syntax.Diagnostic.error msg Soma.Syntax.Span.uninhabited
+      Soma.Logging.Error.printDiagnostic diag parseRes.sourceFile
+      return 1
   let alloyModule := Somac.Alloy.Lower.lower graph moduleName primTypes stringTy tcResult.globals.inductives tcResult.globals.intrinsics
 
   IO.println (Somac.Alloy.Pretty.pp alloyModule)
@@ -445,12 +451,7 @@ def runBuild (p : Parsed) : IO UInt32 := do
 
   let result ← Somac.Build.build opts
 
-  if result.success then
-    return 0
-  else
-    for diag in result.diagnostics do
-      IO.eprintln s!"{diag.severity}: {diag.message}"
-    return 1
+  if result.success then return 0 else return 1
 
 /-- The `lex` subcommand -/
 def lexCmd : Cmd := `[Cli|

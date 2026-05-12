@@ -990,7 +990,9 @@ def parseSourceFile : ParserM GreenNode := do
           break
         else if tok.kind == some .layoutEnd || tok.kind == some .layoutSep || tok.kind == some .layoutStart then advance
         else
-          recordError s!"unexpected token: {tok.kind.map (·.describe) |>.getD "unknown"}"
+          let kindDesc := tok.kind.map (·.describe) |>.getD "unknown"
+          let msg := s!"expected a top-level declaration, got {kindDesc}"
+          recordError msg
           let skipped ← skipToSync
           if !skipped.isEmpty then
             decls := decls.push (GreenNode.mkError "unexpected tokens" skipped)

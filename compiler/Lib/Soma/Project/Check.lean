@@ -1372,19 +1372,21 @@ def checkModulesInOrder
   (allDiags, results, finalSupply)
 
 /-- Parse a single source file into a ModuleInfo -/
-def parseModuleFile (moduleName : String) (path : System.FilePath) : IO (Except Diagnostics ModuleInfo) := do
+def parseModuleFile (moduleName : String) (path : System.FilePath)
+    : IO (SourceFile × Except Diagnostics ModuleInfo) := do
   let content ← IO.FS.readFile path
   let parseRes := parse path.toString content
+  let sourceFile := parseRes.sourceFile
   if parseRes.diagnostics.hasErrors then
-    pure (.error parseRes.diagnostics)
+    pure (sourceFile, .error parseRes.diagnostics)
   else
     let lowerRes := lower parseRes.tree moduleName
     let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics
     if allDiags.hasErrors then
-      pure (.error allDiags)
+      pure (sourceFile, .error allDiags)
     else
       let modName := ModuleName.fromString moduleName
-      pure (.ok {
+      pure (sourceFile, .ok {
         name := modName
         path := path
         content := content
@@ -1400,10 +1402,10 @@ def parseModuleFiles (modules : Array (String × System.FilePath)) : IO (Diagnos
   let mut allDiags : Diagnostics := #[]
 
   for (name, path) in modules do
-    match ← parseModuleFile name path with
-    | .ok info =>
-      graph := graph.insert name info
-      sourceMap := sourceMap.insert info.sourceFile
+    let (sourceFile, res) ← parseModuleFile name path
+    sourceMap := sourceMap.insert sourceFile
+    match res with
+    | .ok info => graph := graph.insert name info
     | .error diags => allDiags := allDiags ++ diags
 
   pure (allDiags, graph, sourceMap)
@@ -1416,9 +1418,10 @@ def checkSingleFile
   let path := config.input
   let name := config.name.getD (path.fileStem.getD "Main")
 
-  match ← parseModuleFile name path with
+  let (sourceFile, parseRes) ← parseModuleFile name path
+  match parseRes with
   | .error diags =>
-    pure (ProjectResult.failed name diags)
+    pure (ProjectResult.failed name diags (SourceFileMap.fromSingle sourceFile))
 
   | .ok info =>
     let sourceMap := SourceFileMap.fromSingle info.sourceFile

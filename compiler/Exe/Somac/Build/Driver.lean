@@ -21,11 +21,14 @@ structure BuildResult where
   success : Bool
   diagnostics : Array Diagnostic
   outputPath : Option System.FilePath := none
+  sourceFiles : Soma.Syntax.SourceFileMap := Soma.Syntax.SourceFileMap.empty
 
 namespace BuildResult
 
-def failed (diags : Array Diagnostic) : BuildResult :=
-  { success := false, diagnostics := diags }
+def failed (diags : Array Diagnostic)
+    (sourceFiles : Soma.Syntax.SourceFileMap := Soma.Syntax.SourceFileMap.empty)
+    : BuildResult :=
+  { success := false, diagnostics := diags, sourceFiles }
 
 def succeeded (output : System.FilePath) : BuildResult :=
   { success := true, diagnostics := #[], outputPath := some output }
@@ -146,7 +149,7 @@ def build (opts : BuildOptions) : IO BuildResult := do
   if !result.success then
     IO.eprintln ""
     IO.eprintln (Error.renderSummary result.diagnostics)
-    pure (BuildResult.failed result.diagnostics)
+    pure (BuildResult.failed result.diagnostics result.sourceFiles)
   else
     let dependencyAlloyModules ← if opts.deps.isEmpty then
       pure #[]
@@ -163,22 +166,31 @@ def build (opts : BuildOptions) : IO BuildResult := do
     let outputPath := generateOutputPath opts result.packageName
     let extConstructors : Std.HashMap String Nat := result.constructors
 
+    let codegenError (e : IO.Error) : IO BuildResult := do
+      let diag : Diagnostic := Diagnostic.error e.toString Span.uninhabited
+      Error.printDiagnostic diag (Soma.Syntax.SourceFile.create ⟨0⟩ "" "")
+      IO.eprintln ""
+      IO.eprintln (Error.renderSummary #[diag])
+      pure (BuildResult.failed #[diag] result.sourceFiles)
+
     if opts.lib then
-      let compileResult ← compileLibrary
-        result.packageName
-        result.checkedModules
-        extConstructors
-        result.globals
-        dependencyAlloyModules
-        result.abbrevEnv
-      let libPath := outputPath.withExtension "toria"
-      match ← generateLibrary opts result compileResult libPath with
-      | .ok () =>
-        IO.println s!"Successfully built library with {result.checkedModules.size} module(s)"
-        pure (BuildResult.succeeded libPath)
-      | .error e =>
-        IO.eprintln s!"Library packaging failed: {e}"
-        pure (BuildResult.failed #[])
+      try
+        let compileResult ← compileLibrary
+          result.packageName
+          result.checkedModules
+          extConstructors
+          result.globals
+          dependencyAlloyModules
+          result.abbrevEnv
+        let libPath := outputPath.withExtension "toria"
+        match ← generateLibrary opts result compileResult libPath with
+        | .ok () =>
+          IO.println s!"Successfully built library with {result.checkedModules.size} module(s)"
+          pure (BuildResult.succeeded libPath)
+        | .error e =>
+          IO.eprintln s!"Library packaging failed: {e}"
+          pure (BuildResult.failed #[])
+      catch e => codegenError e
     else
       let targetSpec ← do
         let base ← Soma.Driver.TargetSpec.resolve opts.target
@@ -190,29 +202,31 @@ def build (opts : BuildOptions) : IO BuildResult := do
         else
           pure base
       let dataLayout := if targetSpec.dataLayout.isEmpty then none else some targetSpec.dataLayout
-      let compileResult ← compileModules
-        result.packageName
-        result.checkedModules
-        extConstructors
-        result.globals
-        dependencyAlloyModules
-        opts.runSomaPasses
-        (some targetSpec.llvmTarget)
-        targetSpec.os
-        (targetSpec.pointerWidth / 8)
-        dataLayout
-        result.abbrevEnv
-      match compileResult.llvmIR with
-      | some llvmIR =>
-        match ← generateOutput opts outputPath llvmIR targetSpec with
-        | .ok () =>
-          IO.println s!"Successfully compiled {result.checkedModules.size} module(s)"
-          pure (BuildResult.succeeded outputPath)
-        | .error e =>
-          IO.eprintln s!"Compilation failed: {e}"
+      try
+        let compileResult ← compileModules
+          result.packageName
+          result.checkedModules
+          extConstructors
+          result.globals
+          dependencyAlloyModules
+          opts.runSomaPasses
+          (some targetSpec.llvmTarget)
+          targetSpec.os
+          (targetSpec.pointerWidth / 8)
+          dataLayout
+          result.abbrevEnv
+        match compileResult.llvmIR with
+        | some llvmIR =>
+          match ← generateOutput opts outputPath llvmIR targetSpec with
+          | .ok () =>
+            IO.println s!"Successfully compiled {result.checkedModules.size} module(s)"
+            pure (BuildResult.succeeded outputPath)
+          | .error e =>
+            IO.eprintln s!"Compilation failed: {e}"
+            pure (BuildResult.failed #[])
+        | none =>
+          IO.eprintln "Internal error: executable build produced no LLVM IR"
           pure (BuildResult.failed #[])
-      | none =>
-        IO.eprintln "Internal error: executable build produced no LLVM IR"
-        pure (BuildResult.failed #[])
+      catch e => codegenError e
 
 end Somac.Build

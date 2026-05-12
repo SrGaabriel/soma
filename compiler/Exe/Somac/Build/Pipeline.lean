@@ -160,7 +160,9 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
   let wiredFuncs := Alloy.Lower.buildWiredFuncRegistry globals.wiredIn
-  let stringTy := Alloy.Lower.computeStringTy globals.wiredIn globals.inductives primTypes cm.abbrevEnv
+  let stringTy ← match Alloy.Lower.computeStringTy globals.wiredIn globals.inductives primTypes cm.abbrevEnv with
+    | .ok ty => pure ty
+    | .error msg => throw (IO.userError msg)
   let alloyMod := Alloy.Lower.lower g cm.name primTypes stringTy globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas)
   if (← IO.getEnv "SOMA_DUMP_ALLOY").isSome then
     IO.println s!"\n=== Alloy module for {cm.name} ==="

@@ -259,6 +259,10 @@ private def collectUniqueLines (singleLabels : Array SingleLabel) (multiSpans : 
   let all := fromSingle ++ fromMultiStart ++ fromMultiEnd ++ fromVirtual
   all.toList.eraseDups.toArray
 
+private def hasSourceLocation (d : Diagnostic) : Bool :=
+  let s := d.span
+  s.start.line > 0 || s.stop.line > 0
+
 def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) : String := Id.run do
   let mut output : Array String := #[]
   let sev := d.severity
@@ -270,6 +274,13 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
     | some c => s!"[{c}]"
     | none => ""
   output := output.push s!"{sevColor}{sevText}{codeText}{Color.reset}: {Color.bold}{d.message}{Color.reset}"
+
+  if !hasSourceLocation d then
+    for note in d.notes do
+      output := output.push s!" {Color.brightBlue}{Chars.notePrefix}{Color.reset} {Color.bold}note{Color.reset}: {note}"
+    if let some helpText := d.help then
+      output := output.push s!" {Color.green}{Chars.helpPrefix}{Color.reset} {Color.bold}help{Color.reset}: {helpText}"
+    return String.intercalate "\n" output.toList
 
   -- Location arrow
   let labels := d.labels

@@ -184,7 +184,7 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
       | .true_ => pure (.lit (.bool true span))
       | .false_ => pure (.lit (.bool false span))
       | _ =>
-          lowerError s!"unexpected token in pattern: {kind}" span
+          lowerError s!"internal: pattern lowering does not handle token kind '{kind}'" span
           pure (.wildcard span)
 
   | .node .triviaToken _ _ =>
@@ -286,7 +286,7 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
             pure (.var ⟨path, name, span⟩)
 
       | _ =>
-          lowerError s!"unexpected pattern kind: {kind}" span
+          lowerError s!"internal: pattern lowering does not handle node kind '{kind}'" span
           pure (.wildcard span)
 
   | .error message _ _ =>
@@ -405,7 +405,7 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
       | .lowerIdent => pure (.var ⟨#[], text, span⟩)
       | .upperIdent => pure (.con ⟨#[], text, span⟩)
       | _ =>
-          lowerError s!"unexpected token in type: {kind}" span
+          lowerError s!"internal: type lowering does not handle token kind '{kind}'" span
           pure (.var ⟨#[], "_error", span⟩)
 
   | .node .triviaToken _ _ => pure (.var ⟨#[], "_error", span⟩)
@@ -849,14 +849,14 @@ partial def lowerConstraint (green : GreenNode) (offset : Nat) : LowerM Constrai
           let args ← kidsWithOffsets[1:].toArray.mapM fun (c, o) => lowerTypeExpr c o
           pure ⟨className, args, span⟩
       else
-        lowerError s!"unexpected constraint node kind: {kind}" span
+        lowerError s!"internal: constraint lowering does not handle node kind '{kind}'" span
         pure ⟨⟨#[], "_error", span⟩, #[], span⟩
 
   | .token kind text =>
       if kind == .upperIdent then
         pure ⟨⟨#[], text, span⟩, #[], span⟩
       else
-        lowerError s!"unexpected token in constraint: {kind}" span
+        lowerError s!"expected a class name (uppercase identifier) in constraint, got {kind}" span
         pure ⟨⟨#[], "_error", span⟩, #[], span⟩
 
   | _ =>
@@ -1046,7 +1046,7 @@ partial def lowerExprToken (kind : TokenKind) (text : String) (span : Span) : Lo
   | .true_ => pure (.lit (.bool true span))
   | .false_ => pure (.lit (.bool false span))
   | _ =>
-      lowerError s!"unexpected token in expression: {kind}" span
+      lowerError s!"internal: expression lowering does not handle token kind '{kind}'" span
       pure (.var ⟨#[], "_error", span⟩)
 
 /-- Lower a single parameter -/
@@ -1437,7 +1437,7 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
           if kind.isType then
             lowerTypeExpr green offset
           else
-            lowerError s!"unexpected expression kind: {kind}" span
+            lowerError s!"internal: expression lowering does not handle node kind '{kind}'" span
             pure (.var ⟨#[], "_error", span⟩)
 
   | .error message _ _ =>
@@ -1971,7 +1971,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             pure (.abbrev name params ty span)
 
       | _ =>
-          lowerError s!"unexpected declaration kind: {kind}" span
+          lowerError s!"internal: declaration lowering does not handle node kind '{kind}'" span
           pure (.use false ⟨#[], "_error", span⟩ #[] span)
 
   | .error message _ _ =>
@@ -1983,7 +1983,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
       pure (.use false ⟨#[], "_error", span⟩ #[] span)
 
   | .token kind _ =>
-      lowerError s!"unexpected token at declaration level: {kind}" span
+      lowerError s!"expected a top-level declaration, got {kind}" span
       pure (.use false ⟨#[], "_error", span⟩ #[] span)
 
 /-- Lower a module from a green tree -/
