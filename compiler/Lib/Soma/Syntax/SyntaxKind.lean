@@ -236,6 +236,9 @@ def SyntaxKind.isType : SyntaxKind → Bool
   | .typePi | .typeSigma | .typeImplicit | .typePiBinder | .typeQuantity => true
   | _ => false
 
+def SyntaxKind.isTerm (k : SyntaxKind) : Bool :=
+  k.isType || k.isExpr || k == .name || k == .signature
+
 /-- Check if a syntax kind represents trivia -/
 def SyntaxKind.isTrivia : SyntaxKind → Bool
   | .whitespace | .newline | .comment => true

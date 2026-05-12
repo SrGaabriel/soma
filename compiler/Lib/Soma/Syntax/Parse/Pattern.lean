@@ -1,5 +1,4 @@
 import Soma.Syntax.Parser
-import Soma.Syntax.Parse.Type
 
 namespace Soma.Syntax.Parse
 
@@ -188,20 +187,5 @@ partial def parsePattern : ParserM (Option GreenNode) := do
   | none => return none
 
 end
-
-partial def parseTypedPattern : ParserM (Option GreenNode) := do
-  match ← parsePattern with
-  | some pat =>
-      if (← check .doubleColon) then
-        let colonTok ← consumeAny
-        match ← parseType with
-        | some ty =>
-            return some (GreenNode.mkNode .patTyped #[pat, colonTok, ty])
-        | none =>
-            recordError "expected type after '::'"
-            return some pat
-      else
-        return some pat
-  | none => return none
 
 end Soma.Syntax.Parse

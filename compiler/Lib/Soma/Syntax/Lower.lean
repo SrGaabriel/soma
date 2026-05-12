@@ -461,6 +461,44 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
             let elem ← lowerTypeExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
             pure (.listTy elem span)
 
+      | .exprList =>
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          if kidsWithOffsets.size == 1 then
+            let elem ← lowerTypeExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            pure (.listTy elem span)
+          else
+            lowerExpr green offset
+
+      | .exprApp =>
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          if kidsWithOffsets.size < 2 then
+            lowerError "application requires function and argument" span
+            pure (.var ⟨#[], "_error", span⟩)
+          else
+            let fn ← lowerTypeExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            let arg ← lowerTypeExpr kidsWithOffsets[1]!.1 kidsWithOffsets[1]!.2
+            pure (.app fn arg span)
+
+      | .exprVar =>
+          let (path, name) ← lowerQualifiedName green offset
+          if name.length > 0 && (String.Pos.Raw.get name ⟨0⟩).isUpper then
+            pure (.con ⟨path, name, span⟩)
+          else
+            pure (.var ⟨path, name, span⟩)
+
+      | .exprParens =>
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          if kidsWithOffsets.isEmpty then
+            pure (.tuple #[] span)
+          else
+            let inner ← lowerTypeExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            pure (.parens inner span)
+
+      | .exprTuple =>
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          let elems ← kidsWithOffsets.mapM fun (c, o) => lowerTypeExpr c o
+          pure (.tuple elems span)
+
       | .typeForall =>
           let allKids := childrenWithOffsets green offset
           let isBinderKind : GreenNode → Bool := fun c =>
@@ -707,8 +745,7 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
           pure (.var ⟨#[], "_error", span⟩)
 
       | _ =>
-          lowerError s!"unexpected type kind: {kind}" span
-          pure (.var ⟨#[], "_error", span⟩)
+          lowerExpr green offset
 
   | .error message _ _ =>
       lowerError message span
@@ -826,8 +863,6 @@ partial def lowerConstraint (green : GreenNode) (offset : Nat) : LowerM Constrai
       lowerError "unexpected constraint node" span
       pure ⟨⟨#[], "_error", span⟩, #[], span⟩
 
-end
-
 /-- Lower attribute nodes to Syntax.Attribute values -/
 partial def lowerAttributes (attrNodes : Array (GreenNode × Nat)) : LowerM (Array Attribute) :=
   attrNodes.mapM fun (a, ao) => do
@@ -882,7 +917,7 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
         let nameNode? := fKids.find? fun (c, _) => isTokenKind c .lowerIdent
         let typeNode? := fKids.find? fun (c, _) =>
           match c.syntaxKind? with
-          | some sk => sk.isType
+          | some sk => sk.isTerm
           | none => false
 
         match typeNode? with
@@ -930,7 +965,7 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
           let nameNode? := fKids.find? fun (c, _) => isTokenKind c .lowerIdent
           let typeNode? := fKids.find? fun (c, _) =>
             match c.syntaxKind? with
-            | some sk => sk.isType
+            | some sk => sk.isTerm
             | none => false
           let isImplicit := f.children.any fun c => isTokenKind c .leftBrace
           match typeNode? with
@@ -1002,10 +1037,10 @@ partial def lowerRecordField (green : GreenNode) (offset : Nat) : LowerM RecordF
     pure { name := none, type_ := .var ⟨#[], "_", span⟩, binderInfo, quantity, span }
 
 /-- Lower a token to an expression -/
-def lowerExprToken (kind : TokenKind) (text : String) (span : Span) : LowerM Expr := do
+partial def lowerExprToken (kind : TokenKind) (text : String) (span : Span) : LowerM Expr := do
   match kind with
   | .lowerIdent => pure (.var ⟨#[], text, span⟩)
-  | .upperIdent => pure (.var ⟨#[], text, span⟩)
+  | .upperIdent => pure (.con ⟨#[], text, span⟩)
   | .number => pure (.lit (.int text.toInt! span))
   | .string s => pure (.lit (.string s span))
   | .true_ => pure (.lit (.bool true span))
@@ -1015,7 +1050,7 @@ def lowerExprToken (kind : TokenKind) (text : String) (span : Span) : LowerM Exp
       pure (.var ⟨#[], "_error", span⟩)
 
 /-- Lower a single parameter -/
-def lowerSingleParam (green : GreenNode) (offset : Nat) : LowerM (QualName × Option Expr) := do
+partial def lowerSingleParam (green : GreenNode) (offset : Nat) : LowerM (QualName × Option Expr) := do
   let span ← spanFor green offset
   match green.syntaxKind? with
   | some .patVar =>
@@ -1041,7 +1076,7 @@ def lowerSingleParam (green : GreenNode) (offset : Nat) : LowerM (QualName × Op
   | _ => pure (⟨#[], "_", span⟩, none)
 
 /-- Lower lambda parameters -/
-def lowerLambdaParams (paramNodes : Array (GreenNode × Nat)) : LowerM (Array (QualName × Option Expr)) := do
+partial def lowerLambdaParams (paramNodes : Array (GreenNode × Nat)) : LowerM (Array (QualName × Option Expr)) := do
   let mut result : Array (QualName × Option Expr) := #[]
   for (p, pOffset) in paramNodes do
     match p.syntaxKind? with
@@ -1082,7 +1117,13 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
       match kind with
       | .exprVar =>
           let (path, name) ← lowerQualifiedName green offset
-          pure (.var ⟨path, name, span⟩)
+          -- Distinguish constructor-style names (capitalised) from variables.
+          -- The elaborator treats both equivalently for expressions, but
+          -- patterns and some name-resolution paths key off `.con` vs `.var`.
+          if name.length > 0 && (String.Pos.Raw.get name ⟨0⟩).isUpper then
+            pure (.con ⟨path, name, span⟩)
+          else
+            pure (.var ⟨path, name, span⟩)
 
       | .exprLit =>
           match firstGreenChild green with
@@ -1393,8 +1434,11 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
               pure (.var ⟨#[], "_error", span⟩)
 
       | _ =>
-          lowerError s!"unexpected expression kind: {kind}" span
-          pure (.var ⟨#[], "_error", span⟩)
+          if kind.isType then
+            lowerTypeExpr green offset
+          else
+            lowerError s!"unexpected expression kind: {kind}" span
+            pure (.var ⟨#[], "_error", span⟩)
 
   | .error message _ _ =>
       lowerError message span
@@ -1439,6 +1483,8 @@ where
     | _ =>
         lowerError "expected match arm" span
         pure (.mk #[] none (.var ⟨#[], "_error", span⟩) span)
+
+end
 
 /-- Lower a definition clause -/
 partial def lowerDefClause (green : GreenNode) (offset : Nat) : LowerM DefClause := do
@@ -1541,7 +1587,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                     let typeNode? := kids.find? fun (c, _) =>
                       match c.syntaxKind? with
                       | some .typeQuantity => false
-                      | some sk => sk.isType
+                      | some sk => sk.isTerm
                       | none => false
                     let lbraceCount := v.children.foldl (init := 0) fun n c =>
                       if isTokenKind c .leftBrace then n + 1 else n
@@ -1664,7 +1710,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               let (sig, sigOffset) := sigNodes[0]!
               let tyNodes := childrenWithOffsets sig sigOffset |>.filter fun (c, _) =>
                 match c.syntaxKind? with
-                | some sk => sk.isType
+                | some sk => sk.isTerm
                 | none => false
               if tyNodes.isEmpty then pure none
               else
@@ -1915,7 +1961,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           -- Find the type (last semantic node that is a type)
           let typeNodes := allKids.filter fun (c, _) =>
             match c.syntaxKind? with
-            | some sk => sk.isType
+            | some sk => sk.isTerm
             | none => false
           if typeNodes.isEmpty then
             lowerError "abbreviation missing type" span
