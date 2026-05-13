@@ -1,8 +1,11 @@
 import Soma.Syntax.Source
 import Soma.Syntax.GreenTree
-import Soma.Syntax.Diagnostic
+import Soma.Diagnostic
 
 namespace Soma.Syntax
+
+open Soma (Diagnostics DiagBuilder Phase severity)
+open Psychopomp (Diagnostic)
 
 def isSpace (c : Char) : Bool := c == ' ' || c == '\t' || c == '\r'
 def isDigit (c : Char) : Bool := '0' ≤ c && c ≤ '9'
@@ -25,11 +28,13 @@ def isOperatorChar (c : Char) : Bool :=
 structure LexerState where
   source : SourceFile
   pos : Nat  -- byte offset
+  diag : DiagBuilder
   deriving Inhabited
 
 namespace LexerState
 
-def init (source : SourceFile) : LexerState := { source, pos := 0 }
+def init (source : SourceFile) (diag : DiagBuilder) : LexerState :=
+  { source, pos := 0, diag }
 
 def atEnd (s : LexerState) : Bool := s.pos ≥ s.source.content.utf8ByteSize
 
@@ -72,29 +77,35 @@ abbrev LexerM := StateT LexerState (StateT Diagnostics Id)
 
 namespace LexerM
 
-def run' (m : LexerM α) (source : SourceFile) : α × Diagnostics :=
-  let ((result, _), diagnostics) := m.run (LexerState.init source) |>.run #[]
+def run' (m : LexerM α) (source : SourceFile) (diag : DiagBuilder)
+    : α × Diagnostics :=
+  let ((result, _), diagnostics) := m.run (LexerState.init source diag) |>.run #[]
   (result, diagnostics)
 
 def recordDiagnostic (d : Diagnostic) : LexerM Unit :=
   StateT.lift (modify (·.push d))
 
+/-- Assemble a lexer-phase diagnostic -/
+private def buildDiag (s : LexerState) (msg : String) (span : Span)
+    (secondary : Array (Span × String) := #[]) (notes : Array String := #[])
+    (help : Option String := none) : Diagnostic :=
+  { severity := severity .parse
+    message := msg
+    primary := s.diag.primary span msg
+    secondary := (secondary.map fun (sec, m) => s.diag.support sec m).toList
+    notes := notes.toList
+    helps := match help with | some h => [h] | none => [] }
+
 def recordError (msg : String) : LexerM Unit := do
   let s ← get
-  recordDiagnostic (Diagnostic.error msg (Span.point s.currentLoc))
+  recordDiagnostic (buildDiag s msg (Span.point s.currentLoc))
 
 def recordRichError (msg : String) (span : Span)
     (secondary : Array (Span × String) := #[])
     (notes : Array String := #[])
     (help : Option String := none) : LexerM Unit := do
-  let mut diag := Diagnostic.error msg span
-  for (s, m) in secondary do
-    diag := diag.withSecondary s m
-  for n in notes do
-    diag := diag.withNote n
-  if let some h := help then
-    diag := diag.withHelp h
-  recordDiagnostic diag
+  let s ← get
+  recordDiagnostic (buildDiag s msg span secondary notes help)
 
 def atEnd : LexerM Bool := do return (← get).atEnd
 def current : LexerM Char := do return (← get).current
@@ -501,8 +512,9 @@ Lex source code into green tokens.
 
 Returns an array of green token nodes and any diagnostics.
 -/
-def lexCode (source : SourceFile) : Array GreenNode × Diagnostics :=
-  let (rawTokens, diagnostics) := LexerM.run' tokenize source
+def lexCode (source : SourceFile) (diag : DiagBuilder)
+    : Array GreenNode × Diagnostics :=
+  let (rawTokens, diagnostics) := LexerM.run' tokenize source diag
   let layoutTokens := applyLayout rawTokens source
   let greenTokens := layoutTokens.map fun tok => GreenNode.token tok.kind tok.text
   (greenTokens, diagnostics)
@@ -510,6 +522,7 @@ def lexCode (source : SourceFile) : Array GreenNode × Diagnostics :=
 /-- Convenience function to lex a string -/
 def lex (content : String) (path : String := "<input>") : Array GreenNode × Diagnostics :=
   let source := SourceFile.create ⟨0⟩ path content
-  lexCode source
+  let (diag, _) := DiagBuilder.standalone source
+  lexCode source diag
 
 end Soma.Syntax

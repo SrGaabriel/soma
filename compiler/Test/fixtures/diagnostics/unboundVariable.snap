@@ -1,0 +1,8 @@
+error[E1008]: unknown variable `undefined_variable`
+  ,-> Test/fixtures/diagnostics/unboundVariable.soma:3:17
+  |
+2 |
+3 | def x : Type := undefined_variable
+  |                 ------------------ not found in scope
+  |
+  = help: bind `undefined_variable` with `let` or add a parameter, or check imports

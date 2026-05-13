@@ -1,0 +1,12 @@
+// Fixture: typeMismatch (E1002)
+
+@[wired_in "type.int"]
+inductive Int32 where
+    | MkInt32
+
+@[wired_in "type.string"]
+record String where
+    data : Type
+    len  : Type
+
+def x : Int32 := "not an int"

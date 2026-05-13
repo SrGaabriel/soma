@@ -2,14 +2,53 @@ import Soma.Core.Value
 import Soma.Core.Level
 import Soma.Core.Quantity
 import Soma.Core.Quote
-import Soma.Syntax.Diagnostic
+import Soma.Diagnostic
 import Soma.Dependent.Suggest
 
 namespace Soma.Dependent
 
-open Soma (Unique)
+open Soma (Unique DiagContext Phase severity)
 open Soma.Core
-open Soma.Syntax (Span Diagnostic Label)
+open Soma.Syntax (Span)
+open Psychopomp (Diagnostic Label LabelStyle)
+
+private def elabSev : Psychopomp.Severity := severity .elaborate
+
+/-- Build a primary label -/
+private def mkPrimary (ctx : DiagContext) (span : Span) (msg : String) : Label :=
+  ctx.primary span msg
+
+/-- Build a support label  -/
+private def mkSupport (ctx : DiagContext) (span : Span) (msg : String) : Label :=
+  ctx.support span msg
+
+/-- Build a primary label inside a named link group -/
+private def mkLinkedPrimary (ctx : DiagContext) (span : Span) (msg : String)
+    (linkGroup : String) : Label :=
+  ctx.label span msg { LabelStyle.error with linkGroup := some linkGroup }
+
+/-- Build a support label inside a named link group -/
+private def mkLinkedSupport (ctx : DiagContext) (span : Span) (msg : String)
+    (linkGroup : String) : Label :=
+  ctx.label span msg { LabelStyle.support with linkGroup := some linkGroup }
+
+/-- Assemble a typical elaborator diagnostic -/
+private def mkDiag (ctx : DiagContext) (code : String) (message : String)
+    (primarySpan : Span) (primaryMsg : String := message)
+    (secondary : Array Label := #[]) (notes : List String := [])
+    (help : Option String := none)
+    (audience : List String := [])
+    (certainty : Psychopomp.Certainty := .certain)
+    (fixes : List Psychopomp.QuickFix := []) : Diagnostic :=
+  { severity :=
+      { elabSev with audiences := audience, certainty }
+    code := some code
+    message
+    primary := mkPrimary ctx primarySpan primaryMsg
+    secondary := secondary.toList
+    notes
+    helps := match help with | some h => [h] | none => []
+    fixes }
 
 /-- The purpose of a type check - provides context for error messages -/
 inductive CheckPurpose where
@@ -317,8 +356,18 @@ inductive TCError where
       (span : Span)
       (context : Option ConstraintOrigin)
 
-  /-- Internal error (should not happen) -/
-  | internalError
+  /-- Compiler bug -/
+  | compilerBug
+      (message : String)
+      (span : Span)
+
+  /-- Feature the compiler doesn't yet handle -/
+  | unhandledFeature
+      (feature : String)
+      (span : Span)
+
+  /-- The user wrote something well-formed-but-meaningless -/
+  | userTriggered
       (message : String)
       (span : Span)
 
@@ -452,7 +501,9 @@ def span : TCError → Span
   | .unsolvedHole _ _ s => s
   | .ambiguousImplicit _ s _ _ => s
   | .cannotInfer _ s _ => s
-  | .internalError _ s => s
+  | .compilerBug _ s => s
+  | .unhandledFeature _ s => s
+  | .userTriggered _ s => s
   | .noInstance _ _ s _ _ => s
   | .instanceCycle _ s _ => s
   | .instanceDepthExceeded _ s _ => s
@@ -472,22 +523,15 @@ def span : TCError → Span
   | .missingInstanceMethods _ _ s => s
 
 /-- Build secondary labels from constraint chain -/
-private def chainToLabels (chain : Array ConstraintInfo) : Array Label :=
+private def chainToLabels (ctx : DiagContext) (chain : Array ConstraintInfo) : Array Label :=
   chain.filterMap fun info =>
     if info.span != Span.uninhabited then
-      some (Label.secondary info.span info.origin.describe)
+      some (ctx.support info.span info.origin.describe)
     else
       none
 
-/-- Build notes from constraint info -/
-private def chainToNotes (chain : Array ConstraintInfo) : Array String :=
-  if chain.isEmpty then #[]
-  else
-    let steps := chain.map fun info => s!"  • {info.origin.describe}"
-    #[s!"Constraint chain:\n{String.intercalate "\n" steps.toList}"]
-
 /-- Convert a TCError to a Diagnostic for rich rendering -/
-def toDiagnostic : TCError → Diagnostic
+def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
   | .unificationFailed failure purpose span chain _metas =>
     let purposeStr := purpose.describe
     let baseMsg := match failure with
@@ -500,25 +544,30 @@ def toDiagnostic : TCError → Diagnostic
     let msg := if purposeStr.isEmpty
       then baseMsg
       else s!"{baseMsg} {purposeStr}"
-    let secondaryLabels := chainToLabels chain
-    let notes := if chain.isEmpty then #[failure.detailedMessage]
-                 else chainToNotes chain ++ #[failure.detailedMessage]
-    { severity := .error
-    , code := some "E1001"
-    , message := msg
-    , primaryLabel := Label.primary span failure.message
-    , secondaryLabels := secondaryLabels
-    , notes := notes
-    , help := some "add type annotations to help the compiler infer types"
-    }
+    let secondaryLabels := chainToLabels ctx chain
+    let unifySteps : List Soma.Attach.UnifyStep :=
+      chain.toList.map fun info =>
+        { origin := info.origin.describe, description := info.description }
+    let traceAttach := Soma.Attach.unifyTrace unifySteps
+    let attachments : List Psychopomp.Attachment := match failure with
+      | .headMismatch v1 v2 | .rigidMismatch v1 v2 =>
+        [Soma.Attach.typeMismatch (toString v1) (toString v2), traceAttach]
+      | .levelMismatch l1 l2 =>
+        [Soma.Attach.universeMismatch (toString l1) (toString l2), traceAttach]
+      | _ => [traceAttach]
+    { (mkDiag ctx "E1001" msg span failure.message
+        (secondary := secondaryLabels)
+        (notes := [failure.detailedMessage])
+        (help := some "add type annotations to help the compiler infer types")) with
+      attachments }
 
   | .typeMismatch expected actual purpose expectedSpan actualSpan steps =>
     let purposeStr := purpose.describe
     let msg := if purposeStr.isEmpty
       then "type mismatch"
       else s!"type mismatch {purposeStr}"
-    let baseLabels := #[Label.secondary expectedSpan "expected type from here"]
-    let stepLabels := chainToLabels steps
+    let baseLabels := #[mkSupport ctx expectedSpan "expected type from here"]
+    let stepLabels := chainToLabels ctx steps
     let help : Option String := match purpose with
       | .functionBody fn =>
         some s!"change `{fn}`'s return type or the body to match"
@@ -531,203 +580,215 @@ def toDiagnostic : TCError → Diagnostic
       | .letBinding nm => some s!"the value bound to `{nm}` doesn't match its annotation"
       | .typeAnnotation => some "the expression doesn't match its type annotation"
       | _ => none
-    { severity := .error
-    , code := some "E1002"
-    , message := msg
-    , primaryLabel := Label.primary actualSpan s!"expected `{expected}`, found `{actual}`"
-    , secondaryLabels := baseLabels ++ stepLabels
-    , notes := chainToNotes steps
-    , help
-    }
+    let mismatchAttach := Soma.Attach.typeMismatch (toString expected) (toString actual)
+    let traceSteps : List Soma.Attach.UnifyStep := steps.toList.map fun info =>
+      { origin := info.origin.describe, description := info.description }
+    let traceAttach := Soma.Attach.unifyTrace traceSteps
+    let attachments :=
+      if steps.isEmpty then [mismatchAttach] else [mismatchAttach, traceAttach]
+    { (mkDiag ctx "E1002" msg actualSpan
+        (primaryMsg := s!"expected `{expected}`, found `{actual}`")
+        (secondary := baseLabels ++ stepLabels)
+        (help := help)) with
+      attachments }
 
   | .expectedFunction actual span origin =>
     let originNote := match origin with
-      | some o => #[s!"type was inferred from: {o.describe}"]
-      | none => #[]
-    Diagnostic.error "expected function type" span s!"`{actual}` is not a function"
-      |>.withCode "E1003"
-      |>.withNote "function application requires a function type (Π-type)"
-      |>.withHelp "did you mean field access (`.x`) or forget parentheses?"
-      |> fun d => { d with notes := d.notes ++ originNote }
+      | some o => [s!"type was inferred from: {o.describe}"]
+      | none => []
+    mkDiag ctx "E1003" "expected function type" span
+      (primaryMsg := s!"`{actual}` is not a function")
+      (notes := "function application requires a function type (Π-type)" :: originNote)
+      (help := some "did you mean field access (`.x`) or forget parentheses?")
 
   | .expectedType actual span context =>
     let contextNote := match context with
       | some ctx => s!" ({ctx})"
       | none => ""
-    Diagnostic.error "expected a type" span s!"`{actual}` is not a type{contextNote}"
-      |>.withCode "E1005"
-      |>.withNote "types have type `Type`"
-      |>.withHelp "only type-level expressions are allowed here"
+    mkDiag ctx "E1005" "expected a type" span
+      (primaryMsg := s!"`{actual}` is not a type{contextNote}")
+      (notes := ["types have type `Type`"])
+      (help := some "only type-level expressions are allowed here")
 
   | .expectedRecord actual span availableFields =>
-    let fieldsNote := if availableFields.isEmpty then #[]
-      else #[s!"available fields: {String.intercalate ", " availableFields.toList}"]
-    let help := "field access (`.x`) and record literals require a record type"
-    Diagnostic.error "expected record type" span s!"`{actual}` is not a record"
-      |>.withCode "E1006"
-      |>.withHelp help
-      |> fun d => { d with notes := d.notes ++ fieldsNote }
+    let fieldsNote := if availableFields.isEmpty then []
+      else [s!"available fields: {String.intercalate ", " availableFields.toList}"]
+    mkDiag ctx "E1006" "expected record type" span
+      (primaryMsg := s!"`{actual}` is not a record")
+      (notes := fieldsNote)
+      (help := some "field access (`.x`) and record literals require a record type")
 
   | .expectedVariant actual span =>
-    Diagnostic.error "expected variant type" span s!"`{actual}` is not a variant"
-      |>.withCode "E1007"
-      |>.withHelp "variant injection (`.Label`) requires a variant type"
+    mkDiag ctx "E1007" "expected variant type" span
+      (primaryMsg := s!"`{actual}` is not a variant")
+      (help := some "variant injection (`.Label`) requires a variant type")
 
   | .unboundVariable name span suggestions =>
     let help := match Soma.Dependent.Suggest.formatSuggestions suggestions with
       | some hint => hint
       | none => s!"bind `{name}` with `let` or add a parameter, or check imports"
-    Diagnostic.error s!"unknown variable `{name}`" span "not found in scope"
-      |>.withCode "E1008"
-      |>.withHelp help
+    mkDiag ctx "E1008" s!"unknown variable `{name}`" span
+      (primaryMsg := "not found in scope")
+      (help := some help)
+      (fixes := Soma.Fix.renameSuggestions ctx span suggestions)
 
   | .unboundGlobal name span suggestions =>
     let help := match Soma.Dependent.Suggest.formatSuggestions suggestions with
       | some hint => hint
       | none => s!"define `{name}` or add a `use` import that brings it into scope"
-    Diagnostic.error s!"unknown definition `{name}`" span "not found"
-      |>.withCode "E1009"
-      |>.withHelp help
+    mkDiag ctx "E1009" s!"unknown definition `{name}`" span
+      (primaryMsg := "not found")
+      (help := some help)
+      (fixes := Soma.Fix.renameSuggestions ctx span suggestions)
 
   | .fieldNotFound field recordTy span availableFields origin =>
     let fieldsNote := if availableFields.isEmpty then ""
       else s!"\navailable fields: {String.intercalate ", " availableFields.toList}"
     let originNote := match origin with
-      | some o => #[s!"record type inferred from: {o.describe}"]
-      | none => #[]
-    let diag := Diagnostic.error s!"field `{field}` not found" span
-        s!"not in `{recordTy}`{fieldsNote}"
-      |>.withCode "E1010"
-    let withHelp := match Soma.Dependent.Suggest.formatSuggestions
-        (Soma.Dependent.Suggest.suggestSimilar field availableFields) with
-      | some hint => diag.withHelp hint
-      | none => diag
-    { withHelp with notes := withHelp.notes ++ originNote }
+      | some o => [s!"record type inferred from: {o.describe}"]
+      | none => []
+    let suggestions := Soma.Dependent.Suggest.suggestSimilar field availableFields
+    let help := Soma.Dependent.Suggest.formatSuggestions suggestions
+    mkDiag ctx "E1010" s!"field `{field}` not found" span
+      (primaryMsg := s!"not in `{recordTy}`{fieldsNote}")
+      (notes := originNote)
+      (help := help)
+      (fixes := Soma.Fix.renameSuggestions ctx span suggestions)
 
   | .wrongConstructorArity ctor expected actual span =>
     let args := if expected == 1 then "argument" else "arguments"
-    Diagnostic.error s!"wrong number of arguments to `{ctor}`" span
-        s!"expected {expected} {args}, found {actual}"
-      |>.withCode "E1012"
+    mkDiag ctx "E1012" s!"wrong number of arguments to `{ctor}`" span
+      (primaryMsg := s!"expected {expected} {args}, found {actual}")
 
   | .quantityMismatch expected actual varName span =>
-    Diagnostic.error s!"quantity mismatch for `{varName}`" span
-        s!"declared as `{expected}`, used as `{actual}`"
-      |>.withCode "E1013"
-      |>.withNote s!"`0` = erased, `1` = linear, `ω` = unrestricted"
+    mkDiag ctx "E1013" s!"quantity mismatch for `{varName}`" span
+      (primaryMsg := s!"declared as `{expected}`, used as `{actual}`")
+      (notes := [s!"`0` = erased, `1` = linear, `ω` = unrestricted"])
 
   | .linearNotUsed varName declSpan =>
-    Diagnostic.error s!"linear variable `{varName}` not used" declSpan
-        "must be used exactly once"
-      |>.withCode "E1014"
-      |>.withHelp "use the variable or change its quantity to `0` or `ω`"
+    mkDiag ctx "E1014" s!"linear variable `{varName}` not used" declSpan
+      (primaryMsg := "must be used exactly once")
+      (help := some "use the variable or change its quantity to `0` or `ω`")
 
   | .linearUsedMultiple varName firstUse secondUse =>
-    { severity := .error
-    , code := some "E1015"
-    , message := s!"linear variable `{varName}` used multiple times"
-    , primaryLabel := Label.primary secondUse "used again here"
-    , secondaryLabels := #[Label.secondary firstUse "first used here"]
-    , notes := #["linear variables (quantity `1`) must be used exactly once"]
-    , help := some "change the quantity to `ω` for unrestricted use"
-    }
+    let primary := mkLinkedPrimary ctx secondUse "used again here" "linear-uses"
+    let firstLabel := mkLinkedSupport ctx firstUse "first used here" "linear-uses"
+    { (mkDiag ctx "E1015"
+        s!"linear variable `{varName}` used multiple times"
+        secondUse (primaryMsg := "used again here")
+        (secondary := #[firstLabel])
+        (notes := ["linear variables (quantity `1`) must be used exactly once"])
+        (help := some "change the quantity to `ω` for unrestricted use"))
+        with primary }
 
   | .erasedUsedAtRuntime varName span declSpan =>
     let secondaryLabels := match declSpan with
-      | some ds => #[Label.secondary ds s!"`{varName}` declared as erased (quantity `0`) here"]
+      | some ds => #[mkSupport ctx ds s!"`{varName}` declared as erased (quantity `0`) here"]
       | none => #[]
-    { severity := .error
-    , code := some "E1016"
-    , message := s!"erased variable `{varName}` used at runtime"
-    , primaryLabel := Label.primary span "erased variable used here"
-    , secondaryLabels := secondaryLabels
-    , notes := #["variables with quantity `0` are erased and exist only for type checking"]
-    , help := some "change the quantity to `ω` or `1` if runtime access is needed"
-    }
+    mkDiag ctx "E1016"
+      s!"erased variable `{varName}` used at runtime"
+      span (primaryMsg := "erased variable used here")
+      (secondary := secondaryLabels)
+      (notes := ["variables with quantity `0` are erased and exist only for type checking"])
+      (help := some "change the quantity to `ω` or `1` if runtime access is needed")
 
   | .unsolvedMeta ty span relatedConstraints suggestedFix =>
-    let constraintNotes := if relatedConstraints.isEmpty then #[]
-      else
-        let items := relatedConstraints.map fun c =>
-          let blockedStr := if c.isBlocked then " (blocked)" else ""
-          s!"  • {c.description}{blockedStr}"
-        #[s!"Related constraints:\n{String.intercalate "\n" items.toList}"]
+    let originList : List Soma.Attach.MetaConstraint :=
+      relatedConstraints.toList.map fun c =>
+        { description := c.description
+          origin := c.origin.describe
+          blocked := c.isBlocked }
+    let metaAttach := Soma.Attach.metavarOrigins originList
     let help := suggestedFix.getD "add a type annotation to help inference"
-    Diagnostic.error "could not infer a type here" span s!"expected a value of type `{ty}`"
-      |>.withCode "E1017"
-      |>.withHelp help
-      |> fun d => { d with notes := d.notes ++ constraintNotes }
+    { (mkDiag ctx "E1017" "could not infer a type here" span
+        (primaryMsg := s!"expected a value of type `{ty}`")
+        (help := some help))
+      with attachments := [metaAttach] }
 
   | .unsolvedHole name ty span =>
     let nameStr := name.getD "_"
-    Diagnostic.error s!"unsolved hole `?{nameStr}`" span s!"has type `{ty}`"
-      |>.withCode "E1018"
+    mkDiag ctx "E1018" s!"unsolved hole `?{nameStr}`" span
+      (primaryMsg := s!"has type `{ty}`")
 
   | .ambiguousImplicit paramName span relatedConstraints partialInfo =>
-    let constraintNotes := if relatedConstraints.isEmpty then #[]
-      else
-        let items := relatedConstraints.map fun c => s!"  • {c.description}"
-        #[s!"Constraints involving `{paramName}`:\n{String.intercalate "\n" items.toList}"]
+    let originList : List Soma.Attach.MetaConstraint :=
+      relatedConstraints.toList.map fun c =>
+        { description := c.description
+          origin := c.origin.describe
+          blocked := c.isBlocked }
+    let metaAttach := Soma.Attach.metavarOrigins originList
     let partialNote := match partialInfo with
-      | some info => #[s!"Partial information available: {info}"]
-      | none => #[]
-    Diagnostic.error s!"cannot infer implicit `{paramName}`" span "not enough information"
-      |>.withCode "E1019"
-      |>.withHelp s!"provide explicit argument: @{paramName} = <value>"
-      |> fun d => { d with notes := d.notes ++ constraintNotes ++ partialNote }
+      | some info => [s!"Partial information available: {info}"]
+      | none => []
+    { (mkDiag ctx "E1019" s!"cannot infer implicit `{paramName}`" span
+        (primaryMsg := "not enough information")
+        (notes := partialNote)
+        (help := some s!"provide explicit argument: @{paramName} = <value>"))
+      with attachments := [metaAttach] }
 
   | .cannotInfer reason span context =>
     let contextNote := match context with
-      | some o => #[s!"while {o.describe}"]
-      | none => #[]
-    Diagnostic.error "cannot infer type" span reason
-      |>.withCode "E1020"
-      |>.withHelp "add a type annotation"
-      |> fun d => { d with notes := d.notes ++ contextNote }
+      | some o => [s!"while {o.describe}"]
+      | none => []
+    mkDiag ctx "E1020" "cannot infer type" span
+      (primaryMsg := reason)
+      (notes := contextNote)
+      (help := some "add a type annotation")
 
-  | .internalError message span =>
-    Diagnostic.error s!"internal error: {message}" span
-      |>.withCode "E1099"
-      |>.withNote "this is a bug in the compiler, please report it"
+  | .compilerBug message span =>
+    mkDiag ctx "E1099" s!"compiler bug: {message}" span
+      (notes := ["an invariant the compiler relied on was violated"])
+      (help := some "please report this at https://github.com/SrGaabriel/soma/issues with the failing input")
+      (audience := ["compilerDev"])
+      (certainty := .suspected)
+
+  | .unhandledFeature feature span =>
+    mkDiag ctx "E1098" s!"unsupported: {feature}" span
+      (primaryMsg := s!"the compiler does not yet handle {feature} here")
+      (notes := ["this is a known limitation, not a bug"])
+      (help := some "track the relevant issue or open a feature request if none exists")
+
+  | .userTriggered message span =>
+    mkDiag ctx "E1097" message span
+      (notes := ["the input is well-formed but the elaborator cannot proceed"])
 
   | .noInstance classId _args span attemptedInstances availableInstances =>
     let className := classId.original
-    let attemptNotes := if attemptedInstances.isEmpty then #[]
-      else
-        let items := attemptedInstances.map fun attempt =>
-          match attempt.failureReason with
-          | some reason => s!"  • {attempt.instanceName}: {reason}"
-          | none => s!"  • {attempt.instanceName}: matched"
-        #[s!"Tried instances:\n{String.intercalate "\n" items.toList}"]
-    let availableNote := if availableInstances.isEmpty then #[]
-      else #[s!"Available instances for `{className}`: {String.intercalate ", " availableInstances.toList}"]
-    Diagnostic.error s!"no instance for `{className}`" span
-        "could not find a matching instance"
-      |>.withCode "E1021"
-      |>.withHelp s!"add an instance for `{className}` or provide one explicitly"
-      |> fun d => { d with notes := d.notes ++ attemptNotes ++ availableNote }
+    let attemptList : List Soma.Attach.InstanceAttempt :=
+      attemptedInstances.toList.map fun a =>
+        { name := a.instanceName
+          matched := a.failureReason.isNone
+          reason := a.failureReason }
+    let searchAttach := Soma.Attach.instanceSearch className attemptList
+    let availableNote := if availableInstances.isEmpty then []
+      else [s!"Available instances for `{className}`: {String.intercalate ", " availableInstances.toList}"]
+    { (mkDiag ctx "E1021" s!"no instance for `{className}`" span
+        (primaryMsg := "could not find a matching instance")
+        (notes := availableNote)
+        (help := some s!"add an instance for `{className}` or provide one explicitly"))
+      with attachments := [searchAttach] }
 
   | .instanceCycle classId span cycleTrace =>
     let className := classId.original
-    let cycleNote := if cycleTrace.isEmpty then #[]
-      else #[s!"Resolution cycle:\n{String.intercalate " → " cycleTrace.toList}"]
-    Diagnostic.error s!"cycle in instance resolution for `{className}`" span
-        "instance resolution would loop forever"
-      |>.withCode "E1022"
-      |> fun d => { d with notes := #["instance constraints form a cycle"] ++ cycleNote }
+    let cycleNote := if cycleTrace.isEmpty then []
+      else [s!"Resolution cycle:\n{String.intercalate " → " cycleTrace.toList}"]
+    mkDiag ctx "E1022" s!"cycle in instance resolution for `{className}`" span
+      (primaryMsg := "instance resolution would loop forever")
+      (notes := "instance constraints form a cycle" :: cycleNote)
 
   | .instanceDepthExceeded classId span searchPath =>
     let className := classId.original
-    let pathNote := if searchPath.isEmpty then #[]
-      else #[s!"Search path (truncated):\n{String.intercalate " → " searchPath.toList}"]
-    Diagnostic.error s!"instance resolution depth exceeded for `{className}`" span
-        "search exceeded maximum depth"
-      |>.withCode "E1023"
-      |>.withHelp "simplify instance constraints or increase search depth"
-      |> fun d => { d with notes := d.notes ++ pathNote }
+    let pathNote := if searchPath.isEmpty then []
+      else [s!"Search path (truncated):\n{String.intercalate " → " searchPath.toList}"]
+    mkDiag ctx "E1023" s!"instance resolution depth exceeded for `{className}`" span
+      (primaryMsg := "search exceeded maximum depth")
+      (notes := pathNote)
+      (help := some "simplify instance constraints or increase search depth")
 
   | .terminationCheckFailed fnName reason span failingCalls triedArguments =>
-    let callLabels := failingCalls.map fun s => Label.secondary s "recursive call here"
+    let primary := mkLinkedPrimary ctx span reason "recursion"
+    let callLabels := failingCalls.map fun s =>
+      mkLinkedSupport ctx s "recursive call here" "recursion"
     let triedNote := if triedArguments.isEmpty then #[]
       else
         let items := triedArguments.map fun (idx, reason) =>
@@ -735,56 +796,57 @@ def toDiagnostic : TCError → Diagnostic
         #[s!"Termination analysis:\n{String.intercalate "\n" items.toList}"]
     let baseNote :=
       "every definition is checked for termination"
-    { severity := .error
-    , code := some "E1026"
-    , message := s!"termination check failed for `{fnName.display}`"
-    , primaryLabel := Label.primary span reason
-    , secondaryLabels := callLabels
-    , notes := #[baseNote] ++ triedNote
-    , help := some
-        "ensure recursive calls are on structurally smaller arguments, \
-         or mark the definition `@[partial]` (note: partial functions are \
-         opaque and may not inhabit uninhabited types)"
-    }
+    { (mkDiag ctx "E1026"
+        s!"termination check failed for `{fnName.display}`"
+        span (primaryMsg := reason)
+        (secondary := callLabels)
+        (notes := (#[baseNote] ++ triedNote).toList)
+        (help := some
+          "ensure recursive calls are on structurally smaller arguments, \
+           or mark the definition `@[partial]` (note: partial functions are \
+           opaque and may not inhabit uninhabited types)"))
+        with primary }
 
   | .partialInTypeIndex fnName span =>
-    Diagnostic.error s!"partial function `{fnName.display}` used in type index" span
-        "only total functions can appear in type indices"
-      |>.withCode "E1027"
-      |>.withNote "type indices must be computable to keep type checking decidable"
-      |>.withHelp s!"mark `{fnName.display}` as @[total] or use a different function"
+    mkDiag ctx "E1027" s!"partial function `{fnName.display}` used in type index" span
+      (primaryMsg := "only total functions can appear in type indices")
+      (notes := ["type indices must be computable to keep type checking decidable"])
+      (help := some s!"mark `{fnName.display}` as @[total] or use a different function")
 
   | .partialInhabitsUninhabited fnName span =>
-    Diagnostic.error
-        s!"`@[partial]` definition `{fnName.display}` cannot inhabit an uninhabited type" span
-        "partial functions never produce a concrete value"
-      |>.withCode "E1029"
-      |>.withNote
-        "`@[partial]` is only valid when the return type has at least one constructor"
-      |>.withHelp
-        "make the definition total (its recursion must be provably well-founded)"
+    mkDiag ctx "E1029"
+      s!"`@[partial]` definition `{fnName.display}` cannot inhabit an uninhabited type" span
+      (primaryMsg := "partial functions never produce a concrete value")
+      (notes := ["`@[partial]` is only valid when the return type has at least one constructor"])
+      (help := some "make the definition total (its recursion must be provably well-founded)")
 
   | .positivityViolation typeName reason span violatingPosition =>
-    let secondaryLabels := match violatingPosition with
-      | some vs => #[Label.secondary vs "negative occurrence here"]
-      | none => #[]
-    { severity := .error
-    , code := some "E1028"
-    , message := s!"positivity check failed for `{typeName}`"
-    , primaryLabel := Label.primary span reason
-    , secondaryLabels := secondaryLabels
-    , notes := #["data types must be strictly positive to prevent paradoxes"]
-    , help := some "ensure the type only appears in positive positions in constructors"
-    }
+    match violatingPosition with
+    | some vs =>
+      let primary := mkLinkedPrimary ctx span reason "positivity"
+      let sec := mkLinkedSupport ctx vs "negative occurrence here" "positivity"
+      { (mkDiag ctx "E1028"
+          s!"positivity check failed for `{typeName}`"
+          span (primaryMsg := reason)
+          (secondary := #[sec])
+          (notes := ["data types must be strictly positive to prevent paradoxes"])
+          (help := some "ensure the type only appears in positive positions in constructors"))
+          with primary }
+    | none =>
+      mkDiag ctx "E1028"
+        s!"positivity check failed for `{typeName}`"
+        span (primaryMsg := reason)
+        (notes := ["data types must be strictly positive to prevent paradoxes"])
+        (help := some "ensure the type only appears in positive positions in constructors")
 
   | .impossiblePattern ctor ctorResultTy scrutTy span =>
-    Diagnostic.error s!"impossible pattern `{ctor}`" span
-        s!"constructor produces `{ctorResultTy}`, but matching against `{scrutTy}`"
-      |>.withCode "E1030"
-      |>.withNote "the constructor's index does not match the scrutinee type"
-      |>.withHelp "remove this pattern — it can never match"
+    mkDiag ctx "E1030" s!"impossible pattern `{ctor}`" span
+      (primaryMsg := s!"constructor produces `{ctorResultTy}`, but matching against `{scrutTy}`")
+      (notes := ["the constructor's index does not match the scrutinee type"])
+      (help := some "remove this pattern")
 
   | .nonExhaustiveMatch scrutType missing span =>
+    let scrutStr := toString scrutType
     let primaryDetail :=
       if missing.isEmpty then
         "pattern match does not cover every case"
@@ -792,119 +854,101 @@ def toDiagnostic : TCError → Diagnostic
         let quoted := missing.toList.map (s!"`{·}`")
         s!"missing: {String.intercalate ", " quoted}"
     let notes :=
-      if missing.isEmpty then
-        #[s!"scrutinee has type `{scrutType}`"]
-      else
-        #[ s!"scrutinee has type `{scrutType}`"
-         , "each listed shape can occur at runtime but no arm matches it"
-         ]
-    { severity := .error
-    , code := some "E1031"
-    , message := "non-exhaustive pattern match"
-    , primaryLabel := Label.primary span primaryDetail
-    , secondaryLabels := #[]
-    , notes := notes
-    , help := some "add an arm for each listed case, or a catch-all variable / `_` pattern"
-    }
+      if missing.isEmpty then []
+      else ["each listed shape can occur at runtime but no arm matches it"]
+    let coverageAttach := Soma.Attach.coverage scrutStr missing.toList
+    { (mkDiag ctx "E1031" "non-exhaustive pattern match" span
+        (primaryMsg := primaryDetail)
+        (notes := notes)
+        (help := some "add an arm for each listed case, or a catch-all variable / `_` pattern"))
+      with attachments := [coverageAttach] }
 
   | .bodilessNotDerivable name resolvedType span =>
-    { severity := .error
-    , code := some "E1032"
-    , message := s!"bodiless definition '{name}' is not derivable"
-    , primaryLabel := Label.primary span "no explicit parameter with an uninhabited type"
-    , secondaryLabels := #[]
-    , notes := #[
+    mkDiag ctx "E1032"
+      s!"bodiless definition '{name}' is not derivable"
+      span (primaryMsg := "no explicit parameter with an uninhabited type")
+      (notes := [
         s!"after reduction, the declared type is `{resolvedType}`",
-        "a bodiless def is a proof-by-absurdity: it requires at least one explicit parameter whose type has no constructors (e.g. `Never`), so the body is vacuously unreachable"
-      ]
-    , help := some "if you meant to prove that the declared type is unprovable, rewrite as `T -> Never`; otherwise provide a body (`:=` or `|` clauses) or mark as @[intrinsic]/@[extern]"
-    }
+        "a bodiless def is a proof-by-absurdity"
+      ])
+      (help := some "if you meant to prove that the declared type is unprovable, rewrite as `T -> Never`; otherwise provide a body (`:=` or `|` clauses) or mark as @[intrinsic]/@[extern]")
 
   | .patternArityMismatch name sigArity clauseArity resultTy span =>
     let patWord := if clauseArity == 1 then "pattern" else "patterns"
     let paramWord := if sigArity == 1 then "parameter" else "parameters"
-    Diagnostic.error s!"arity mismatch in `{name}`" span
-        s!"each clause has {clauseArity} {patWord}, but the signature exposes only {sigArity} explicit {paramWord}"
-      |>.withCode "E1035"
-      |>.withNote s!"after the {sigArity} explicit {paramWord}, the result type is not a function: `{resultTy}`"
-      |>.withHelp (
+    mkDiag ctx "E1035" s!"arity mismatch in `{name}`" span
+      (primaryMsg := s!"each clause has {clauseArity} {patWord}, but the signature exposes only {sigArity} explicit {paramWord}")
+      (notes := [s!"after the {sigArity} explicit {paramWord}, the result type is not a function: `{resultTy}`"])
+      (help := some (
         if clauseArity > sigArity then
           s!"remove {clauseArity - sigArity} pattern column(s), or extend the signature with more `->`"
         else
           "add patterns for the missing parameter(s), or adjust the signature"
-      )
+      ))
 
   | .partialTheorem name span =>
-    Diagnostic.error
-        s!"theorem `{name}` cannot be marked `@[partial]`" span
-        "a partial proof is not a proof"
-      |>.withCode "E1037"
-      |>.withNote
-        "theorems are required to be total"
-      |>.withHelp
+    mkDiag ctx "E1037"
+      s!"theorem `{name}` cannot be marked `@[partial]`" span
+      (primaryMsg := "a partial proof is not a proof")
+      (notes := ["theorems are required to be total"])
+      (help := some
         "drop `@[partial]`, make the recursion structurally decreasing, \
-         or restate the declaration as a `def` if it's really runtime code"
+         or restate the declaration as a `def` if it's really runtime code")
 
   | .propElimToType scrutTy motiveTy span =>
-    Diagnostic.error
-        "cannot eliminate this Prop into a Type" span
-        s!"scrutinee of type `{scrutTy}` is a proposition"
-      |>.withCode "E1038"
-      |>.withNote
-        s!"the expected motive `{motiveTy}` lives in `Type`, but \
-           propositions can only be observed from another proposition"
-      |>.withHelp
+    mkDiag ctx "E1038"
+      "cannot eliminate this Prop into a Type" span
+      (primaryMsg := s!"scrutinee of type `{scrutTy}` is a proposition")
+      (notes := [s!"the expected motive `{motiveTy}` lives in `Type`, but \
+                   propositions can only be observed from another proposition"])
+      (help := some
         "either change the result type so the match produces a \
          proposition, or rework the Prop so it becomes small \
-         (drop constructors / lift a field from `Type` to `Prop`)"
+         (drop constructors / lift a field from `Type` to `Prop`)")
 
   | .classNotInScope name span =>
-    { severity := .error
-    , code := some "E1033"
-    , message := s!"type class `{name}` is not in scope"
-    , primaryLabel := Label.primary span s!"`{name}` not imported"
-    , secondaryLabels := #[]
-    , notes := #[s!"the class exists in a loaded module but isn't visible here"]
-    , help := some ("add a `use` clause that imports `" ++ name ++
-        "`, e.g. `use <module>::{" ++ name ++ "}`")
-    }
+    mkDiag ctx "E1033"
+      s!"type class `{name}` is not in scope"
+      span (primaryMsg := s!"`{name}` not imported")
+      (notes := [s!"the class exists in a loaded module but isn't visible here"])
+      (help := some ("add a `use` clause that imports `" ++ name ++ "` or its module"))
 
   | .unknownClass name span =>
-    { severity := .error
-    , code := some "E1034"
-    , message := s!"unknown type class `{name}`"
-    , primaryLabel := Label.primary span s!"`{name}` is not a class"
-    , secondaryLabels := #[]
-    , notes := #[s!"no class named `{name}` is defined in this module or any of its dependencies"]
-    , help := some "check for typos, or declare the class with `class ... where ...`"
-    }
+    mkDiag ctx "E1034"
+      s!"unknown type class `{name}`"
+      span (primaryMsg := s!"`{name}` is not a class")
+      (notes := [s!"no class named `{name}` is defined in this module or any of its dependencies"])
+      (help := some "check for typos, or declare the class with `class ... where ...`")
 
   | .unknownInstanceMethod className methodName knownMethods span =>
-    let knownStr :=
-      if knownMethods.isEmpty then ""
-      else s!"class `{className}` has methods: {String.intercalate ", " knownMethods.toList}"
+    let knownNote :=
+      if knownMethods.isEmpty then []
+      else [s!"class `{className}` has methods: {String.intercalate ", " knownMethods.toList}"]
     let suggestions := Soma.Dependent.Suggest.suggestSimilar methodName knownMethods
     let help := match Soma.Dependent.Suggest.formatSuggestions suggestions with
       | some hint => hint
       | none =>
         s!"remove this `def`, or move it to an `instance` of the class that owns `{methodName}`"
-    Diagnostic.error
+    mkDiag ctx "E1040"
       s!"`{methodName}` is not a method of class `{className}`" span
-      s!"`{methodName}` is not declared in `{className}`"
-      |>.withCode "E1037"
-      |>.withHelp help
-      |> fun d => if knownStr.isEmpty then d else { d with notes := d.notes.push knownStr }
+      (primaryMsg := s!"`{methodName}` is not declared in `{className}`")
+      (notes := knownNote)
+      (help := some help)
+      (fixes := Soma.Fix.renameSuggestions ctx span suggestions)
 
   | .missingInstanceMethods className missing span =>
     let list := String.intercalate ", " missing.toList
-    Diagnostic.error
+    mkDiag ctx "E1041"
       s!"instance of `{className}` is missing required methods" span
-      s!"missing: {list}"
-      |>.withCode "E1038"
-      |>.withHelp s!"add a `def` clause for each missing method ({list}) inside this instance"
+      (primaryMsg := s!"missing: {list}")
+      (help := some s!"add a `def` clause for each missing method ({list}) inside this instance")
 
-instance : ToString TCError where
-  toString err := err.toDiagnostic.message
+/-- The context-free headline string for a `TCError` -/
+def headline (e : TCError) : String :=
+  let ctx : DiagContext := default
+  (toDiagnostic ctx e).message
+
+instance : ToString TCError := ⟨TCError.headline⟩
 
 end TCError
 
@@ -914,8 +958,8 @@ abbrev TCErrors := Array TCError
 namespace TCErrors
 
 /-- Convert all errors to diagnostics -/
-def toDiagnostics (errs : TCErrors) : Array Diagnostic :=
-  errs.map TCError.toDiagnostic
+def toDiagnostics (ctx : DiagContext) (errs : TCErrors) : Array Diagnostic :=
+  errs.map (TCError.toDiagnostic ctx)
 
 /-- Check if there are any errors -/
 def hasErrors (errs : TCErrors) : Bool :=
@@ -939,25 +983,34 @@ inductive TCWarning where
 
 namespace TCWarning
 
-def toDiagnostic : TCWarning → Diagnostic
-  | .unusedVariable name span =>
-    Diagnostic.warning s!"unused variable `{name}`" span
-      |>.withCode "W1001"
-  | .unnecessaryImplicit name span =>
-    Diagnostic.warning s!"implicit `{name}` could be explicit" span
-      |>.withCode "W1002"
-  | .redundantAnnotation span =>
-    Diagnostic.warning "redundant type annotation" span
-      |>.withCode "W1003"
-  | .unreachableCode span =>
-    Diagnostic.warning "unreachable code" span
-      |>.withCode "W1004"
-  | .totalityUnknown fnName span =>
-    Diagnostic.warning s!"totality of `{fnName.display}` could not be determined" span
-      |>.withCode "W1005"
+private def warnSev : Psychopomp.Severity := severity .elaborate .warning
 
-instance : ToString TCWarning where
-  toString w := w.toDiagnostic.message
+/-- Assemble an elaborator warning diagnostic -/
+private def mkWarn (ctx : DiagContext) (code : String) (message : String)
+    (span : Span) (primaryMsg : String := message) : Diagnostic :=
+  { severity := warnSev
+    code := some code
+    message
+    primary := ctx.primary span primaryMsg }
+
+def toDiagnostic (ctx : DiagContext) : TCWarning → Diagnostic
+  | .unusedVariable name span =>
+    mkWarn ctx "W1001" s!"unused variable `{name}`" span
+  | .unnecessaryImplicit name span =>
+    mkWarn ctx "W1002" s!"implicit `{name}` could be explicit" span
+  | .redundantAnnotation span =>
+    mkWarn ctx "W1003" "redundant type annotation" span
+  | .unreachableCode span =>
+    mkWarn ctx "W1004" "unreachable code" span
+  | .totalityUnknown fnName span =>
+    mkWarn ctx "W1005" s!"totality of `{fnName.display}` could not be determined" span
+
+/-- Context-free headline string for a `TCWarning` -/
+def headline (w : TCWarning) : String :=
+  let ctx : DiagContext := default
+  (toDiagnostic ctx w).message
+
+instance : ToString TCWarning := ⟨TCWarning.headline⟩
 
 end TCWarning
 

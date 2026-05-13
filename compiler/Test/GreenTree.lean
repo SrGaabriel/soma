@@ -23,7 +23,8 @@ def loadAllSomaFiles (dir : System.FilePath) : IO (Array (System.FilePath × Str
 def runGreenTreeSizeTest (path : System.FilePath) (source : String) : IO TestResult := do
   let name := path.fileName.getD "unknown"
   let sf := SourceFile.create ⟨0⟩ name source
-  let (tree, _) := parseToTree sf
+  let (diag, _) := Soma.DiagBuilder.standalone sf
+  let (tree, _) := parseToTree sf diag
   let greenWidth := tree.green.width
   let sourceByteSize := source.utf8ByteSize
   if greenWidth == sourceByteSize then

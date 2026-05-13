@@ -19,6 +19,21 @@ namespace Soma.Project.Check
 open Std (HashSet HashMap)
 open Soma.Syntax
 open Soma.Core
+open Soma (Diagnostic Diagnostics DiagBuilder DiagContext Phase severity)
+
+private def projectError (diag : DiagBuilder) (msg : String) (span : Span)
+    (help : Option String := none) : Diagnostic :=
+  { severity := severity .lower
+    message := msg
+    primary := diag.primary span msg
+    helps := match help with | some h => [h] | none => [] }
+
+private def projectWarning (diag : DiagBuilder) (msg : String) (span : Span)
+    (help : Option String := none) : Diagnostic :=
+  { severity := severity .lower .warning
+    message := msg
+    primary := diag.primary span msg
+    helps := match help with | some h => [h] | none => [] }
 
 open Soma.Project
 open Soma (UniqueSupply)
@@ -43,6 +58,18 @@ structure ParseResult where
   sourceFile : SourceFile
   tree : ParsedTree
   diagnostics : Diagnostics
+  diagCtx : Soma.DiagContext
+
+namespace ParseResult
+
+/-- The per-file `DiagBuilder` the parser used -/
+def builder (pr : ParseResult) : Soma.DiagBuilder :=
+  match pr.diagCtx.files[pr.sourceFile.id]? with
+  | some b => b
+  | none =>
+    panic! s!"ParseResult.builder: source file {pr.sourceFile.path} not registered in diagCtx"
+
+end ParseResult
 
 /-- Result of CST → AST lowering -/
 structure LowerResult where
@@ -55,46 +82,64 @@ structure ElaborationResult where
   diagnostics : Diagnostics
   uniqueSupply : Soma.UniqueSupply
 
-private def lowerModuleFromSyntax (ast : Syntax.Module) : ElaborationResult :=
-  let lowered := Soma.Dependent.Lower.lowerModule ast
+private def lowerModuleFromSyntax (ast : Syntax.Module) (diag : Soma.DiagBuilder)
+    : ElaborationResult :=
+  let lowered := Soma.Dependent.Lower.lowerModule ast diag
   { module := lowered.module, diagnostics := lowered.diagnostics, uniqueSupply := lowered.uniqueSupply }
 
 /-- Phase 1+2: Parse source code (lex + parse combined) -/
-def parse (filePath : String) (content : String) : ParseResult :=
+def parseWithCtx (ctx : Soma.DiagContext) (filePath : String) (content : String)
+    : Soma.DiagContext × ParseResult :=
   let sourceFile := SourceFile.create (fileIdFromPath filePath) filePath content
-  let (tree, diags) := parseToTree sourceFile
-  { sourceFile, tree, diagnostics := diags }
+  let (ctx', diag) := ctx.insert sourceFile
+  let (tree, diags) := parseToTree sourceFile diag
+  (ctx', { sourceFile, tree, diagnostics := diags, diagCtx := ctx' })
 
-/-- Phase 2b: Incremental reparse -/
-def reparse (oldTree : ParsedTree) (filePath : String) (content : String)
-    : ParseResult × HashSet NodeId :=
+/-- Single-file parse: starts from an empty `DiagContext` -/
+def parse (filePath : String) (content : String) : ParseResult :=
+  (parseWithCtx Soma.DiagContext.empty filePath content).2
+
+/-- Incremental reparse against an existing `DiagContext` -/
+def reparseWithCtx (ctx : Soma.DiagContext) (oldTree : ParsedTree)
+    (filePath : String) (content : String)
+    : Soma.DiagContext × ParseResult × HashSet NodeId :=
   let sourceFile := SourceFile.create (fileIdFromPath filePath) filePath content
-  let (tree, diags) := reparseToTree oldTree sourceFile
+  let (ctx', diag) := ctx.insert sourceFile
+  let (tree, diags) := reparseToTree oldTree sourceFile diag
   let oldIds := oldTree.red.idToIdx
   let newIds := tree.red.idToIdx
   let changedIds := newIds.fold (init := {}) fun acc nodeId _ =>
     if oldIds.contains nodeId then acc else acc.insert nodeId
-  ({ sourceFile, tree, diagnostics := diags }, changedIds)
+  (ctx', { sourceFile, tree, diagnostics := diags, diagCtx := ctx' }, changedIds)
 
-/-- Phase 3: Lower CST to AST -/
-def lower (tree : ParsedTree) (moduleName : String) : LowerResult :=
-  let (ast, diags) := Syntax.lower tree moduleName
+/-- Single-file reparse -/
+def reparse (oldTree : ParsedTree) (filePath : String) (content : String)
+    : ParseResult × HashSet NodeId :=
+  let (_, pr, changed) := reparseWithCtx Soma.DiagContext.empty oldTree filePath content
+  (pr, changed)
+
+/-- Lower CST to AST -/
+def lower (tree : ParsedTree) (diag : Soma.DiagBuilder) (moduleName : String)
+    : LowerResult :=
+  let (ast, diags) := Syntax.lower tree diag moduleName
   { ast, diagnostics := diags }
 
 /-- Phase 4: Lower AST to Core untyped module -/
-def elaborate (ast : Syntax.Module) : ElaborationResult :=
-  lowerModuleFromSyntax ast
+def elaborate (ast : Syntax.Module) (diag : Soma.DiagBuilder) : ElaborationResult :=
+  lowerModuleFromSyntax ast diag
 
-/-- Phase 4 with external symbols: Lower AST to Core untyped module with pre-populated GlobalEnv -/
-def elaborateWithExternals (ast : Syntax.Module) : ElaborationResult :=
-  lowerModuleFromSyntax ast
+/-- Lower AST to Core untyped module with pre-populated GlobalEnv -/
+def elaborateWithExternals (ast : Syntax.Module) (diag : Soma.DiagBuilder)
+    : ElaborationResult :=
+  lowerModuleFromSyntax ast diag
 
-/-- Phase 4b: Incremental elaboration -/
-def elaborateIncremental (ast : Syntax.Module) (changedNames : Array String)
-    (_oldResult : ElaborationResult) : ElaborationResult :=
+/-- Incremental elaboration -/
+def elaborateIncremental (ast : Syntax.Module) (diag : Soma.DiagBuilder)
+    (changedNames : Array String) (_oldResult : ElaborationResult)
+    : ElaborationResult :=
   -- We lower directly from Syntax in one pass.
   let _ := changedNames
-  elaborate ast
+  elaborate ast diag
 
 /-- Errors that can occur during project checking -/
 inductive CheckError where
@@ -212,23 +257,24 @@ structure ProjectResult where
   instanceEnv : InstanceEnv
   /-- Merged abbreviation environment -/
   abbrevEnv : AbbrevEnv
-  /-- Source file map for resolving diagnostic spans -/
-  sourceFiles : SourceFileMap
+  /-- The single project-wide `DiagContext` -/
+  diagCtx : Soma.DiagContext
 
 namespace ProjectResult
 
-def failed (name : String) (diags : Diagnostics) (sourceFiles : SourceFileMap := SourceFileMap.empty) : ProjectResult :=
+def failed (name : String) (diags : Diagnostics)
+    (diagCtx : Soma.DiagContext := Soma.DiagContext.empty) : ProjectResult :=
   { success := false, diagnostics := diags, packageName := name,
     checkedModules := #[], symbols := {}, instances := {}, constructors := {},
-    globals := Globals.empty, instanceEnv := InstanceEnv.empty, abbrevEnv := AbbrevEnv.empty, sourceFiles }
+    globals := Globals.empty, instanceEnv := InstanceEnv.empty, abbrevEnv := AbbrevEnv.empty, diagCtx }
 
 def succeeded (name : String) (diags : Diagnostics) (modules : Array CheckedModule)
     (symbols : SymbolEnv) (instances : InstanceMetadata)
     (constructors : Std.HashMap String Nat)
     (globals : Globals) (instanceEnv : InstanceEnv) (abbrevEnv : AbbrevEnv)
-    (sourceFiles : SourceFileMap) : ProjectResult :=
+    (diagCtx : Soma.DiagContext) : ProjectResult :=
   { success := true, diagnostics := diags, packageName := name,
-    checkedModules := modules, symbols, instances, constructors, globals, instanceEnv, abbrevEnv, sourceFiles }
+    checkedModules := modules, symbols, instances, constructors, globals, instanceEnv, abbrevEnv, diagCtx }
 
 end ProjectResult
 
@@ -272,7 +318,8 @@ private def resolveImportItem (root : Soma.Dependent.Namespace)
     (modulePath : List String) (itemName : String) : Option Soma.Core.QualifiedName :=
   root.resolve (modulePath ++ [itemName])
 
-def processImports (ast : Soma.Syntax.Module) (globals : Globals) : Globals × Diagnostics :=
+def processImports (ast : Soma.Syntax.Module) (diag : DiagBuilder) (globals : Globals)
+    : Globals × Diagnostics :=
   let moduleNs := (ModuleName.fromString ast.name).toNamespace
   ast.decls.foldl (init := (globals, #[])) fun (g, diags) decl =>
     match decl with
@@ -294,9 +341,9 @@ def processImports (ast : Soma.Syntax.Module) (globals : Globals) : Globals × D
             else (g'', ds)
           | none =>
             let moduleStr := String.intercalate "::" modulePath
-            let d := Diagnostic.error
+            let d := projectError diag
               s!"unresolved import `{item.name}` in `{moduleStr}`" item.span
-              |>.withHelp s!"no declaration named `{item.name}` exists in module `{moduleStr}`"
+              (help := some s!"no declaration named `{item.name}` exists in module `{moduleStr}`")
             (g', ds.push d)
     | _ => (g, diags)
 
@@ -1140,7 +1187,8 @@ private partial def hasUsedDescendant (ns : Soma.Dependent.Namespace)
     ns.children.any (fun _ child => hasUsedDescendant child usedGlobals)
 
 /-- Detect imports that were resolved but never referenced during type checking -/
-def detectUnusedImports (ast : Soma.Syntax.Module) (globals : Globals)
+def detectUnusedImports (ast : Soma.Syntax.Module) (diag : DiagBuilder)
+    (globals : Globals)
     (usedGlobals : Std.HashSet Soma.Core.QualifiedName) : Diagnostics :=
   let root := globals.root
   ast.decls.foldl (init := #[]) fun diags decl =>
@@ -1157,14 +1205,19 @@ def detectUnusedImports (ast : Soma.Syntax.Module) (globals : Globals)
               | some childNs => hasUsedDescendant childNs usedGlobals
               | none => false
             if isUsed then ds
-            else ds.push (Diagnostic.warning s!"unused import `{item.name}`" item.span
-              |>.withHelp "remove this import or use the imported name")
+            else ds.push (projectWarning diag s!"unused import `{item.name}`" item.span
+              (help := some "remove this import or use the imported name"))
           | none => ds
     | _ => diags
 
-/-- Check a single module with access to already-checked dependencies using dependent types.
-    Uses error recovery to continue checking and produce partial results even on errors. -/
+/-- Look up the per-file `DiagBuilder` for a module -/
+private def diagBuilderFor (ctx : DiagContext) (info : ModuleInfo) : DiagBuilder :=
+  match ctx.files[info.sourceFile.id]? with
+  | some b => b
+  | none => panic! s!"checkModule: module {info.name.toString} ({info.sourceFile.path}) not registered in DiagContext"
+
 def checkModule
+    (diagCtx : DiagContext)
     (info : ModuleInfo)
     (checkedDeps : Std.HashMap String CheckedModule)
     (externalGlobals : Globals)
@@ -1176,12 +1229,13 @@ def checkModule
     (preludeSymbols : Array String := #[])
     : Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
   let modName := info.name.toString
+  let diag := diagBuilderFor diagCtx info
 
   -- Collect globals from checked dependencies
   let mergedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
     mergeGlobals acc dep.globals
 
-  let (withImports, importDiags) := processImports info.ast mergedGlobals
+  let (withImports, importDiags) := processImports info.ast diag mergedGlobals
 
   let seedGlobals := withImports.injectPrelude ["stdlib", "prelude"] preludeSymbols
 
@@ -1198,17 +1252,17 @@ def checkModule
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
   -- Lower AST to Core untyped module
-  let elabRes := elaborateWithExternals info.ast
+  let elabRes := elaborateWithExternals info.ast diag
   if elabRes.diagnostics.hasErrors then
     return (elabRes.diagnostics ++ importDiags, none, supply)
 
   -- Use the shared type checking pipeline (fresh check, no previous state)
   let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none (some elabRes.uniqueSupply)
 
-  let allDiags := tcResult.errors.map (·.toDiagnostic)
+  let allDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic diagCtx)
 
   let unusedImportDiags := if allDiags.isEmpty then
-    detectUnusedImports info.ast tcResult.globals tcResult.allUsedGlobals
+    detectUnusedImports info.ast diag tcResult.globals tcResult.allUsedGlobals
   else #[]
 
   -- Extract public symbols and instances (always do this, even with errors)
@@ -1258,6 +1312,7 @@ def checkModule
 /-- Check a single module incrementally, reusing cached results for unchanged definitions.
     This is the main entry point for incremental type checking in the LSP. -/
 def checkModuleIncremental
+    (diagCtx : DiagContext)
     (info : ModuleInfo)
     (prevModule : CheckedModule)
     (checkedDeps : Std.HashMap String CheckedModule)
@@ -1270,12 +1325,13 @@ def checkModuleIncremental
     (preludeSymbols : Array String := #[])
     : Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
   let modName := info.name.toString
+  let diag := diagBuilderFor diagCtx info
 
   -- Collect globals from checked dependencies
   let mergedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
     mergeGlobals acc dep.globals
 
-  let (withImports, importDiags) := processImports info.ast mergedGlobals
+  let (withImports, importDiags) := processImports info.ast diag mergedGlobals
   let seedGlobals := withImports.injectPrelude ["stdlib", "prelude"] preludeSymbols
 
   let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
@@ -1288,7 +1344,7 @@ def checkModuleIncremental
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
   -- Lower AST to Core untyped module
-  let elabRes := elaborateWithExternals info.ast
+  let elabRes := elaborateWithExternals info.ast diag
   if elabRes.diagnostics.hasErrors then
     return (elabRes.diagnostics ++ importDiags, none, supply)
 
@@ -1298,10 +1354,10 @@ def checkModuleIncremental
   -- If nothing changed (empty errors and same state), we could reuse previous result
   -- But for correctness, we rebuild anyway since the lowered module might have changed
 
-  let allDiags := tcResult.errors.map (·.toDiagnostic)
+  let allDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic diagCtx)
 
   let unusedImportDiags := if allDiags.isEmpty then
-    detectUnusedImports info.ast tcResult.globals tcResult.allUsedGlobals
+    detectUnusedImports info.ast diag tcResult.globals tcResult.allUsedGlobals
   else #[]
 
   -- Extract public symbols and instances
@@ -1348,6 +1404,7 @@ def checkModuleIncremental
 
 /-- Check all modules in topological order -/
 def checkModulesInOrder
+    (diagCtx : DiagContext)
     (sortedNames : Array String)
     (graph : ModuleGraph)
     (externalGlobals : Globals)
@@ -1365,28 +1422,28 @@ def checkModulesInOrder
       | none => (diags, checked, results, sup)
       | some info =>
         let modulePrelude := if modName == preludeModuleName then #[] else preludeSymbols
-        let (moduleDiags, cmOpt, sup') := checkModule info checked externalGlobals externalInstanceEnv externalAbbrevEnv externalSymbols packageName sup modulePrelude
+        let (moduleDiags, cmOpt, sup') := checkModule diagCtx info checked externalGlobals externalInstanceEnv externalAbbrevEnv externalSymbols packageName sup modulePrelude
         match cmOpt with
         | some cm => (diags ++ moduleDiags, checked.insert modName cm, results.push cm, sup')
         | none => (diags ++ moduleDiags, checked, results, sup')
   (allDiags, results, finalSupply)
 
 /-- Parse a single source file into a ModuleInfo -/
-def parseModuleFile (moduleName : String) (path : System.FilePath)
-    : IO (SourceFile × Except Diagnostics ModuleInfo) := do
+def parseModuleFile (ctx : DiagContext) (moduleName : String) (path : System.FilePath)
+    : IO (DiagContext × Except Diagnostics ModuleInfo) := do
   let content ← IO.FS.readFile path
-  let parseRes := parse path.toString content
-  let sourceFile := parseRes.sourceFile
+  let (ctx', parseRes) := parseWithCtx ctx path.toString content
   if parseRes.diagnostics.hasErrors then
-    pure (sourceFile, .error parseRes.diagnostics)
+    pure (ctx', .error parseRes.diagnostics)
   else
-    let lowerRes := lower parseRes.tree moduleName
+    let diag := parseRes.builder
+    let lowerRes := lower parseRes.tree diag moduleName
     let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics
     if allDiags.hasErrors then
-      pure (sourceFile, .error allDiags)
+      pure (ctx', .error allDiags)
     else
       let modName := ModuleName.fromString moduleName
-      pure (sourceFile, .ok {
+      pure (ctx', .ok {
         name := modName
         path := path
         content := content
@@ -1395,20 +1452,21 @@ def parseModuleFile (moduleName : String) (path : System.FilePath)
         contentHash := some (hash content)
       })
 
-/-- Parse all modules in a list, collecting errors -/
-def parseModuleFiles (modules : Array (String × System.FilePath)) : IO (Diagnostics × ModuleGraph × SourceFileMap) := do
+/-- Parse every module file in a project -/
+def parseModuleFiles (modules : Array (String × System.FilePath))
+    : IO (Diagnostics × ModuleGraph × DiagContext) := do
+  let mut ctx : DiagContext := DiagContext.empty
   let mut graph : ModuleGraph := {}
-  let mut sourceMap : SourceFileMap := SourceFileMap.empty
   let mut allDiags : Diagnostics := #[]
 
   for (name, path) in modules do
-    let (sourceFile, res) ← parseModuleFile name path
-    sourceMap := sourceMap.insert sourceFile
+    let (ctx', res) ← parseModuleFile ctx name path
+    ctx := ctx'
     match res with
     | .ok info => graph := graph.insert name info
     | .error diags => allDiags := allDiags ++ diags
 
-  pure (allDiags, graph, sourceMap)
+  pure (allDiags, graph, ctx)
 
 /-- Check a single .soma file -/
 def checkSingleFile
@@ -1418,28 +1476,29 @@ def checkSingleFile
   let path := config.input
   let name := config.name.getD (path.fileStem.getD "Main")
 
-  let (sourceFile, parseRes) ← parseModuleFile name path
+  let (diagCtx, parseRes) ← parseModuleFile DiagContext.empty name path
   match parseRes with
-  | .error diags =>
-    pure (ProjectResult.failed name diags (SourceFileMap.fromSingle sourceFile))
+  | .error diags => pure (ProjectResult.failed name diags diagCtx)
 
   | .ok info =>
-    let sourceMap := SourceFileMap.fromSingle info.sourceFile
     let graph : ModuleGraph := ({} : ModuleGraph).insert name info
     let depGraph := buildDependencyGraph graph
 
     match topoSortModules depGraph with
     | .cycles cyclicDeps =>
+      let cycleDiag := diagBuilderFor diagCtx info
       let diags := cyclicDeps.filterMap fun cycle =>
         cycle.imports[0]?.map fun edge =>
-          let msg := s!"Cyclic import detected: {cycle.modules.toList}"
-          Diagnostic.error msg edge.importSpan
-      pure (ProjectResult.failed name diags sourceMap)
+          projectError cycleDiag s!"Cyclic import detected: {cycle.modules.toList}"
+            edge.importSpan
+      pure (ProjectResult.failed name diags diagCtx)
 
     | .sorted sortedNames =>
       match ← loadDeps config.deps with
       | .error e =>
-        pure (ProjectResult.failed name #[Diagnostic.error (toString e) Span.uninhabited] sourceMap)
+        let loadDiag := diagBuilderFor diagCtx info
+        pure (ProjectResult.failed name
+          #[projectError loadDiag (toString e) Span.uninhabited] diagCtx)
 
       | .ok deps =>
         let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv, extAbbrevEnv) := processExternalDependencies deps
@@ -1452,7 +1511,7 @@ def checkSingleFile
         let supply := UniqueSupply.initial name
 
         let (checkDiags, checkedModules, _) := checkModulesInOrder
-          sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols name supply preludeSymbols
+          diagCtx sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols name supply preludeSymbols
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
           m.publicSymbols.fold (init := acc) fun env sym val => env.insert sym val
@@ -1469,9 +1528,9 @@ def checkSingleFile
           AbbrevEnv.merge acc m.abbrevEnv
 
         if checkDiags.hasErrors then
-          pure (ProjectResult.failed name checkDiags sourceMap)
+          pure (ProjectResult.failed name checkDiags diagCtx)
         else
-          pure (ProjectResult.succeeded name checkDiags checkedModules symbols instances constructors globals instanceEnv abbrevEnv sourceMap)
+          pure (ProjectResult.succeeded name checkDiags checkedModules symbols instances constructors globals instanceEnv abbrevEnv diagCtx)
 
 /-- Check a project directory -/
 def checkDirectory
@@ -1483,10 +1542,10 @@ def checkDirectory
 
   let modules ← findModules packageName rootDir
 
-  let (parseDiags, graph, sourceMap) ← parseModuleFiles modules
+  let (parseDiags, graph, diagCtx) ← parseModuleFiles modules
 
   if parseDiags.hasErrors then
-    pure (ProjectResult.failed packageName parseDiags sourceMap)
+    pure (ProjectResult.failed packageName parseDiags diagCtx)
   else
     let depGraph := buildDependencyGraph graph
 
@@ -1495,13 +1554,17 @@ def checkDirectory
       let diags := cyclicDeps.filterMap fun cycle =>
         cycle.imports[0]?.map fun edge =>
           let msg := s!"Cyclic import detected: {cycle.modules.toList}"
-          Diagnostic.error msg edge.importSpan
-      pure (ProjectResult.failed packageName diags sourceMap)
+          { severity := severity .lower, message := msg
+            primary := diagCtx.primary edge.importSpan msg : Diagnostic }
+      pure (ProjectResult.failed packageName diags diagCtx)
 
     | .sorted sortedNames =>
       match ← loadDeps config.deps with
       | .error e =>
-        pure (ProjectResult.failed packageName #[Diagnostic.error (toString e) Span.uninhabited] sourceMap)
+        pure (ProjectResult.failed packageName
+          #[{ severity := severity .lower, message := toString e
+              primary := diagCtx.primary Span.uninhabited (toString e) : Diagnostic }]
+          diagCtx)
 
       | .ok deps =>
         let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv, extAbbrevEnv) := processExternalDependencies deps
@@ -1515,7 +1578,7 @@ def checkDirectory
         let supply := UniqueSupply.initial packageName
 
         let (checkDiags, checkedModules, _) := checkModulesInOrder
-          sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols packageName supply preludeSymbols
+          diagCtx sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols packageName supply preludeSymbols
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
           m.publicSymbols.fold (init := acc) fun env sym val => env.insert sym val
@@ -1534,9 +1597,9 @@ def checkDirectory
         let allDiags := parseDiags ++ checkDiags
 
         if allDiags.hasErrors then
-          pure (ProjectResult.failed packageName allDiags sourceMap)
+          pure (ProjectResult.failed packageName allDiags diagCtx)
         else
-          pure (ProjectResult.succeeded packageName allDiags checkedModules symbols instances constructors globals instanceEnv abbrevEnv sourceMap)
+          pure (ProjectResult.succeeded packageName allDiags checkedModules symbols instances constructors globals instanceEnv abbrevEnv diagCtx)
 
 /-- Check a project (file or directory) -/
 def checkProject
@@ -1550,23 +1613,31 @@ def checkProject
   else
     let msg := s!"Input is neither a .soma file nor a directory: {config.input}"
     let name := config.name.getD "unknown"
-    pure (ProjectResult.failed name #[Diagnostic.error msg Span.uninhabited])
+    pure (ProjectResult.failed name
+      #[{ severity := severity .lower, message := msg
+          primary := { substrate := 0
+                       range := { startLine := 0, startCol := 0
+                                  endLine := 0, endCol := 0 }
+                       message := some msg
+                       style := .error } : Diagnostic }])
 
 /-- Parse only -/
 def parseOnly (filePath : String) (content : String) : ParseResult :=
   parse filePath content
 
 /-- Parse + lower to AST -/
-def toAst (filePath : String) (content : String) (moduleName : Option String := none) : ParseResult × LowerResult :=
+def toAst (filePath : String) (content : String) (moduleName : Option String := none)
+    : ParseResult × LowerResult :=
   let parseRes := parse filePath content
   let modName := moduleName.getD (moduleNameFromPath filePath)
-  let lowerRes := lower parseRes.tree modName
+  let lowerRes := lower parseRes.tree parseRes.builder modName
   (parseRes, lowerRes)
 
 /-- Parse + lower to Core untyped module -/
-def toElaborated (filePath : String) (content : String) : ParseResult × LowerResult × ElaborationResult :=
+def toElaborated (filePath : String) (content : String)
+    : ParseResult × LowerResult × ElaborationResult :=
   let (parseRes, lowerRes) := toAst filePath content
-  let elabRes := elaborate lowerRes.ast
+  let elabRes := elaborate lowerRes.ast parseRes.builder
   (parseRes, lowerRes, elabRes)
 
 end Soma.Project.Check

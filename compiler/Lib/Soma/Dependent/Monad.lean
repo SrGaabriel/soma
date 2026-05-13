@@ -1649,7 +1649,7 @@ def primTypeValue (p : Soma.Core.PrimType) (span : Soma.Syntax.Span := Soma.Synt
   match ← primTypeValue? p with
   | some v => pure v
   | none =>
-    throw (.internalError s!"wired primitive `{p.name}` has no `@[wired_in]` declaration in scope" span)
+    throw (.compilerBug s!"wired primitive `{p.name}` has no `@[wired_in]` declaration in scope" span)
 
 /-- Resolve the wired-in `Bool::True`/`Bool::False` constructor by boolean value -/
 def wiredBoolConstructor (b : Bool) (span : Soma.Syntax.Span := Soma.Syntax.Span.uninhabited)
@@ -1657,17 +1657,17 @@ def wiredBoolConstructor (b : Bool) (span : Soma.Syntax.Span := Soma.Syntax.Span
   let ctx ← getCtx
   match ctx.globals.wiredIn.getUnique? .typeBool with
   | none =>
-    throw (.internalError "wired type `Bool` (role `type.bool`) is not registered" span)
+    throw (.compilerBug "wired type `Bool` (role `type.bool`) is not registered" span)
   | some boolInfo =>
     let boolTy : Value := Value.vDataType boolInfo.name.id []
     let targetName : String := if b then "True" else "False"
     match ctx.globals.lookupInductive boolInfo.name with
     | none =>
-      throw (.internalError s!"wired type `Bool` ({boolInfo.name.display}) has no inductive metadata" span)
+      throw (.compilerBug s!"wired type `Bool` ({boolInfo.name.display}) has no inductive metadata" span)
     | some indMeta =>
       match indMeta.ctors.find? (fun c => c.simpleName == targetName) with
       | none =>
-        throw (.internalError s!"wired `Bool` is missing constructor `{targetName}`" span)
+        throw (.compilerBug s!"wired `Bool` is missing constructor `{targetName}`" span)
       | some ctorMeta =>
         pure (ctorMeta.name, ctorMeta.tag, boolTy)
 
@@ -2290,7 +2290,7 @@ def tryAlternatives (actions : List (TCM α)) : TCM α := do
       lastError := some e
   match lastError with
   | some e => throw e
-  | none => throw (.internalError "tryAlternatives: empty action list" Span.uninhabited)
+  | none => throw (.compilerBug "tryAlternatives: empty action list" Span.uninhabited)
 
 /-! ## Error Recovery Infrastructure
 
@@ -2367,7 +2367,7 @@ def typePlaceholder (span : Span) : TCM Value := do
     Returns default if depth is exceeded. -/
 def withFuel [Inhabited α] (fuel : Nat) (action : Nat → TCM α) (span : Span) : TCM α := do
   if fuel == 0 then
-    addError (.internalError "recursion limit exceeded" span)
+    addError (.compilerBug "recursion limit exceeded" span)
     return default
   else
     action (fuel - 1)
@@ -2435,13 +2435,13 @@ def softRequire (action : TCM α) (default : α) (errorMsg : String) (span : Spa
   match ← tryWithRollback action with
   | some result => return result
   | none =>
-    addError (.internalError errorMsg span)
+    addError (.compilerBug errorMsg span)
     return default
 
 /-- Assert a condition, adding an error if false but continuing execution -/
 def softAssert (cond : Bool) (errorMsg : String) (span : Span) : TCM Unit := do
   if !cond then
-    addError (.internalError errorMsg span)
+    addError (.compilerBug errorMsg span)
 
 /-- Run an action that might throw, converting throws to accumulated errors.
     Always returns a value (the default on failure). This is the primary

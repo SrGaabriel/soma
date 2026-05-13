@@ -162,7 +162,7 @@ def testFreshMeta : IO TestResult := do
     if m1.id == 0 && m2.id == 1 then
       return m1
     else
-      TCM.throw (.internalError "wrong meta IDs" testSpan)
+      TCM.throw (.compilerBug "wrong meta IDs" testSpan)
   match action.run' with
   | .ok _ => return .passed
   | .error e => return .failed s!"Unexpected error: {e}"
@@ -175,7 +175,7 @@ def testFreshLevelVar : IO TestResult := do
     if l1.id == 0 && l2.id == 1 then
       return l1
     else
-      TCM.throw (.internalError "wrong level IDs" testSpan)
+      TCM.throw (.compilerBug "wrong level IDs" testSpan)
   match action.run' with
   | .ok _ => return .passed
   | .error e => return .failed s!"Unexpected error: {e}"
@@ -186,7 +186,7 @@ def testContextExtend : IO TestResult := do
     -- Initially empty
     let lookup1 ← TCM.lookupLocal "x"
     if lookup1.isSome then
-      TCM.throw (.internalError "x should not be in empty context" testSpan)
+      TCM.throw (.compilerBug "x should not be in empty context" testSpan)
     -- Extend and lookup
     let xId := mkUnique 0 "x"
     TCM.withBinding "x" xId testIntTy .omega .explicit testSpan do
@@ -194,10 +194,10 @@ def testContextExtend : IO TestResult := do
       match lookup2 with
       | some entry =>
         if entry.name != "x" then
-          TCM.throw (.internalError "wrong name" testSpan)
+          TCM.throw (.compilerBug "wrong name" testSpan)
         return true
       | none =>
-        TCM.throw (.internalError "x should be in extended context" testSpan)
+        TCM.throw (.compilerBug "x should be in extended context" testSpan)
   match action.run' with
   | .ok true => return .passed
   | .ok false => return .failed "Expected true"
@@ -209,11 +209,11 @@ def testMetaSolve : IO TestResult := do
     let m ← TCM.freshMeta (.vType .zero)
     let solved1 ← TCM.isMetaSolved m
     if solved1 then
-      TCM.throw (.internalError "meta should not be solved initially" testSpan)
+      TCM.throw (.compilerBug "meta should not be solved initially" testSpan)
     TCM.solveMeta m testIntTy
     let solved2 ← TCM.isMetaSolved m
     if !solved2 then
-      TCM.throw (.internalError "meta should be solved after solveMeta" testSpan)
+      TCM.throw (.compilerBug "meta should be solved after solveMeta" testSpan)
     return true
   match action.run' with
   | .ok true => return .passed
@@ -226,7 +226,7 @@ def testFreshName : IO TestResult := do
     let n1 ← TCM.freshName "x"
     let n2 ← TCM.freshName "x"
     if n1 == n2 then
-      TCM.throw (.internalError "fresh names should be different" testSpan)
+      TCM.throw (.compilerBug "fresh names should be different" testSpan)
     return true
   match action.run' with
   | .ok true => return .passed
@@ -271,7 +271,9 @@ def testUnifyFailureMessage : IO TestResult := do
 /-- Test: TCError.toDiagnostic creates valid diagnostic -/
 def testErrorToDiagnostic : IO TestResult := do
   let err := TCError.unboundVariable "x" testSpan #[]
-  let diag := err.toDiagnostic
+  let sf := Soma.Syntax.SourceFile.create ⟨0⟩ "<test>" ""
+  let ctx := Soma.DiagContext.ofSourceFile sf
+  let diag := err.toDiagnostic ctx
   if diag.message.isEmpty then
     return .failed "diagnostic message should not be empty"
   if diag.code.isNone then

@@ -3,7 +3,7 @@ import Soma.Driver.Options
 import Soma.Driver.Target
 import Soma.Syntax
 import Soma.Core.LambdaLift
-import Soma.Logging
+import Soma.Diagnostic
 import Soma.Project
 import Soma.Project.Check
 import Soma.Dependent
@@ -54,10 +54,12 @@ def runLex (p : Parsed) : IO UInt32 := do
   let sourceFile := Syntax.SourceFile.create ⟨0⟩ input source
 
   -- Lex it
-  let (tokens, diags) := Syntax.lexCode sourceFile
+  let diagCtx := Soma.DiagContext.ofSourceFile sourceFile
+  let diag := diagCtx.files[sourceFile.id]!
+  let (tokens, diags) := Syntax.lexCode sourceFile diag
 
   if diags.size > 0 then
-    Soma.Logging.Error.printDiagnostics diags sourceFile
+    Soma.Render.eprintAllCtx diagCtx diags
 
   -- Print tokens
   IO.println s!"Lexed {tokens.size} tokens from {input}:"
@@ -79,7 +81,7 @@ def runParse (p : Parsed) : IO UInt32 := do
   let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
   if !allDiags.isEmpty then
-    Logging.Error.printDiagnostics allDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx allDiags
 
   -- Show CST if requested
   if showCst then
@@ -95,7 +97,7 @@ def runParse (p : Parsed) : IO UInt32 := do
     IO.println "\nParse successful!"
   else
     IO.eprintln ""
-    IO.eprintln (Logging.Error.renderSummary allDiags)
+    IO.eprintln (Soma.Render.summary allDiags)
 
   return if allDiags.hasErrors then 1 else 0
 
@@ -109,11 +111,11 @@ def runLower (p : Parsed) : IO UInt32 := do
 
   -- Print diagnostics
   if !allDiags.isEmpty then
-    Logging.Error.printDiagnostics allDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx allDiags
 
   if allDiags.hasErrors then
     IO.eprintln ""
-    IO.eprintln (Logging.Error.renderSummary allDiags)
+    IO.eprintln (Soma.Render.summary allDiags)
     return 1
 
   -- Success
@@ -158,12 +160,12 @@ def runCheckDep (p : Parsed) : IO UInt32 := do
   -- Output diagnostics
   match format with
   | "json" =>
-    IO.println (Logging.Error.renderDiagnosticsJson result.diagnostics)
+    IO.println (Soma.Render.encodeJsonCtx result.diagCtx result.diagnostics)
   | _ => -- "human"
     if !result.diagnostics.isEmpty then
-      Logging.Error.printDiagnosticsWithMap result.diagnostics result.sourceFiles
+      Soma.Render.eprintAllCtx result.diagCtx result.diagnostics
       IO.eprintln ""
-      IO.eprintln (Logging.Error.renderSummary result.diagnostics)
+      IO.eprintln (Soma.Render.summary result.diagnostics)
     else
       IO.println "Dependent type check passed."
 
@@ -191,8 +193,9 @@ def runMetadata (p : Parsed) : IO UInt32 := do
       IO.eprintln "Internal error: metadata generation succeeded but no metadata produced"
       return 1
   else
-    Soma.Logging.Error.printDiagnosticsWithMap result.diagnostics result.sourceFiles
+    Soma.Render.eprintAllCtx result.diagCtx result.diagnostics
     return 1
+
 
 /-- Handler for the `llvm` command -/
 def runLLVM (p : Parsed) : IO UInt32 := do
@@ -207,19 +210,19 @@ def runLLVM (p : Parsed) : IO UInt32 := do
   let parseDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
   if parseDiags.hasErrors then
-    Soma.Logging.Error.printDiagnostics parseDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx parseDiags
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary parseDiags)
+    IO.eprintln (Soma.Render.summary parseDiags)
     return 1
 
   -- Phase 4: Lower declarations to Core untyped module
-  let elabRes := Soma.Project.Check.elaborate lowerRes.ast
+  let elabRes := Soma.Project.Check.elaborate lowerRes.ast parseRes.builder
   let elabDiags := parseDiags ++ elabRes.diagnostics
 
   if elabRes.diagnostics.hasErrors then
-    Soma.Logging.Error.printDiagnostics elabDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx elabDiags
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary elabDiags)
+    IO.eprintln (Soma.Render.summary elabDiags)
     return 1
 
   -- Phase 5: Type check with dependent types (this gives us usage counts)
@@ -230,13 +233,13 @@ def runLLVM (p : Parsed) : IO UInt32 := do
     Soma.Dependent.AbbrevEnv.empty
     none
 
-  let tcDiags := tcResult.errors.map (·.toDiagnostic)
+  let tcDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic parseRes.diagCtx)
   let allDiags := elabDiags ++ tcDiags
 
   if allDiags.hasErrors then
-    Soma.Logging.Error.printDiagnostics allDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx allDiags
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
+    IO.eprintln (Soma.Render.summary allDiags)
     return 1
 
   -- Phase 5.5: Lambda lifting
@@ -253,8 +256,15 @@ def runLLVM (p : Parsed) : IO UInt32 := do
   let stringTy ← match Somac.Alloy.Lower.computeStringTy tcResult.globals.wiredIn tcResult.globals.inductives primTypes with
     | .ok ty => pure ty
     | .error msg =>
-      let diag : Soma.Syntax.Diagnostic := Soma.Syntax.Diagnostic.error msg Soma.Syntax.Span.uninhabited
-      Soma.Logging.Error.printDiagnostic diag parseRes.sourceFile
+      let diag : Psychopomp.Diagnostic :=
+        { severity := Soma.severity .codegen
+          message := msg
+          primary := { substrate := 0
+                       range := { startLine := 0, startCol := 0
+                                  endLine := 0, endCol := 0 }
+                       message := some msg
+                       style := .error } }
+      Soma.Render.eprintDiagCtx parseRes.diagCtx diag
       return 1
   let alloyModule := Somac.Alloy.Lower.lower graph moduleName primTypes stringTy tcResult.globals.inductives tcResult.globals.intrinsics
 
@@ -284,19 +294,19 @@ def runAlloy (p : Parsed) : IO UInt32 := do
   let parseDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
   if parseDiags.hasErrors then
-    Soma.Logging.Error.printDiagnostics parseDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx parseDiags
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary parseDiags)
+    IO.eprintln (Soma.Render.summary parseDiags)
     return 1
 
   -- Phase 4: Lower declarations to Core untyped module
-  let elabRes := Soma.Project.Check.elaborate lowerRes.ast
+  let elabRes := Soma.Project.Check.elaborate lowerRes.ast parseRes.builder
   let elabDiags := parseDiags ++ elabRes.diagnostics
 
   if elabRes.diagnostics.hasErrors then
-    Soma.Logging.Error.printDiagnostics elabDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx elabDiags
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary elabDiags)
+    IO.eprintln (Soma.Render.summary elabDiags)
     return 1
 
   -- Phase 5: Type check with dependent types (this gives us usage counts)
@@ -307,13 +317,13 @@ def runAlloy (p : Parsed) : IO UInt32 := do
     Soma.Dependent.AbbrevEnv.empty
     none
 
-  let tcDiags := tcResult.errors.map (·.toDiagnostic)
+  let tcDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic parseRes.diagCtx)
   let allDiags := elabDiags ++ tcDiags
 
   if allDiags.hasErrors then
-    Soma.Logging.Error.printDiagnostics allDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx allDiags
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
+    IO.eprintln (Soma.Render.summary allDiags)
     return 1
 
   -- Phase 5.5: Lambda lifting
@@ -330,8 +340,15 @@ def runAlloy (p : Parsed) : IO UInt32 := do
   let stringTy ← match Somac.Alloy.Lower.computeStringTy tcResult.globals.wiredIn tcResult.globals.inductives primTypes with
     | .ok ty => pure ty
     | .error msg =>
-      let diag : Soma.Syntax.Diagnostic := Soma.Syntax.Diagnostic.error msg Soma.Syntax.Span.uninhabited
-      Soma.Logging.Error.printDiagnostic diag parseRes.sourceFile
+      let diag : Psychopomp.Diagnostic :=
+        { severity := Soma.severity .codegen
+          message := msg
+          primary := { substrate := 0
+                       range := { startLine := 0, startCol := 0
+                                  endLine := 0, endCol := 0 }
+                       message := some msg
+                       style := .error } }
+      Soma.Render.eprintDiagCtx parseRes.diagCtx diag
       return 1
   let alloyModule := Somac.Alloy.Lower.lower graph moduleName primTypes stringTy tcResult.globals.inductives tcResult.globals.intrinsics
 
@@ -355,19 +372,19 @@ def runCircuit (p : Parsed) : IO UInt32 := do
   let parseDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
   if parseDiags.hasErrors then
-    Soma.Logging.Error.printDiagnostics parseDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx parseDiags
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary parseDiags)
+    IO.eprintln (Soma.Render.summary parseDiags)
     return 1
 
   -- Phase 4: Lower declarations to Core untyped module
-  let elabRes := Soma.Project.Check.elaborate lowerRes.ast
+  let elabRes := Soma.Project.Check.elaborate lowerRes.ast parseRes.builder
   let elabDiags := parseDiags ++ elabRes.diagnostics
 
   if elabRes.diagnostics.hasErrors then
-    Soma.Logging.Error.printDiagnostics elabDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx elabDiags
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary elabDiags)
+    IO.eprintln (Soma.Render.summary elabDiags)
     return 1
 
   -- Phase 5: Type check with dependent types (this gives us usage counts)
@@ -378,13 +395,13 @@ def runCircuit (p : Parsed) : IO UInt32 := do
     Soma.Dependent.AbbrevEnv.empty
     none
 
-  let tcDiags := tcResult.errors.map (·.toDiagnostic)
+  let tcDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic parseRes.diagCtx)
   let allDiags := elabDiags ++ tcDiags
 
   if allDiags.hasErrors then
-    Soma.Logging.Error.printDiagnostics allDiags parseRes.sourceFile
+    Soma.Render.eprintAllCtx parseRes.diagCtx allDiags
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
+    IO.eprintln (Soma.Render.summary allDiags)
     return 1
 
   -- Phase 5.5: Lambda lifting

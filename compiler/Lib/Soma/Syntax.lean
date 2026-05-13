@@ -3,7 +3,6 @@
 
 -- Foundation
 import Soma.Syntax.Source
-import Soma.Syntax.Diagnostic
 
 -- Green/Red Trees (rust-analyzer style CST)
 import Soma.Syntax.SyntaxKind

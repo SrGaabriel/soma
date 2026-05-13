@@ -28,13 +28,13 @@ def parseAttribute : ParserM (Option GreenNode) := do
                     | none => #[atTok, lbracket, nameTok, rbracket]
                   return some (GreenNode.mkNode .attribute children)
               | none =>
-                  recordError "expected ']' after attribute"
+                  recordExpected "']' after attribute"
                   return some (GreenNode.mkError "unclosed attribute" #[atTok, lbracket, nameTok])
           | none =>
-              recordError "expected attribute name"
+              recordExpected "attribute name"
               return some (GreenNode.mkError "missing attribute name" #[atTok, lbracket])
       | none =>
-          recordError "expected '[' after '@'"
+          recordExpected "'[' after '@'"
           return some (GreenNode.mkError "malformed attribute" #[atTok])
   | none => return none
 
@@ -75,7 +75,7 @@ partial def parseDefClause : ParserM (Option GreenNode) := do
           children := children.push pat
           patternCount := patternCount + 1
       | none =>
-          recordError "expected pattern after '|'"
+          recordExpected "pattern after '|'"
           return some (GreenNode.mkError "missing pattern" #[pipeTok])
 
       while true do
@@ -90,14 +90,14 @@ partial def parseDefClause : ParserM (Option GreenNode) := do
               children := children.push pat
               patternCount := patternCount + 1
           | none =>
-              recordError "expected pattern after ','"
+              recordExpected "pattern after ','"
               return some (GreenNode.mkError "missing pattern after ','" children)
         else
-          recordError "expected ',' between multiple patterns"
+          recordExpected "',' between multiple patterns"
           return some (GreenNode.mkError "missing ',' between patterns" children)
 
       if patternCount == 0 then
-        recordError "expected pattern after '|'"
+        recordExpected "pattern after '|'"
         return some (GreenNode.mkError "missing pattern" #[pipeTok])
 
       let tok ← current
@@ -107,10 +107,10 @@ partial def parseDefClause : ParserM (Option GreenNode) := do
         | some body =>
             return some (GreenNode.mkNode .defClause (children ++ #[arrowTok, body]))
         | none =>
-            recordError "expected expression after '=>'"
+            recordExpected "expression after '=>'"
             return some (GreenNode.mkError "missing clause body" children)
       else
-        recordError "expected '=>' after patterns"
+        recordExpected "'=>' after patterns"
         return some (GreenNode.mkError "missing '=>'" children)
   | none => return none
 
@@ -140,15 +140,15 @@ def parseDefBinder : ParserM (Option GreenNode) := do
             return some (GreenNode.mkNode .field
               #[lbrace1, lbrace2, nameTok, colonTok, ty, rbrace1, rbrace2])
           | none =>
-            recordError "expected '}}' after instance dict binder"
+            recordExpected "'}}' after instance dict binder"
             return some (GreenNode.mkError "unclosed instance binder"
               #[lbrace1, lbrace2, nameTok, colonTok, ty, rbrace1])
         | none =>
-          recordError "expected '}}' after instance dict binder"
+          recordExpected "'}}' after instance dict binder"
           return some (GreenNode.mkError "unclosed instance binder"
             #[lbrace1, lbrace2, nameTok, colonTok, ty])
       | none =>
-        recordError "expected type in instance dict binder"
+        recordExpected "type in instance dict binder"
         return some (GreenNode.mkError "missing instance binder type"
           #[lbrace1, lbrace2, nameTok, colonTok])
     else
@@ -161,15 +161,15 @@ def parseDefBinder : ParserM (Option GreenNode) := do
             return some (GreenNode.mkNode .field
               #[lbrace1, lbrace2, ty, rbrace1, rbrace2])
           | none =>
-            recordError "expected '}}' after instance dict binder"
+            recordExpected "'}}' after instance dict binder"
             return some (GreenNode.mkError "unclosed instance binder"
               #[lbrace1, lbrace2, ty, rbrace1])
         | none =>
-          recordError "expected '}}' after instance dict binder"
+          recordExpected "'}}' after instance dict binder"
           return some (GreenNode.mkError "unclosed instance binder"
             #[lbrace1, lbrace2, ty])
       | none =>
-        recordError "expected constraint in instance dict binder"
+        recordExpected "constraint in instance dict binder"
         return some (GreenNode.mkError "missing instance binder constraint"
           #[lbrace1, lbrace2])
   else if (← check .leftParen) then
@@ -177,7 +177,7 @@ def parseDefBinder : ParserM (Option GreenNode) := do
     let quantityOpt ← Soma.Syntax.Parse.parseQuantity
     let nameToks ← parseBinderNames
     if nameToks.isEmpty then
-      recordError "expected binder name after '('"
+      recordExpected "binder name after '('"
       return some (GreenNode.mkError "missing function binder name" #[lparen])
     if (← check .colon) then
       let colonTok ← consumeAny
@@ -190,22 +190,22 @@ def parseDefBinder : ParserM (Option GreenNode) := do
             nameToks ++ #[colonTok, ty, rparen]
           return some (GreenNode.mkNode .field children)
         | none =>
-          recordError "expected ')' after function binder"
+          recordExpected "')' after function binder"
           return some (GreenNode.mkError "unclosed function binder"
             (#[lparen] ++ nameToks ++ #[colonTok, ty]))
       | none =>
-        recordError "expected type after ':' in function binder"
+        recordExpected "type after ':' in function binder"
         return some (GreenNode.mkError "missing function binder type"
           (#[lparen] ++ nameToks ++ #[colonTok]))
     else
-      recordError "expected ':' in function binder"
+      recordExpected "':' in function binder"
       return some (GreenNode.mkError "missing ':' in function binder"
         (#[lparen] ++ nameToks))
   else if (← check .leftBrace) then
     let lbrace ← consumeAny
     let nameToks ← parseBinderNames
     if nameToks.isEmpty then
-      recordError "expected binder name after '{'"
+      recordExpected "binder name after '{'"
       return some (GreenNode.mkError "missing function binder name" #[lbrace])
     if (← check .colon) then
       let colonTok ← consumeAny
@@ -216,15 +216,15 @@ def parseDefBinder : ParserM (Option GreenNode) := do
           let children := #[lbrace] ++ nameToks ++ #[colonTok, ty, rbrace]
           return some (GreenNode.mkNode .field children)
         | none =>
-          recordError "expected '}' after function binder"
+          recordExpected "'}' after function binder"
           return some (GreenNode.mkError "unclosed function binder"
             (#[lbrace] ++ nameToks ++ #[colonTok, ty]))
       | none =>
-        recordError "expected type after ':' in function binder"
+        recordExpected "type after ':' in function binder"
         return some (GreenNode.mkError "missing function binder type"
           (#[lbrace] ++ nameToks ++ #[colonTok]))
     else
-      recordError "expected ':' in function binder"
+      recordExpected "':' in function binder"
       return some (GreenNode.mkError "missing ':' in function binder"
         (#[lbrace] ++ nameToks))
   else
@@ -240,7 +240,7 @@ private partial def parseDefOrTheoremDecl
         match ← parseOperatorName with
         | some op => pure op
         | none =>
-            recordError "expected operator name"
+            recordExpected "operator name"
             pure (GreenNode.mkError "missing name" #[kwTok])
       else
         match ← parseIdent with
@@ -256,7 +256,7 @@ private partial def parseDefOrTheoremDecl
         let colonTok ← consumeAny
         match ← parseType with
         | some ty => pure (some (GreenNode.mkNode .signature #[colonTok, ty]))
-        | none => recordError "expected type after ':'"; pure none
+        | none => recordExpected "type after ':'"; pure none
       else pure none
 
       if (← check .colonEquals) then
@@ -322,23 +322,23 @@ def parseConstructorField : ParserM (Option GreenNode) := do
                 #[nameTok, colonTok, ty, rbrace1, rbrace2]
               return some (GreenNode.mkNode .field children)
             | none =>
-              recordError "expected '}}' after instance-implicit record field"
+              recordExpected "'}}' after instance-implicit record field"
               return some (GreenNode.mkError "unclosed instance-implicit field"
                 (#[lbrace1, lbrace2, nameTok, colonTok, ty, rbrace1]))
           | none =>
-            recordError "expected '}}' after instance-implicit record field"
+            recordExpected "'}}' after instance-implicit record field"
             return some (GreenNode.mkError "unclosed instance-implicit field"
               (#[lbrace1, lbrace2, nameTok, colonTok, ty]))
         | none =>
-          recordError "expected type after ':' in instance-implicit record field"
+          recordExpected "type after ':' in instance-implicit record field"
           return some (GreenNode.mkError "missing field type"
             (#[lbrace1, lbrace2, nameTok, colonTok]))
       else
-        recordError "expected ':' in instance-implicit record field"
+        recordExpected "':' in instance-implicit record field"
         return some (GreenNode.mkError "missing ':' in instance-implicit field"
           (#[lbrace1, lbrace2, nameTok]))
     | none =>
-      recordError "expected field name after '{{'"
+      recordExpected "field name after '{{'"
       return some (GreenNode.mkError "missing instance-implicit field name"
         #[lbrace1, lbrace2])
   else if (← check .leftBrace) then
@@ -357,19 +357,19 @@ def parseConstructorField : ParserM (Option GreenNode) := do
               #[nameTok, colonTok, ty, rbrace]
             return some (GreenNode.mkNode .field children)
           | none =>
-            recordError "expected '}' after implicit record field"
+            recordExpected "'}' after implicit record field"
             return some (GreenNode.mkError "unclosed implicit field"
               (#[lbrace, nameTok, colonTok, ty]))
         | none =>
-          recordError "expected type after ':' in implicit record field"
+          recordExpected "type after ':' in implicit record field"
           return some (GreenNode.mkError "missing field type"
             (#[lbrace, nameTok, colonTok]))
       else
-        recordError "expected ':' in implicit record field"
+        recordExpected "':' in implicit record field"
         return some (GreenNode.mkError "missing ':' in implicit field"
           (#[lbrace, nameTok]))
     | none =>
-      recordError "expected field name after '{'"
+      recordExpected "field name after '{'"
       return some (GreenNode.mkError "missing implicit field name" #[lbrace])
   else if (← check .leftParen) then
     let lparen ← consumeAny
@@ -387,19 +387,19 @@ def parseConstructorField : ParserM (Option GreenNode) := do
               #[nameTok, colonTok, ty, rparen]
             return some (GreenNode.mkNode .field children)
           | none =>
-            recordError "expected ')' after explicit record field"
+            recordExpected "')' after explicit record field"
             return some (GreenNode.mkError "unclosed explicit field"
               (#[lparen, nameTok, colonTok, ty]))
         | none =>
-          recordError "expected type after ':' in record field"
+          recordExpected "type after ':' in record field"
           return some (GreenNode.mkError "missing field type"
             (#[lparen, nameTok, colonTok]))
       else
-        recordError "expected ':' in record field"
+        recordExpected "':' in record field"
         return some (GreenNode.mkError "missing ':' in record field"
           (#[lparen, nameTok]))
     | none =>
-      recordError "expected field name after '('"
+      recordExpected "field name after '('"
       return some (GreenNode.mkError "missing field name" #[lparen])
   else
     match ← parseLowerIdent with
@@ -413,7 +413,7 @@ def parseConstructorField : ParserM (Option GreenNode) := do
             match ← parseType with
             | some ty => return some (GreenNode.mkNode .field #[nameTok, colonTok, ty])
             | none =>
-                recordError "expected type after ':'"
+                recordExpected "type after ':'"
                 return some (GreenNode.mkError "missing field type" #[nameTok, colonTok])
         | none =>
             let tyNode := GreenNode.mkNode .typeVar #[nameTok]
@@ -436,16 +436,16 @@ def parseConstructorBinder : ParserM (Option GreenNode) := do
           | some rparen =>
             return some (GreenNode.mkNode .field #[lparen, nameTok, colonTok, ty, rparen])
           | none =>
-            recordError "expected ')' after constructor binder"
+            recordExpected "')' after constructor binder"
             return some (GreenNode.mkError "unclosed constructor binder" #[lparen, nameTok, colonTok, ty])
         | none =>
-          recordError "expected type after ':' in constructor binder"
+          recordExpected "type after ':' in constructor binder"
           return some (GreenNode.mkError "missing constructor binder type" #[lparen, nameTok, colonTok])
       else
-        recordError "expected ':' in constructor binder"
+        recordExpected "':' in constructor binder"
         return some (GreenNode.mkError "missing ':' in constructor binder" #[lparen, nameTok])
     | none =>
-      recordError "expected binder name in constructor binder"
+      recordExpected "binder name in constructor binder"
       return some (GreenNode.mkError "missing constructor binder name" #[lparen])
   else if (← check .leftBrace) then
     let lbrace ← consumeAny
@@ -459,16 +459,16 @@ def parseConstructorBinder : ParserM (Option GreenNode) := do
           | some rbrace =>
             return some (GreenNode.mkNode .field #[lbrace, nameTok, colonTok, ty, rbrace])
           | none =>
-            recordError "expected '}' after constructor binder"
+            recordExpected "'}' after constructor binder"
             return some (GreenNode.mkError "unclosed constructor binder" #[lbrace, nameTok, colonTok, ty])
         | none =>
-          recordError "expected type after ':' in constructor binder"
+          recordExpected "type after ':' in constructor binder"
           return some (GreenNode.mkError "missing constructor binder type" #[lbrace, nameTok, colonTok])
       else
-        recordError "expected ':' in constructor binder"
+        recordExpected "':' in constructor binder"
         return some (GreenNode.mkError "missing ':' in constructor binder" #[lbrace, nameTok])
     | none =>
-      recordError "expected binder name in constructor binder"
+      recordExpected "binder name in constructor binder"
       return some (GreenNode.mkError "missing constructor binder name" #[lbrace])
   else
     return none
@@ -488,7 +488,7 @@ def parseDataConstructor : ParserM (Option GreenNode) := do
             | some ty =>
                 return some (GreenNode.mkNode .constructorSig (attrs ++ #[pipeTok, nameTok, colonTok, ty]))
             | none =>
-                recordError "expected type after ':' in constructor"
+                recordExpected "type after ':' in constructor"
                 return some (GreenNode.mkError "missing constructor type" (attrs ++ #[pipeTok, nameTok, colonTok]))
           else
             -- Lean-style constructor binders: | Err (a : Type) (b : Nat)
@@ -500,16 +500,16 @@ def parseDataConstructor : ParserM (Option GreenNode) := do
               | some ty =>
                 return some (GreenNode.mkNode .constructorSig (attrs ++ #[pipeTok, nameTok] ++ fields ++ #[colonTok, ty]))
               | none =>
-                recordError "expected type after ':' in constructor"
+                recordExpected "type after ':' in constructor"
                 return some (GreenNode.mkError "missing constructor type" (attrs ++ #[pipeTok, nameTok] ++ fields ++ #[colonTok]))
             else
               return some (GreenNode.mkNode .constructor (attrs ++ #[pipeTok, nameTok] ++ fields))
       | none =>
-          recordError "expected constructor name after '|'"
+          recordExpected "constructor name after '|'"
           return some (GreenNode.mkError "missing constructor name" (attrs ++ #[pipeTok]))
   | none =>
       if attrs.isEmpty then return none
-      recordError "expected '|' after constructor attributes"
+      recordExpected "'|' after constructor attributes"
       return some (GreenNode.mkError "missing '|' after attributes" attrs)
 
 def parseTypeParams : ParserM (Array GreenNode) := do
@@ -530,16 +530,16 @@ def parseTypeParams : ParserM (Array GreenNode) := do
               let paramNode := GreenNode.mkNode .tyParamKinded #[lparen, nameTok, colonTok, typeTy, rparen]
               params := params.push paramNode
             | none =>
-              recordError "expected ')' after type annotation"
+              recordExpected "')' after type annotation"
               break
           | none =>
-            recordError "expected type after ':'"
+            recordExpected "type after ':'"
             break
         else
-          recordError "expected ':' after parameter name in annotation"
+          recordExpected "':' after parameter name in annotation"
           break
       | none =>
-        recordError "expected parameter name after '('"
+        recordExpected "parameter name after '('"
         break
     else
       -- Try simple identifier parameter
@@ -568,16 +568,16 @@ def parseInductiveBinders : ParserM (Array GreenNode) := do
               let paramNode := GreenNode.mkNode .tyParamKinded children
               params := params.push paramNode
             | none =>
-              recordError "expected '}' after binder"
+              recordExpected "'}' after binder"
               break
           | none =>
-            recordError "expected type after ':' in binder"
+            recordExpected "type after ':' in binder"
             break
         else
-          recordError "expected ':' in implicit binder"
+          recordExpected "':' in implicit binder"
           break
       | none =>
-        recordError "expected binder name after '{'"
+        recordExpected "binder name after '{'"
         break
     else if (← check .leftParen) then
       let lparen ← consumeAny
@@ -596,16 +596,16 @@ def parseInductiveBinders : ParserM (Array GreenNode) := do
               let paramNode := GreenNode.mkNode .tyParamKinded children
               params := params.push paramNode
             | none =>
-              recordError "expected ')' after binder"
+              recordExpected "')' after binder"
               break
           | none =>
-            recordError "expected type after ':' in binder"
+            recordExpected "type after ':' in binder"
             break
         else
-          recordError "expected ':' in explicit binder"
+          recordExpected "':' in explicit binder"
           break
       | none =>
-        recordError "expected binder name after '('"
+        recordExpected "binder name after '('"
         break
     else
       break
@@ -624,7 +624,7 @@ def parseInductiveDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) :=
             let colonTok ← consumeAny
             match ← parseType with
             | some kindTy => pure (some (GreenNode.mkNode .signature #[colonTok, kindTy]))
-            | none => recordError "expected type after ':'"; pure none
+            | none => recordExpected "type after ':'"; pure none
           else pure none
 
 
@@ -634,7 +634,7 @@ def parseInductiveDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) :=
             | none => pure #[]
 
           if whereTok.isSome && constructors.isEmpty then
-            recordError "expected constructor clauses after 'where'"
+            recordExpected "constructor clauses after 'where'"
             let children := attrs ++ #[inductiveTok, nameTok] ++
               (match paramList with | some p => #[p] | none => #[]) ++
               (match kindAnnot with | some k => #[k] | none => #[]) ++
@@ -648,7 +648,7 @@ def parseInductiveDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) :=
             constructors
           return some (GreenNode.mkNode .declInductive children)
       | none =>
-          recordError "expected type name after 'inductive'"
+          recordExpected "type name after 'inductive'"
           return some (GreenNode.mkError "missing type name" #[inductiveTok])
   | none => return none
 
@@ -670,10 +670,10 @@ def parseStructDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
               if hasBodyProvidingAttr attrs then
                 let children := attrs ++ #[recordTok, nameTok] ++ paramList
                 return some (GreenNode.mkNode .declStruct children)
-              recordError "expected 'where' in record declaration"
+              recordExpected "'where' in record declaration"
               return some (GreenNode.mkError "missing 'where'" (attrs ++ #[recordTok, nameTok] ++ paramList))
       | none =>
-          recordError "expected record name after 'record'"
+          recordExpected "record name after 'record'"
           return some (GreenNode.mkError "missing record name" #[recordTok])
   | none => return none
 
@@ -696,10 +696,10 @@ def parseTraitMethod : ParserM (Option GreenNode) := do
             let sig := GreenNode.mkNode .signature #[colonTok, ty]
             return some (GreenNode.mkNode .traitMethod #[nameNode, sig])
         | none =>
-            recordError "expected type after ':' in trait method"
+            recordExpected "type after ':' in trait method"
             return some (GreenNode.mkError "missing method signature" #[nameNode, colonTok])
       else
-        recordError "expected ':' and type in trait method"
+        recordExpected "':' and type in trait method"
         return some (GreenNode.mkError "missing method signature" #[nameNode])
   | none => return none
 
@@ -728,10 +728,10 @@ def parseTraitDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
                 #[whereTok] ++ methods
               return some (GreenNode.mkNode .declTrait children)
           | none =>
-              recordError "expected 'where' in trait declaration"
+              recordExpected "'where' in trait declaration"
               return some (GreenNode.mkError "missing 'where'" #[traitTok, nameTok])
       | none =>
-          recordError "expected trait name after 'trait'"
+          recordExpected "trait name after 'trait'"
           return some (GreenNode.mkError "missing trait name" #[traitTok])
   | none => return none
 
@@ -772,15 +772,15 @@ def parseInstanceDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := 
                     pure (GreenNode.mkNode .instDictBinder
                       #[lbrace1, lbrace2, nameTok, colonTok, constraintNode, rbrace1, rbrace2])
                   | none =>
-                    recordError "expected '}}' after instance dict binder"
+                    recordExpected "'}}' after instance dict binder"
                     pure (GreenNode.mkError "unclosed dict binder"
                       #[lbrace1, lbrace2, nameTok, colonTok, constraintNode, rbrace1])
                 | none =>
-                  recordError "expected '}}' after instance dict binder"
+                  recordExpected "'}}' after instance dict binder"
                   pure (GreenNode.mkError "unclosed dict binder"
                     #[lbrace1, lbrace2, nameTok, colonTok, constraintNode])
               | none =>
-                recordError "expected constraint after ':' in instance dict binder"
+                recordExpected "constraint after ':' in instance dict binder"
                 pure (GreenNode.mkError "missing constraint"
                   #[lbrace1, lbrace2, nameTok, colonTok])
             else
@@ -794,15 +794,15 @@ def parseInstanceDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := 
                     pure (GreenNode.mkNode .instDictBinder
                       #[lbrace1, lbrace2, constraintNode, rbrace1, rbrace2])
                   | none =>
-                    recordError "expected '}}' after instance dict binder"
+                    recordExpected "'}}' after instance dict binder"
                     pure (GreenNode.mkError "unclosed dict binder"
                       #[lbrace1, lbrace2, constraintNode, rbrace1])
                 | none =>
-                  recordError "expected '}}' after instance dict binder"
+                  recordExpected "'}}' after instance dict binder"
                   pure (GreenNode.mkError "unclosed dict binder"
                     #[lbrace1, lbrace2, constraintNode])
               | none =>
-                recordError "expected constraint in instance dict binder"
+                recordExpected "constraint in instance dict binder"
                 pure (GreenNode.mkError "missing constraint" #[lbrace1, lbrace2])
           binders := binders.push dictNode
         else if (← check .leftBrace) then
@@ -820,16 +820,16 @@ def parseInstanceDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := 
                     #[lbrace, nameTok, colonTok, kindTy, rbrace]
                   binders := binders.push binderNode
                 | none =>
-                  recordError "expected '}' after type variable binder"
+                  recordExpected "'}' after type variable binder"
                   parsing := false
               | none =>
-                recordError "expected type after ':' in binder"
+                recordExpected "type after ':' in binder"
                 parsing := false
             else
-              recordError "expected ':' in implicit type binder"
+              recordExpected "':' in implicit type binder"
               parsing := false
           | none =>
-            recordError "expected binder name after '{'"
+            recordExpected "binder name after '{'"
             parsing := false
         else
           parsing := false
@@ -839,7 +839,7 @@ def parseInstanceDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := 
       let traitApp ← match ← parseConstraint with
         | some trait => pure trait
         | none =>
-          recordError "expected trait application after ':'"
+          recordExpected "trait application after ':'"
           pure (GreenNode.mkError "missing trait" #[])
 
       -- Step 4: Optional `where` and method definitions
@@ -885,7 +885,7 @@ def parseImportPath : ParserM (Option GreenNode) := do
           segments := segments.push colonTok
           match ← parseLowerIdent with
           | some seg => segments := segments.push seg
-          | none => recordError "expected path segment after '::'"; break
+          | none => recordExpected "path segment after '::'"; break
         | _ => break
       return some (GreenNode.mkNode .importPath segments)
   | none => return none
@@ -918,12 +918,12 @@ def parseUseDecl (pubTok : Option GreenNode := none) : ParserM (Option GreenNode
             | some items =>
                 return some (GreenNode.mkNode .declUse (toks ++ #[path, colonTok, items]))
             | none =>
-                recordError "expected '{' after '::'"
+                recordExpected "'{' after '::'"
                 return some (GreenNode.mkError "missing import items" (toks ++ #[path, colonTok]))
           else
             return some (GreenNode.mkNode .declUse (toks ++ #[path]))
       | none =>
-          recordError "expected import path after 'use'"
+          recordExpected "import path after 'use'"
           return some (GreenNode.mkError "missing import path" toks)
   | none => return none
 
@@ -944,13 +944,13 @@ def parseAbbrevDecl : ParserM (Option GreenNode) := do
                   let children := #[abbrevTok, nameTok] ++ paramList ++ #[eqTok, ty]
                   return some (GreenNode.mkNode .declAbbrev children)
               | none =>
-                  recordError "expected type after ':='"
+                  recordExpected "type after ':='"
                   return some (GreenNode.mkError "missing type" #[abbrevTok, nameTok, eqTok])
           | none =>
-              recordError "expected ':=' in abbreviation declaration"
+              recordExpected "':=' in abbreviation declaration"
               return some (GreenNode.mkError "missing ':='" #[abbrevTok, nameTok])
       | none =>
-          recordError "expected type name after 'abbrev'"
+          recordExpected "type name after 'abbrev'"
           return some (GreenNode.mkError "missing type name" #[abbrevTok])
   | none => return none
 
@@ -968,7 +968,7 @@ partial def parseDecl : ParserM (Option GreenNode) := do
     let pubTok ← consumeAny
     if (← check .kw_use) then parseUseDecl (some pubTok)
     else
-      recordError "expected 'use' after 'pub'"
+      recordExpected "'use' after 'pub'"
       return some (GreenNode.mkError "expected 'use' after 'pub'" #[pubTok])
   else if (← check .kw_abbrev) then parseAbbrevDecl
   else return none
@@ -1004,19 +1004,23 @@ end Soma.Syntax.Parse
 namespace Soma.Syntax
 
 /-- Parse source code into a green tree -/
-def parseGreen (tokens : Array GreenNode) (source : SourceFile) : GreenNode × Diagnostics :=
-  parseGreenWith Parse.parseSourceFile tokens source
+def parseGreen (tokens : Array GreenNode) (source : SourceFile)
+    (diag : Soma.DiagBuilder) : GreenNode × Diagnostics :=
+  parseGreenWith Parse.parseSourceFile tokens source diag
 
 /-- Full parsing pipeline: lex + parse -/
-def parse (source : SourceFile) : GreenNode × Diagnostics :=
-  parseWith Parse.parseSourceFile source
+def parse (source : SourceFile) (diag : Soma.DiagBuilder)
+    : GreenNode × Diagnostics :=
+  parseWith Parse.parseSourceFile source diag
 
 /-- Parse and wrap in a red tree with stable NodeIds -/
-def parseToTree (source : SourceFile) : ParsedTree × Diagnostics :=
-  parseToTreeWith Parse.parseSourceFile source
+def parseToTree (source : SourceFile) (diag : Soma.DiagBuilder)
+    : ParsedTree × Diagnostics :=
+  parseToTreeWith Parse.parseSourceFile source diag
 
 /-- Reparse with an old tree, preserving NodeIds where possible -/
-def reparseToTree (oldTree : ParsedTree) (source : SourceFile) : ParsedTree × Diagnostics :=
-  reparseToTreeWith Parse.parseSourceFile oldTree source
+def reparseToTree (oldTree : ParsedTree) (source : SourceFile) (diag : Soma.DiagBuilder)
+    : ParsedTree × Diagnostics :=
+  reparseToTreeWith Parse.parseSourceFile oldTree source diag
 
 end Soma.Syntax

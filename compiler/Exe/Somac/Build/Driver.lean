@@ -5,15 +5,15 @@ import Soma.Project
 import Soma.Project.Check
 import Soma.Driver.Options
 import Soma.Driver.Target
-import Soma.Logging
+import Soma.Diagnostic
 
 namespace Somac.Build
 
 open Soma
 open Soma.Project
 open Soma.Driver
-open Soma.Logging
-open Soma.Syntax (Diagnostic Diagnostics Span)
+open Soma (Diagnostic Diagnostics DiagContext severity)
+open Soma.Syntax (Span)
 open Soma.Project.Check
 
 /-- Result of a build operation -/
@@ -21,14 +21,14 @@ structure BuildResult where
   success : Bool
   diagnostics : Array Diagnostic
   outputPath : Option System.FilePath := none
-  sourceFiles : Soma.Syntax.SourceFileMap := Soma.Syntax.SourceFileMap.empty
+  diagCtx : DiagContext := DiagContext.empty
 
 namespace BuildResult
 
 def failed (diags : Array Diagnostic)
-    (sourceFiles : Soma.Syntax.SourceFileMap := Soma.Syntax.SourceFileMap.empty)
+    (diagCtx : DiagContext := DiagContext.empty)
     : BuildResult :=
-  { success := false, diagnostics := diags, sourceFiles }
+  { success := false, diagnostics := diags, diagCtx }
 
 def succeeded (output : System.FilePath) : BuildResult :=
   { success := true, diagnostics := #[], outputPath := some output }
@@ -144,12 +144,12 @@ def build (opts : BuildOptions) : IO BuildResult := do
 
   -- Print diagnostics
   if result.diagnostics.size > 0 then
-    Error.printDiagnosticsWithMap result.diagnostics result.sourceFiles
+    Render.eprintAllCtx result.diagCtx result.diagnostics
 
   if !result.success then
     IO.eprintln ""
-    IO.eprintln (Error.renderSummary result.diagnostics)
-    pure (BuildResult.failed result.diagnostics result.sourceFiles)
+    IO.eprintln (Render.summary result.diagnostics)
+    pure (BuildResult.failed result.diagnostics result.diagCtx)
   else
     let dependencyAlloyModules ← if opts.deps.isEmpty then
       pure #[]
@@ -167,11 +167,18 @@ def build (opts : BuildOptions) : IO BuildResult := do
     let extConstructors : Std.HashMap String Nat := result.constructors
 
     let codegenError (e : IO.Error) : IO BuildResult := do
-      let diag : Diagnostic := Diagnostic.error e.toString Span.uninhabited
-      Error.printDiagnostic diag (Soma.Syntax.SourceFile.create ⟨0⟩ "" "")
+      let diag : Diagnostic :=
+        { severity := severity .codegen
+          message := e.toString
+          primary := { substrate := 0
+                       range := { startLine := 0, startCol := 0
+                                  endLine := 0, endCol := 0 }
+                       message := some e.toString
+                       style := .error } }
+      Render.eprintDiagCtx result.diagCtx diag
       IO.eprintln ""
-      IO.eprintln (Error.renderSummary #[diag])
-      pure (BuildResult.failed #[diag] result.sourceFiles)
+      IO.eprintln (Render.summary #[diag])
+      pure (BuildResult.failed #[diag] result.diagCtx)
 
     if opts.lib then
       try

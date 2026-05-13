@@ -549,10 +549,9 @@ def tryMatchInstanceUnify (inst : InstanceInfo) (goalArgs : Array Value)
 
       try
         unify instArg' goalArg'
-      catch e =>
-        -- Unification failed - restore state and return error with details
+      catch _ =>
         TCM.modifyState fun _ => stateBefore
-        return .error s!"unification failed: {e}"
+        return .error "unification failed during instance matching"
 
   -- Check that all created metas during unification are solved and collect the substitutions
   let stateAfter ← TCM.getState

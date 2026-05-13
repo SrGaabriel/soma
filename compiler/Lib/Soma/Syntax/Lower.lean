@@ -1,5 +1,5 @@
 import Soma.Syntax.Source
-import Soma.Syntax.Diagnostic
+import Soma.Diagnostic
 import Soma.Syntax.SyntaxKind
 import Soma.Syntax.GreenTree
 import Soma.Syntax.RedTree
@@ -9,11 +9,14 @@ import Soma.Core.Quantity
 namespace Soma.Syntax
 
 open Soma.Core (Quantity)
+open Soma (Diagnostics DiagBuilder Phase severity)
+open Psychopomp (Diagnostic)
 
 /-- Context for lowering -/
 structure LowerContext where
   source : SourceFile
   redTree : RedTree
+  diag : DiagBuilder
 
 /-- Lowering state - accumulates diagnostics -/
 structure LowerState where
@@ -32,8 +35,26 @@ def recordDiag (d : Diagnostic) : LowerM Unit :=
   modify fun s => { s with diagnostics := s.diagnostics.push d }
 
 /-- Record an error and continue -/
-def lowerError (msg : String) (span : Span) : LowerM Unit :=
-  recordDiag (Diagnostic.error msg span)
+def lowerError (msg : String) (span : Span) : LowerM Unit := do
+  let ctx ← read
+  recordDiag
+    { severity := severity .lower
+      message := msg
+      primary := ctx.diag.primary span msg }
+
+/-- Record an internal lowering bug -/
+def lowerBug (msg : String) (span : Span) : LowerM Unit := do
+  let ctx ← read
+  let body := s!"compiler bug (lower): {msg}"
+  recordDiag
+    { severity :=
+        { severity .lower with
+            audiences := ["compilerDev"]
+            certainty := .suspected }
+      message := body
+      primary := ctx.diag.primary span body
+      helps :=
+        ["please report at https://github.com/SrGaabriel/soma/issues with the failing input"] }
 
 /-- Get a default span from context -/
 def defaultSpan : LowerM Span := do
@@ -184,7 +205,7 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
       | .true_ => pure (.lit (.bool true span))
       | .false_ => pure (.lit (.bool false span))
       | _ =>
-          lowerError s!"internal: pattern lowering does not handle token kind '{kind}'" span
+          lowerBug s!"pattern lowering does not handle token kind '{kind}'" span
           pure (.wildcard span)
 
   | .node .triviaToken _ _ =>
@@ -286,7 +307,7 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
             pure (.var ⟨path, name, span⟩)
 
       | _ =>
-          lowerError s!"internal: pattern lowering does not handle node kind '{kind}'" span
+          lowerBug s!"pattern lowering does not handle node kind '{kind}'" span
           pure (.wildcard span)
 
   | .error message _ _ =>
@@ -405,7 +426,7 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
       | .lowerIdent => pure (.var ⟨#[], text, span⟩)
       | .upperIdent => pure (.con ⟨#[], text, span⟩)
       | _ =>
-          lowerError s!"internal: type lowering does not handle token kind '{kind}'" span
+          lowerBug s!"type lowering does not handle token kind '{kind}'" span
           pure (.var ⟨#[], "_error", span⟩)
 
   | .node .triviaToken _ _ => pure (.var ⟨#[], "_error", span⟩)
@@ -849,7 +870,7 @@ partial def lowerConstraint (green : GreenNode) (offset : Nat) : LowerM Constrai
           let args ← kidsWithOffsets[1:].toArray.mapM fun (c, o) => lowerTypeExpr c o
           pure ⟨className, args, span⟩
       else
-        lowerError s!"internal: constraint lowering does not handle node kind '{kind}'" span
+        lowerBug s!"constraint lowering does not handle node kind '{kind}'" span
         pure ⟨⟨#[], "_error", span⟩, #[], span⟩
 
   | .token kind text =>
@@ -1046,7 +1067,7 @@ partial def lowerExprToken (kind : TokenKind) (text : String) (span : Span) : Lo
   | .true_ => pure (.lit (.bool true span))
   | .false_ => pure (.lit (.bool false span))
   | _ =>
-      lowerError s!"internal: expression lowering does not handle token kind '{kind}'" span
+      lowerBug s!"expression lowering does not handle token kind '{kind}'" span
       pure (.var ⟨#[], "_error", span⟩)
 
 /-- Lower a single parameter -/
@@ -1437,7 +1458,7 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
           if kind.isType then
             lowerTypeExpr green offset
           else
-            lowerError s!"internal: expression lowering does not handle node kind '{kind}'" span
+            lowerBug s!"expression lowering does not handle node kind '{kind}'" span
             pure (.var ⟨#[], "_error", span⟩)
 
   | .error message _ _ =>
@@ -1971,7 +1992,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             pure (.abbrev name params ty span)
 
       | _ =>
-          lowerError s!"internal: declaration lowering does not handle node kind '{kind}'" span
+          lowerBug s!"declaration lowering does not handle node kind '{kind}'" span
           pure (.use false ⟨#[], "_error", span⟩ #[] span)
 
   | .error message _ _ =>
@@ -2024,14 +2045,17 @@ Lower a CST to an AST.
 Always succeeds, returning an AST (possibly with error nodes) and diagnostics.
 This enables LSP features to work even with syntax errors.
 -/
-def lower (tree : ParsedTree) (moduleName : String := "Main") : Module × Diagnostics :=
-  let ctx : LowerContext := { source := tree.red.source, redTree := tree.red }
+def lower (tree : ParsedTree) (diag : Soma.DiagBuilder)
+    (moduleName : String := "Main") : Module × Diagnostics :=
+  let ctx : LowerContext :=
+    { source := tree.red.source, redTree := tree.red, diag }
   (lowerModule tree.green 0 moduleName).run' ctx
 
 /-- Lower a green tree directly (for testing the trivia invariant) -/
-def lowerGreen (green : GreenNode) (source : SourceFile) (moduleName : String := "Main") : Module × Diagnostics :=
+def lowerGreen (green : GreenNode) (source : SourceFile) (diag : Soma.DiagBuilder)
+    (moduleName : String := "Main") : Module × Diagnostics :=
   let red := buildRedTree green source
-  let ctx : LowerContext := { source := source, redTree := red }
+  let ctx : LowerContext := { source, redTree := red, diag }
   (lowerModule green 0 moduleName).run' ctx
 
 /- todo: implement -/
@@ -2041,18 +2065,21 @@ def lowerGreen (green : GreenNode) (source : SourceFile) (moduleName : String :=
 --   sorry
 
 /-- Lower a single declaration from a RedNode -/
-def lowerDeclFromRedNode (tree : ParsedTree) (node : RedNode) : Option (Decl × Diagnostics) :=
+def lowerDeclFromRedNode (tree : ParsedTree) (diag : Soma.DiagBuilder) (node : RedNode)
+    : Option (Decl × Diagnostics) :=
   match node.syntaxKind? with
   | some kind =>
     if kind.isDecl then
-      let ctx : LowerContext := { source := tree.red.source, redTree := tree.red }
+      let ctx : LowerContext :=
+        { source := tree.red.source, redTree := tree.red, diag }
       some ((lowerDecl node.green node.offset).run' ctx)
     else
       none
   | none => none
 
 /-- Lower specific declarations by their NodeIds -/
-def lowerDeclarationsByIds (tree : ParsedTree) (declIds : Array NodeId)
+def lowerDeclarationsByIds (tree : ParsedTree) (diag : Soma.DiagBuilder)
+    (declIds : Array NodeId)
     : Std.HashMap NodeId Decl × Diagnostics := Id.run do
   let mut result : Std.HashMap NodeId Decl := {}
   let mut allDiags : Diagnostics := #[]
@@ -2060,7 +2087,7 @@ def lowerDeclarationsByIds (tree : ParsedTree) (declIds : Array NodeId)
   for nodeId in declIds do
     match tree.red.getById? nodeId with
     | some node =>
-      match lowerDeclFromRedNode tree node with
+      match lowerDeclFromRedNode tree diag node with
       | some (decl, diags) =>
         result := result.insert nodeId decl
         allDiags := allDiags ++ diags

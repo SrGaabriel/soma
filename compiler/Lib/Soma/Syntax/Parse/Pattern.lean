@@ -46,7 +46,7 @@ def parseConstructorName : ParserM (Option GreenNode) := do
             parts := parts.push sep
             parts := parts.push next
         | none =>
-            recordError "expected identifier after '::' in constructor name"
+            recordExpected "identifier after '::' in constructor name"
             return some (GreenNode.mkError "incomplete qualified constructor" (parts.push sep))
 
       -- Keep old behavior for single-segment names: only UpperIdent is a constructor.
@@ -76,10 +76,10 @@ partial def parseParenPattern : ParserM (Option GreenNode) := do
                 | some rparen =>
                     return some (GreenNode.mkNode .patCons #[lparen, first, colonTok, tail, rparen])
                 | none =>
-                    recordError "expected ')' after cons pattern"
+                    recordExpected "')' after cons pattern"
                     return some (GreenNode.mkError "unclosed cons pattern" #[lparen, first, colonTok, tail])
             | none =>
-                recordError "expected pattern after ':'"
+                recordExpected "pattern after ':'"
                 return some (GreenNode.mkError "incomplete cons pattern" #[lparen, first, colonTok])
           else if (← check .comma) then
             let mut elements := #[first]
@@ -88,22 +88,22 @@ partial def parseParenPattern : ParserM (Option GreenNode) := do
               elements := elements.push comma
               match ← parsePattern with
               | some elem => elements := elements.push elem
-              | none => recordError "expected pattern after ','"; break
+              | none => recordExpected "pattern after ','"; break
             match ← tryConsume .rightParen with
             | some rparen =>
                 return some (GreenNode.mkNode .patTuple (#[lparen] ++ elements ++ #[rparen]))
             | none =>
-                recordError "expected ')' after tuple pattern"
+                recordExpected "')' after tuple pattern"
                 return some (GreenNode.mkError "unclosed tuple pattern" (#[lparen] ++ elements))
           else
             match ← tryConsume .rightParen with
             | some rparen =>
                 return some (GreenNode.mkNode .patParens #[lparen, first, rparen])
             | none =>
-                recordError "expected ')', ':', or ',' in pattern"
+                recordExpected "')', ':', or ',' in pattern"
                 return some (GreenNode.mkError "malformed parenthesized pattern" #[lparen, first])
       | none =>
-          recordError "expected pattern after '('"
+          recordExpected "pattern after '('"
           return some (GreenNode.mkError "empty parentheses" #[lparen])
   | none => return none
 
@@ -119,7 +119,7 @@ partial def parseListPattern : ParserM (Option GreenNode) := do
       | some rbracket =>
           return some (GreenNode.mkNode .patList (#[lbracket] ++ elements ++ #[rbracket]))
       | none =>
-          recordError "expected ']' after list pattern"
+          recordExpected "']' after list pattern"
           return some (GreenNode.mkError "unclosed list pattern" (#[lbracket] ++ elements))
   | none => return none
 

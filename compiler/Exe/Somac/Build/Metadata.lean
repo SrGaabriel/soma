@@ -3,6 +3,7 @@ import Soma.Project
 import Soma.Project.Check
 import Soma.Project.Metadata
 import Soma.Driver.Options
+import Soma.Diagnostic
 import Kenosis
 
 namespace Somac.Build.Metadata
@@ -11,7 +12,7 @@ open Soma
 open Soma.Project
 open Soma.Project.Metadata
 open Soma.Driver
-open Soma.Syntax (Diagnostic)
+open Soma (Diagnostic DiagContext)
 open Soma.Project.Check
 open Kenosis
 
@@ -20,14 +21,14 @@ structure MetadataResult where
   success : Bool
   diagnostics : Array Diagnostic
   metadata : Option ProjectMetadata
-  sourceFiles : Soma.Syntax.SourceFileMap := Soma.Syntax.SourceFileMap.empty
+  diagCtx : DiagContext := DiagContext.empty
 
 namespace MetadataResult
 
 def failed (diags : Array Diagnostic)
-    (sourceFiles : Soma.Syntax.SourceFileMap := Soma.Syntax.SourceFileMap.empty)
+    (diagCtx : DiagContext := DiagContext.empty)
     : MetadataResult :=
-  { success := false, diagnostics := diags, metadata := none, sourceFiles }
+  { success := false, diagnostics := diags, metadata := none, diagCtx }
 
 def succeeded (pm : ProjectMetadata) : MetadataResult :=
   { success := true, diagnostics := #[], metadata := some pm }
@@ -58,6 +59,6 @@ def metadata (opts : MetadataOptions) (loadDeps : Array (String × System.FilePa
     }
     pure (MetadataResult.succeeded pm)
   else
-    pure (MetadataResult.failed result.diagnostics result.sourceFiles)
+    pure (MetadataResult.failed result.diagnostics result.diagCtx)
 
 end Somac.Build.Metadata

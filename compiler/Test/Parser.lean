@@ -12,11 +12,12 @@ def runParserTest (tc : TestCase) (verbose : Bool := false) : IO TestResult := d
   let sf := SourceFile.create ⟨0⟩ tc.name tc.source
 
   -- Parse to tree (includes lexing)
-  let (tree, parseDiags) := parseToTree sf
+  let (diag, _) := Soma.DiagBuilder.standalone sf
+  let (tree, parseDiags) := parseToTree sf diag
 
   -- Lower to AST
   let moduleName := tc.name.dropEnd 5 |>.copy
-  let (ast, lowerDiags) := lower tree moduleName
+  let (ast, lowerDiags) := lower tree diag moduleName
 
   let allDiags := parseDiags ++ lowerDiags
 

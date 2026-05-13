@@ -208,13 +208,14 @@ def elaborateTraitMethodType
     TCM.evalExprInEnv Soma.Core.Env.empty piExpr
 
 
-/-- Convert TCError to Diagnostic -/
-def tcErrorToDiagnostic (e : TCError) : Diagnostic :=
-  e.toDiagnostic
+/-- Convert a `TCError` to a `Psychopomp.Diagnostic` -/
+def tcErrorToDiagnostic (ctx : Soma.DiagContext) (e : TCError) : Diagnostic :=
+  TCError.toDiagnostic ctx e
 
-/-- Convert array of TCErrors to Diagnostics -/
-def tcErrorsToDiagnostics (errors : Array TCError) : Diagnostics :=
-  errors.map tcErrorToDiagnostic
+/-- Convert an array of `TCError`s -/
+def tcErrorsToDiagnostics (ctx : Soma.DiagContext) (errors : Array TCError)
+    : Diagnostics :=
+  errors.map (TCError.toDiagnostic ctx)
 
 /-- State maintained across function checks for totality tracking -/
 structure CheckState where

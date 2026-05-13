@@ -1,0 +1,10 @@
+error[E1008]: unknown variable `undefned_variable`
+  ,-> Test/fixtures/diagnostics/typoCorrection.soma:5:17
+  |
+4 |
+5 | def x : Type := undefned_variable
+  |                 ----------------- not found in scope
+  |
+  = help: did you mean `undefined_variable`?
+  = available fixes:
+    ⌖ #1: rename to `undefined_variable`

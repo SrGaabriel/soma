@@ -12,6 +12,11 @@ name = "kenosis"
 git = "https://github.com/SrGaabriel/kenosis"
 rev = "main"
 
+[[require]]
+name = "Psychopomp"
+git = "https://github.com/SrGaabriel/psychopomp"
+rev = "main"
+
 [[lean_lib]]
 name = "Soma"
 srcDir = "Lib"

@@ -76,9 +76,9 @@ def runDepCheckTest (tc : TestCase) (_debug : Bool := true) : IO TestResult := d
       if result.success then
         return .passed
       else
-        let diagErrors := result.diagnostics.filter (·.severity == .error)
+        let diagErrors := result.diagnostics.filter (fun d => d.severity.level == .error)
           |>.map (fun d =>
-            let labels := d.labels.map (·.message) |>.toList
+            let labels := (d.primary :: d.secondary).filterMap (·.message)
             let labelStr := if labels.isEmpty then "" else "\n    > " ++ String.intercalate "\n    > " labels
             s!"{d.message}{labelStr}") |>.toList
         return .failed s!"Expected success but got errors:\n  {String.intercalate "\n  " diagErrors}"
@@ -89,7 +89,7 @@ def runDepCheckTest (tc : TestCase) (_debug : Bool := true) : IO TestResult := d
       else
         match expectedSubstr with
         | some substr =>
-          let diagMsgs := result.diagnostics.filter (·.severity == .error) |>.map (·.message)
+          let diagMsgs := result.diagnostics.filter (·.severity.level == .error) |>.map (·.message)
           if diagMsgs.any (fun msg => msg.toSlice.contains substr) then
             return .passed
           else

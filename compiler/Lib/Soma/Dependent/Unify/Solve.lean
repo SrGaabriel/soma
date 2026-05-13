@@ -615,7 +615,7 @@ partial def solveMetaProjectionSpine (m : MetaId) (spine : Array Elim) (rhs : Va
       | .eField fieldName => decomposeRecordMeta m fieldName rest rhs
       | .eApp _ =>
         let span ← TCM.getSpan
-        TCM.throw (.internalError
+        TCM.throw (.compilerBug
           "solveMetaProjectionSpine: invariant violated (leading-app counted as projection)" span)
     else
       let leadingArgs := (spine.extract 0 leadingAppCount).toList.filterMap fun e =>
@@ -625,7 +625,7 @@ partial def solveMetaProjectionSpine (m : MetaId) (spine : Array Elim) (rhs : Va
       match ← TCM.lookupMeta m with
       | none =>
         let span ← TCM.getSpan
-        TCM.throw (.internalError s!"unknown metavariable ?{m.id}" span)
+        TCM.throw (.compilerBug s!"unknown metavariable ?{m.id}" span)
       | some info =>
         let mTy ← force info.type
         let stuck : TCM Unit := markStuckOnMetaWithSpine m spine
@@ -656,7 +656,7 @@ partial def decomposeRecordMeta (m : MetaId) (fieldName : String)
   match ← TCM.lookupMeta m with
   | none =>
     let span ← TCM.getSpan
-    TCM.throw (.internalError s!"unknown metavariable ?{m.id}" span)
+    TCM.throw (.compilerBug s!"unknown metavariable ?{m.id}" span)
   | some info =>
     let mTy ← force info.type
     match mTy with
@@ -690,7 +690,7 @@ partial def decomposeRecordMeta (m : MetaId) (fieldName : String)
           | some chosenId => solveMetaProjectionSpine chosenId restSpine rhs
           | none =>
             let span ← TCM.getSpan
-            TCM.throw (.internalError "freshMetaVal returned non-meta value" span)
+            TCM.throw (.compilerBug "freshMetaVal returned non-meta value" span)
     | _ =>
       markStuckOnMetaSpine m restSpine
 
@@ -713,7 +713,7 @@ partial def solveMeta (m : MetaId) (spine : List Value) (rhs : Value) : TCM Unit
       solvePattern m spine rhs info.type
   | none =>
     let span ← TCM.getSpan
-    TCM.throw (.internalError s!"unknown metavariable {m}" span)
+    TCM.throw (.compilerBug s!"unknown metavariable {m}" span)
 
 /-- Apply a value to a spine of arguments -/
 partial def applyToSpine (v : Value) (spine : List Value) : TCM Value := do
@@ -916,7 +916,7 @@ def trySolveBasicConstraint (c : Constraint) : TCM SolveResult := do
       if n1 ≤ n2 then return .solved
       else
         let span ← TCM.getSpan
-        return .failed (.internalError s!"level constraint failed: {l1n} ≤ {l2n}" span)
+        return .failed (.compilerBug s!"level constraint failed: {l1n} ≤ {l2n}" span)
     | .prop, _ => return .solved   -- Prop fits below every Type universe.
     | .lit 0, _ => return .solved  -- 0 ≤ anything.
     | .var v, .lit _ => TCM.solveLevelVar v (.lit 0); return .solved

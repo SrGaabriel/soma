@@ -119,7 +119,7 @@ private def trySolveDeferredInstance
   | _ =>
     let unsolved ← unsolvedMetasIn forcedDom
     if unsolved.isEmpty then
-      return .failed (.internalError
+      return .failed (.compilerBug
         s!"deferred instance constraint on non-class type: {forcedDom}" span)
     else
       return .blocked unsolved #[]

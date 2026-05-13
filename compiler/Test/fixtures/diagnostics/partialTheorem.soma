@@ -1,0 +1,9 @@
+// Fixture: partialTheorem (E1037)
+
+@[wired_in "type.bool"]
+inductive Bool where
+    | False
+    | True
+
+@[partial]
+theorem bogus : Bool := True

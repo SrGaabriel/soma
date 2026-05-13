@@ -1,10 +1,13 @@
 import Soma.Syntax.Source
 import Soma.Syntax.GreenTree
 import Soma.Syntax.RedTree
-import Soma.Syntax.Diagnostic
+import Soma.Diagnostic
 import Soma.Syntax.Lexer
 
 namespace Soma.Syntax
+
+open Soma (Diagnostics DiagBuilder Phase severity)
+open Psychopomp (Diagnostic)
 
 /-- A positioned token from the lexer, with leading trivia pre-attached -/
 structure PosToken where
@@ -54,12 +57,14 @@ structure ParserState where
   pos : Nat
   /-- Source file for error spans -/
   source : SourceFile
+  diag : DiagBuilder
   deriving Inhabited
 
 namespace ParserState
 
-def init (tokens : Array PosToken) (source : SourceFile) : ParserState :=
-  { tokens, pos := 0, source }
+def init (tokens : Array PosToken) (source : SourceFile) (diag : DiagBuilder)
+    : ParserState :=
+  { tokens, pos := 0, source, diag }
 
 def atEnd (s : ParserState) : Bool := s.pos ≥ s.tokens.size
 
@@ -96,8 +101,9 @@ abbrev ParserM := ReaderT ParserContext (StateT ParserState (StateT Diagnostics 
 
 namespace ParserM
 
-def run' (p : ParserM α) (tokens : Array PosToken) (source : SourceFile) : α × Diagnostics :=
-  let initState := ParserState.init tokens source
+def run' (p : ParserM α) (tokens : Array PosToken) (source : SourceFile)
+    (diag : DiagBuilder) : α × Diagnostics :=
+  let initState := ParserState.init tokens source diag
   let initCtx : ParserContext := {}
   let ((result, _), diagnostics) := ((p.run initCtx).run initState).run #[]
   (result, diagnostics)
@@ -107,26 +113,32 @@ def run' (p : ParserM α) (tokens : Array PosToken) (source : SourceFile) : α �
 def recordDiagnostic (d : Diagnostic) : ParserM Unit :=
   (StateT.lift (modify (·.push d)) : StateT ParserState (StateT Diagnostics Id) Unit)
 
+/-- Assemble a parser-phase diagnostic -/
+private def buildDiag (s : ParserState) (msg : String) (span : Span)
+    (secondary : Array (Span × String) := #[]) (notes : Array String := #[])
+    (help : Option String := none) : Diagnostic :=
+  { severity := severity .parse
+    message := msg
+    primary := s.diag.primary span msg
+    secondary := (secondary.map fun (sec, m) => s.diag.support sec m).toList
+    notes := notes.toList
+    helps := match help with | some h => [h] | none => [] }
+
 def recordError (msg : String) : ParserM Unit := do
   let s ← get
   let span := s.current.span s.source
-  recordDiagnostic (Diagnostic.error msg span)
+  recordDiagnostic (buildDiag s msg span)
 
-def recordErrorAt (msg : String) (span : Span) : ParserM Unit :=
-  recordDiagnostic (Diagnostic.error msg span)
+def recordErrorAt (msg : String) (span : Span) : ParserM Unit := do
+  let s ← get
+  recordDiagnostic (buildDiag s msg span)
 
 def recordRichError (msg : String) (span : Span)
     (secondary : Array (Span × String) := #[])
     (notes : Array String := #[])
     (help : Option String := none) : ParserM Unit := do
-  let mut diag := Diagnostic.error msg span
-  for (s, m) in secondary do
-    diag := diag.withSecondary s m
-  for n in notes do
-    diag := diag.withNote n
-  if let some h := help then
-    diag := diag.withHelp h
-  recordDiagnostic diag
+  let s ← get
+  recordDiagnostic (buildDiag s msg span secondary notes help)
 
 
 def atEnd : ParserM Bool := do return (← get).atEnd
@@ -140,7 +152,22 @@ def getSource : ParserM SourceFile := do return (← get).source
 def labelled (label : String) (p : ParserM α) : ParserM α :=
   withReader (·.push label) p
 
-/-! ## Token Checking -/
+/-- Describe what the parser is currently looking at -/
+def describeCurrent : ParserM String := do
+  let tok ← current
+  return match tok.kind with
+    | some k => TokenKind.describe k
+    | none => "non-token"
+
+/-- Record an `expected X, got Y` error at the current token -/
+def recordExpected (expected : String) : ParserM Unit := do
+  let got ← describeCurrent
+  recordError s!"expected {expected}, got {got}"
+
+/-- Like `recordExpected` but with an explicit span -/
+def recordExpectedAt (expected : String) (span : Span) : ParserM Unit := do
+  let got ← describeCurrent
+  recordErrorAt s!"expected {expected}, got {got}" span
 
 def check (kind : TokenKind) : ParserM Bool := do
   return (← current).kind == some kind
@@ -169,7 +196,7 @@ def expect (kind : TokenKind) (forKind : SyntaxKind) : ParserM GreenNode := do
   match ← tryConsume kind with
   | some g => return g
   | none =>
-      recordError s!"expected {kind.describe}"
+      recordExpected kind.describe
       return .missing forKind
 
 
@@ -300,10 +327,10 @@ def parseOperatorName : ParserM (Option GreenNode) := do
       | some rbrace =>
           return some (GreenNode.mkNode .operatorName #[lbrace, op, rbrace])
       | none =>
-          recordError "expected '}' after operator"
+          recordExpected "'}' after operator"
           return some (GreenNode.mkError "unclosed operator name" #[lbrace, op])
   | none =>
-      recordError "expected operator inside braces"
+      recordExpected "operator inside braces"
       return some (GreenNode.mkError "expected operator" #[lbrace])
 
 def syncTokens : Array TokenKind :=
@@ -461,24 +488,28 @@ def toPosTokens (greenTokens : Array GreenNode) : Array PosToken := Id.run do
   return result
 
 /-- Parse source code into a green tree using a given parser -/
-def parseGreenWith (parser : ParserM GreenNode) (tokens : Array GreenNode) (source : SourceFile) : GreenNode × Diagnostics :=
+def parseGreenWith (parser : ParserM GreenNode) (tokens : Array GreenNode)
+    (source : SourceFile) (diag : DiagBuilder) : GreenNode × Diagnostics :=
   let posTokens := toPosTokens tokens
-  ParserM.run' parser posTokens source
+  ParserM.run' parser posTokens source diag
 
 /-- Full parsing pipeline: lex + parse using a given parser -/
-def parseWith (parser : ParserM GreenNode) (source : SourceFile) : GreenNode × Diagnostics :=
-  let (tokens, lexDiags) := lexCode source
-  let (green, parseDiags) := parseGreenWith parser tokens source
+def parseWith (parser : ParserM GreenNode) (source : SourceFile) (diag : DiagBuilder)
+    : GreenNode × Diagnostics :=
+  let (tokens, lexDiags) := lexCode source diag
+  let (green, parseDiags) := parseGreenWith parser tokens source diag
   (green, lexDiags ++ parseDiags)
 
 /-- Parse and wrap in a red tree with stable NodeIds using a given parser -/
-def parseToTreeWith (parser : ParserM GreenNode) (source : SourceFile) : ParsedTree × Diagnostics :=
-  let (green, diags) := parseWith parser source
+def parseToTreeWith (parser : ParserM GreenNode) (source : SourceFile)
+    (diag : DiagBuilder) : ParsedTree × Diagnostics :=
+  let (green, diags) := parseWith parser source diag
   (ParsedTree.fromGreen green source, diags)
 
 /-- Reparse with an old tree, preserving NodeIds where possible -/
-def reparseToTreeWith (parser : ParserM GreenNode) (oldTree : ParsedTree) (source : SourceFile) : ParsedTree × Diagnostics :=
-  let (green, diags) := parseWith parser source
+def reparseToTreeWith (parser : ParserM GreenNode) (oldTree : ParsedTree)
+    (source : SourceFile) (diag : DiagBuilder) : ParsedTree × Diagnostics :=
+  let (green, diags) := parseWith parser source diag
   (oldTree.reparse green source, diags)
 
 end Soma.Syntax

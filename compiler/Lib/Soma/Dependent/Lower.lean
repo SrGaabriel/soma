@@ -1,12 +1,21 @@
 import Soma.Syntax
+import Soma.Diagnostic
 import Soma.Core.Module
 import Soma.Core.Function
 
 namespace Soma.Dependent.Lower
 
 open Soma.Syntax
-open Soma (UniqueSupply)
+open Soma (UniqueSupply Diagnostic Diagnostics DiagBuilder Phase severity)
 open Soma.Core
+
+/-- Build a lower-phase diagnostic for an AST→Core lowering error -/
+private def mkLowerError (diag : DiagBuilder) (msg : String) (span : Span)
+    (help : Option String := none) : Diagnostic :=
+  { severity := severity .lower
+    message := msg
+    primary := diag.primary span msg
+    helps := match help with | some h => [h] | none => [] }
 
 structure Result where
   module : Soma.Core.UntypedModule
@@ -168,6 +177,7 @@ private def allSimplePatterns (patterns : Array Syntax.Pattern) : Bool :=
 
 /-- Core function lowering logic -/
 private def lowerFunctionDeclCore
+    (diag : DiagBuilder)
     (decl : Syntax.Decl)
     (globalName : Soma.Core.QualifiedName)
   : Option Soma.Core.UntypedFunction × Diagnostics :=
@@ -187,8 +197,8 @@ private def lowerFunctionDeclCore
               let explicitHeaderParams := headerParams.filter (!·.isImplicit)
               let expectedArity := totalArity - explicitHeaderParams.size
               if let some badClause := clauses.find? (fun c => c.patterns.size != expectedArity) then
-                return (none, #[Diagnostic.error
-                  (s!"definition '{name.name}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}")
+                return (none, #[mkLowerError diag
+                  s!"definition '{name.name}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}"
                   badClause.span])
             | none => pure ()  -- Alias application in tail: defer arity check to elaborator
 
@@ -261,21 +271,22 @@ private def lowerFunctionDeclCore
             attrs := fnAttrs
             isBodilessExFalso := true
           }, #[])
-        let d := Diagnostic.error
-          (s!"definition '{name.name}' must have a body, at least one clause, an @[intrinsic]/@[extern] attribute, or a type signature")
+        let d := mkLowerError diag
+          s!"definition '{name.name}' must have a body, at least one clause, an @[intrinsic]/@[extern] attribute, or a type signature"
           span
         return (none, #[d])
     | _ =>
       return (none, #[])
 
 private def lowerFunctionDecl
+    (diag : DiagBuilder)
     (decl : Syntax.Decl)
     (registry : GlobalNameRegistry)
   : Option Soma.Core.UntypedFunction × Diagnostics :=
   match decl with
   | .def_ _ name .. | .theorem_ _ name .. =>
     let globalName := registry.requireTopLevel name.name
-    lowerFunctionDeclCore decl globalName
+    lowerFunctionDeclCore diag decl globalName
   | _ => (none, #[])
 
 /-- Maximum number of constructors per data type -/
@@ -307,6 +318,7 @@ private partial def headSortOfKind : Option Syntax.Expr → Soma.Core.Level
   | _ => .lit 0
 
 private def lowerTypeDecl
+    (diag : DiagBuilder)
     (decl : Syntax.Decl)
     (registry : GlobalNameRegistry)
     (supply : UniqueSupply)
@@ -315,7 +327,7 @@ private def lowerTypeDecl
   | .inductive attrs name params constructors kindAnnot span =>
     let diags : Diagnostics :=
       if constructors.size > maxConstructors then
-        #[Diagnostic.error
+        #[mkLowerError diag
           s!"data type '{name.name}' has {constructors.size} constructors, exceeding the maximum of {maxConstructors}"
           span]
       else #[]
@@ -402,12 +414,14 @@ private def lowerTypeClassDecl
 
 /-- Lower a function declaration using an explicitly provided QualifiedName. -/
 private def lowerFunctionDeclWithName
+    (diag : DiagBuilder)
     (decl : Syntax.Decl)
     (globalName : Soma.Core.QualifiedName)
   : Option Soma.Core.UntypedFunction × Diagnostics :=
-  lowerFunctionDeclCore decl globalName
+  lowerFunctionDeclCore diag decl globalName
 
 private def lowerInstanceDecl
+    (diag : DiagBuilder)
     (decl : Syntax.Decl)
     (supply : UniqueSupply)
   : Option Soma.Core.UntypedInstance × Diagnostics × UniqueSupply :=
@@ -423,7 +437,7 @@ private def lowerInstanceDecl
           let (u, sup') := sup.fresh methodName.name
           sup := sup'
           let methodQN : Soma.Core.QualifiedName := ⟨u⟩
-          let (fn?, fnDiags) := lowerFunctionDeclWithName methodDecl methodQN
+          let (fn?, fnDiags) := lowerFunctionDeclWithName diag methodDecl methodQN
           ds := ds ++ fnDiags
           if let some fn := fn? then
             fns := fns.push fn
@@ -449,8 +463,8 @@ private def lowerAbbrevDecl (decl : Syntax.Decl) : Option Soma.Core.TypeAbbrev :
     }
   | _ => none
 
-/-- Lower a parsed syntax module directly to `UntypedModule` for type checking. -/
-def lowerModule (ast : Syntax.Module) : Result :=
+/-- Lower a parsed syntax module -/
+def lowerModule (ast : Syntax.Module) (diag : DiagBuilder) : Result :=
   Id.run do
     let (registry, supply0) := registerGlobalNames ast
     let mut supply := supply0
@@ -463,21 +477,21 @@ def lowerModule (ast : Syntax.Module) : Result :=
     let mut diagnostics : Diagnostics := #[]
 
     for decl in ast.decls do
-      let (fn?, fnDiags) := lowerFunctionDecl decl registry
+      let (fn?, fnDiags) := lowerFunctionDecl diag decl registry
       diagnostics := diagnostics ++ fnDiags
       if let some fn := fn? then
         -- Route to the right bucket based on the original declaration kind
         match decl with
         | .theorem_ _ name _ _ _ span =>
           if fn.attrs.partial_ then
-            diagnostics := diagnostics.push (Diagnostic.error
+            diagnostics := diagnostics.push (mkLowerError diag
               s!"theorem '{name.name}' cannot be marked @[partial]" span
-              |>.withHelp "drop @[partial], or make this a `def` if it's runtime code")
+              (help := some "drop @[partial], or make this a `def` if it's runtime code"))
           else
             theorems := theorems.push fn
         | _ => functions := functions.push fn
 
-      let (td?, tdDiags, supply') := lowerTypeDecl decl registry supply
+      let (td?, tdDiags, supply') := lowerTypeDecl diag decl registry supply
       diagnostics := diagnostics ++ tdDiags
       supply := supply'
       if let some td := td? then
@@ -488,7 +502,7 @@ def lowerModule (ast : Syntax.Module) : Result :=
       if let some tc := tc? then
         typeClasses := typeClasses.push tc
 
-      let (inst?, instDiags, supply''') := lowerInstanceDecl decl supply
+      let (inst?, instDiags, supply''') := lowerInstanceDecl diag decl supply
       diagnostics := diagnostics ++ instDiags
       supply := supply'''
       if let some inst := inst? then

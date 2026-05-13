@@ -2,7 +2,6 @@ import Test.Fixtures
 import Test.Lexer
 import Test.Parser
 import Test.GreenTree
-import Test.Error
 import Test.Dependent.Core
 import Test.Dependent.Infer
 import Test.Dependent.Unify
@@ -13,6 +12,7 @@ import Test.Dependent.Instance
 import Test.Dependent.Equality
 import Test.Dependent.Totality
 import Test.Dependent.Integration
+import Test.Diagnostic.Snapshot
 import Test.Alloy
 import Test.Circuit
 import Test.Circuit.Reduce
@@ -40,10 +40,6 @@ def main : IO UInt32 := do
   -- Run green tree size tests
   let greenTreeRunner ← Test.GreenTree.run
   total := total.merge greenTreeRunner
-
-  -- Run error rendering tests (visual only)
-  let errorRunner ← Test.Error.run
-  total := total.merge errorRunner
 
   -- Run dependent types core tests (Phase 1)
   let coreRunner ← Test.Dependent.Core.run
@@ -84,6 +80,10 @@ def main : IO UInt32 := do
   -- Run dependent types integration tests (Phase 10)
   let integrationRunner ← Test.Dependent.Integration.run
   total := total.merge integrationRunner
+
+  -- Run diagnostic snapshots
+  let snapshotRunner ← Test.Diagnostic.Snapshot.run
+  total := total.merge snapshotRunner
 
   -- Run Alloy IR tests
   let alloyRunner ← Test.Alloy.run

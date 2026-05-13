@@ -58,9 +58,16 @@ def runProcess (cmd : String) (args : Array String) (timeoutMs : Nat := 0) : IO 
 def normalizeOutput (s : String) : String :=
   s.replace "\r\n" "\n" |>.trimAsciiEnd.toString
 
+private def severityName : Psychopomp.SeverityLevel → String
+  | .error => "error"
+  | .warning => "warning"
+  | .info => "info"
+  | .hint => "hint"
+  | .lint => "lint"
+
 /-- Format diagnostics for error output -/
-def formatDiagnostics (diags : Array Soma.Syntax.Diagnostic) : String :=
-  let msgs := diags.map fun d => s!"{d.severity}: {d.message}"
+def formatDiagnostics (diags : Array Psychopomp.Diagnostic) : String :=
+  let msgs := diags.map fun d => s!"{severityName d.severity.level}: {d.message}"
   String.intercalate "\n" msgs.toList
 
 /-- Root paths for base and stdlib source directories, relative to compiler/ -/

@@ -3,10 +3,15 @@ import Soma.Syntax.RedTree
 import Soma.Syntax.Lower
 import Soma.Syntax.Source
 import Soma.Syntax.Parse.Decl
+import Soma.Diagnostic
 
 namespace Soma.Syntax.Proofs
 
 open Soma.Syntax
+
+/-- Build a `DiagBuilder` from a SourceFile -/
+private def diagOf (sf : SourceFile) : Soma.DiagBuilder :=
+  (Soma.DiagBuilder.standalone sf).1
 
 /-- Two green nodes with equal content hashes have structurally equal content -/
 axiom contentHash_injective (g1 g2 : GreenNode) :
@@ -18,14 +23,14 @@ theorem greenNode_beq_refl (g : GreenNode) : (g == g) = true := by
 
 /-- Parsing is deterministic: the same source produces the same green tree -/
 theorem parse_deterministic (source : SourceFile) :
-    let (t1, _) := parseToTree source
-    let (t2, _) := parseToTree source
+    let (t1, _) := parseToTree source (diagOf source)
+    let (t2, _) := parseToTree source (diagOf source)
     t1.green = t2.green := by
   simp
 
 /-- The green tree only depends on source content, not on prior state -/
 theorem reparse_green_eq (oldTree : ParsedTree) (source : SourceFile) :
-    (reparseToTree oldTree source).1.green = (parseToTree source).1.green := by
+    (reparseToTree oldTree source (diagOf source)).1.green = (parseToTree source (diagOf source)).1.green := by
   -- parseToTree: (ParsedTree.fromGreen green source, diags)
   -- reparseToTree: (oldTree.reparse green source, diags)
   -- In both cases, .green returns the same green from parseWith
@@ -42,20 +47,24 @@ axiom lowerModule_depends_only_on_source (green : GreenNode) (offset : Nat) (mod
 
 /-- Lowering after reparse equals lowering after fresh parse -/
 theorem lower_reparse_eq (oldTree : ParsedTree) (source : SourceFile) (moduleName : String) :
-    let freshTree := (parseToTree source).1
-    let reparsedTree := (reparseToTree oldTree source).1
-    (lower freshTree moduleName).1 = (lower reparsedTree moduleName).1 := by
+    let freshTree := (parseToTree source (diagOf source)).1
+    let reparsedTree := (reparseToTree oldTree source (diagOf source)).1
+    (lower freshTree (diagOf source) moduleName).1 = (lower reparsedTree (diagOf source) moduleName).1 := by
   simp only
   simp only [lower]
   have hGreen := reparse_green_eq oldTree source
-  have hSource : (parseToTree source).1.red.source = (reparseToTree oldTree source).1.red.source := by
+  have hSource : (parseToTree source (diagOf source)).1.red.source = (reparseToTree oldTree source (diagOf source)).1.red.source := by
     simp only [parseToTree, reparseToTree, parseToTreeWith, reparseToTreeWith,
                ParsedTree.fromGreen, ParsedTree.reparse, buildRedTree, diffRedTree]
   rw [hGreen]
   have h := lowerModule_depends_only_on_source
-    (parseToTree source).1.green 0 moduleName
-    { source := (parseToTree source).1.red.source, redTree := (parseToTree source).1.red }
-    { source := (reparseToTree oldTree source).1.red.source, redTree := (reparseToTree oldTree source).1.red }
+    (parseToTree source (diagOf source)).1.green 0 moduleName
+    { source := (parseToTree source (diagOf source)).1.red.source
+      redTree := (parseToTree source (diagOf source)).1.red
+      diag := diagOf source }
+    { source := (reparseToTree oldTree source (diagOf source)).1.red.source
+      redTree := (reparseToTree oldTree source (diagOf source)).1.red
+      diag := diagOf source }
     hSource
   exact congrArg Prod.fst h
 
@@ -105,17 +114,18 @@ theorem changedIds_correct (oldTree newTree : ParsedTree) (nodeId : NodeId) :
 
 /-- The green tree produced by incremental reparsing equals fresh parsing -/
 theorem incremental_green_tree_correct (oldTree : ParsedTree) (newSource : SourceFile) :
-    let (freshResult, _) := parseToTree newSource
-    let (incrResult, _) := reparseToTree oldTree newSource
+    let (freshResult, _) := parseToTree newSource (diagOf newSource)
+    let (incrResult, _) := reparseToTree oldTree newSource (diagOf newSource)
     freshResult.green = incrResult.green := by
   -- This follows directly from reparse_green_eq with equality symmetry
   exact (reparse_green_eq oldTree newSource).symm
 
 /-- Corollary: AST lowering produces equal results -/
 theorem incremental_ast_correct (oldTree : ParsedTree) (newSource : SourceFile) (moduleName : String) :
-    let (freshTree, _) := parseToTree newSource
-    let (incrTree, _) := reparseToTree oldTree newSource
-    (lower freshTree moduleName).1 = (lower incrTree moduleName).1 := by
+    let (freshTree, _) := parseToTree newSource (diagOf newSource)
+    let (incrTree, _) := reparseToTree oldTree newSource (diagOf newSource)
+    (lower freshTree (diagOf newSource) moduleName).1 =
+        (lower incrTree (diagOf newSource) moduleName).1 := by
   exact lower_reparse_eq oldTree newSource moduleName
 
 
