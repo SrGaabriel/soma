@@ -96,8 +96,6 @@ instance : ToString SimplePattern := ⟨format⟩
 
 end SimplePattern
 
-/-! ## Pattern Simplification -/
-
 /-- Context for pattern simplification -/
 structure SimplifyCtx where
   /-- Pre-resolved variant label → tag mapping -/

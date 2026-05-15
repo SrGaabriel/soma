@@ -20,8 +20,6 @@ namespace Test.Dependent.Integration
 open Soma.Project.Check
 open Test.Fixtures
 
-/-! ## Expectation Parsing -/
-
 /-- Expectation parsed from fixture comment -/
 inductive Expectation where
   | success : Expectation
@@ -38,8 +36,6 @@ def parseExpectation (source : String) : Expectation :=
     if rest.isEmpty then .error none else .error (some rest)
   else
     .success  -- Default to success if no expectation comment
-
-/-! ## Test Running -/
 
 /-- Path to the shared fixture prelude for dependent tests -/
 def dependentPrimPath : System.FilePath := "Test/fixtures/shared/prim.soma"
@@ -181,8 +177,6 @@ def runInvariantTests : IO TestRunner := do
   runner := runner.record "trait_method_signature_concrete"
     (← testTraitMethodSignatureConcrete)
   return runner
-
-/-! ## Main Entry Point -/
 
 def run : IO TestRunner := do
   -- Run with debug=true for verbose output during development

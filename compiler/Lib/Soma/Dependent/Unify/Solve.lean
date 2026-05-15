@@ -216,7 +216,6 @@ partial def unifyCore (v1 v2 : Value) : TCM Unit := do
     TCM.withInjectiveDescent do
       unifyList as1 as2 PathStep.constructorArg
 
-
   | .vLam n body, .vNeutral _ otherNeu =>
     let lvl ← TCM.currentLevel
     let x := Value.vNeutral .type0 (.nVar ⟨n, lvl⟩)
@@ -332,7 +331,6 @@ partial def unifyHead (h1 h2 : Head) : TCM Unit := do
       throwRigidMismatch (.ofHead h1) (.ofHead h2)
   | _, _ =>
     throwRigidMismatch (.ofHead h1) (.ofHead h2)
-
 
 /-- Unify two eliminators -/
 partial def unifyElim (e1 e2 : Elim) : TCM Unit := do

@@ -150,9 +150,4 @@ def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8)
   let (compacted, _) := g.sweep
   return (compacted, totalStats)
 
-/-- Build a configuration with intrinsics from the compiler's elaboration context -/
-def Config.withIntrinsics (config : Config) (intrinsics : Std.HashMap String Intrinsic)
-    : Config :=
-  { config with intrinsics }
-
 end Somac.Circuit.Reduce

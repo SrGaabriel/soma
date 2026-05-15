@@ -159,10 +159,6 @@ def abbrevEnvToSerializable (env : AbbrevEnv) : SerializableAbbrevEnv :=
   let abbrevs := env.fold (init := #[]) fun acc _qn info => acc.push info
   { abbrevs }
 
-/-- Convert ProjectMetadata to JSON string -/
-def ProjectMetadata.toJson (pm : ProjectMetadata) : String :=
-  Json.encode pm
-
 /-- Convert serializable symbols to SymbolEnv -/
 def symbolsFromSerializable (entries : Array SymbolEntry) : SymbolEnv :=
   entries.foldl (fun env entry => env.insert entry.symbol entry.type) {}

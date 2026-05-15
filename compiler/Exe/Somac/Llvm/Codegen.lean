@@ -127,21 +127,6 @@ partial def computePackedLayout (fields : Array ClosedTy) (ptrBytes : Nat) : Pac
 partial def maxPackedPayloadSize (variants : Array (Nat × Array ClosedTy)) (ptrBytes : Nat) : Nat :=
   variants.foldl (fun acc (_, fields) => max acc (computePackedLayout fields ptrBytes).byteSize) 0
 
-/-- Natural alignment for a type -/
-def naturalAlign (ty : LLVMType) (ptrBytes : Nat) : Option Nat :=
-  let a := ty.alignment ptrBytes
-  if a > 0 then some a else none
-
-/-- Get the type of an Alloy operand -/
-def getOperandTy (op : Operand) (stringTy : ClosedTy)
-    (localTypes : Std.HashMap Nat ClosedTy) : ClosedTy :=
-  match op with
-  | .local id => localTypes.get? id.id |>.getD (.prim .i64)
-  | .const (.string _ _) => stringTy
-  | .const c => c.ty?.getD (.prim .i64)
-  | .global _ => .rawPtr
-  | .func _ => .rawPtr
-
 /-- Get field type from a struct type -/
 def getStructFieldTy (structTy : ClosedTy) (fieldIdx : Nat) : ClosedTy :=
   match structTy with
@@ -178,17 +163,6 @@ def isStringObjTy (ty : ClosedTy) : Bool :=
 
 /-- Check whether a closed type is the runtime List object type -/
 def isListObjTy (ty : ClosedTy) : Bool := ty.isSomaList
-
-/-- Get payload field types from a tagged union -/
-def getTaggedPayloadTy (taggedTy : ClosedTy) (variantIdx : Nat) (fieldIdx : Nat) : ClosedTy :=
-  match taggedTy with
-  | .tagged _ variants =>
-    if h : variantIdx < variants.size then
-      let (_, fields) := variants[variantIdx]
-      if h2 : fieldIdx < fields.size then fields[fieldIdx]
-      else .prim .i64
-    else .prim .i64
-  | _ => .prim .i64
 
 /-- State for code generation -/
 structure CodegenState where
@@ -257,9 +231,6 @@ def init (name : String) (triple : Option String := none) (dataLayout : Option S
 /-- Is the target OS Windows? (Uses the Windows x64 calling convention) -/
 def isWindows : CodegenM Bool := do return (← get).targetOs.isWindowsABI
 
-/-- Get pointer size in bytes -/
-def getPointerSize : CodegenM Nat := do return (← get).ptrSize
-
 /-- Run a FuncBuilder operation -/
 def withFuncBuilder (m : FuncBuilder α) : CodegenM α := do
   let s ← get
@@ -292,24 +263,10 @@ def getLocal (alloyId : Nat) : CodegenM (Option LocalRef) := do
   let s ← get
   pure (s.localMap.get? alloyId)
 
-/-- Get type of an Alloy local -/
-def getLocalTy (alloyId : Nat) : CodegenM ClosedTy := do
-  let s ← get
-  pure (s.localTypes.get? alloyId |>.getD (.prim .i64))
-
 /-- Get Alloy type from codegen state, returning none if not mapped -/
 def getLocalTy? (alloyId : Nat) : CodegenM (Option ClosedTy) := do
   let s ← get
   pure (s.localTypes.get? alloyId)
-
-/-- Get LLVM local, creating if needed (with default type) -/
-def getOrCreateLocal (alloyId : Nat) (defaultTy : ClosedTy := .prim .i64) : CodegenM LocalRef := do
-  match ← getLocal alloyId with
-  | some ref => pure ref
-  | none =>
-    let ref ← withFuncBuilder FuncBuilder.freshLocal
-    mapLocal alloyId ref defaultTy
-    pure ref
 
 /-- Map an Alloy block to LLVM label -/
 def mapBlock (alloyId : Nat) (label : Label) : CodegenM Unit := do
@@ -387,11 +344,6 @@ def setCurrentFunc (func : ClosedFunc) : CodegenM Unit := do
 def getCurrentFunc : CodegenM (Option ClosedFunc) := do
   let s ← get
   pure s.currentFunc
-
-/-- Get local types map -/
-def getLocalTypes : CodegenM (Std.HashMap Nat ClosedTy) := do
-  let s ← get
-  pure s.localTypes
 
 /-- Check if an extern function has been declared -/
 def isExternDeclared (name : String) : CodegenM Bool := do
@@ -647,10 +599,6 @@ def somaStringLLVMTy : CodegenM LLVMType := do
 
 /-- The LLVM type used for the SomaList struct { data, len, offset } -/
 def somaListLLVMTy : LLVMType := .struct false #[.ptr, .i32, .i32]
-
-/-- Whether `ty` is the canonical Soma-string LLVM layout -/
-def isSomaStringLLVMTy (ty : LLVMType) : CodegenM Bool := do
-  pure (ty == (convertTy (← get).stringTy))
 
 /-- Compute the SysV x86-64 coerced type for a struct -/
 def sysVCoercedType (ty : LLVMType) : LLVMType :=
@@ -2007,8 +1955,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let closureLLVMTy := convertTy closureTyAlloy
     -- Check if closure operand is actually a closure type (not unit from ERA)
     if closureLLVMTy != closureTy then
-      -- Not a real closure — unreachable at runtime. Emit panic + signal noreturn
-      -- so that lowerBlock stops emitting dead code after this instruction.
+      -- TODO: review
       let panicName := (← get).panicStrName
       CodegenM.withFuncBuilder do
         FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal panicName)]
@@ -2261,7 +2208,6 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     CodegenM.signalNoReturn
     pure none
 
-
   | .callIntrinsic op args retTy =>
     -- FFI intrinsic operations compile to inline LLVM instructions
     let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
@@ -2381,7 +2327,6 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       let somaStrTy : LLVMType := convertTy alloyStringTy
       let ref ← callCFuncStructABI somaStrTy "soma_int_to_string" llvmArgs
       pure (some (ref, alloyStringTy))
-
 
   | .callExtern name args retTy =>
     -- External function call: emit regular LLVM call to @name
@@ -2559,40 +2504,6 @@ def lowerTerminator (term : Terminator) (retTy : ClosedTy) (llvmRetOverride : Op
   | .unreachable =>
     CodegenM.withFuncBuilder FuncBuilder.unreachable
 
-/-- Collect LocalIds referenced in an instruction -/
-def instReferencedLocals (inst : ClosedInst) : Array Nat :=
-  let collectOp : Operand → Array Nat := fun op =>
-    match op with
-    | .local id => #[id.id]
-    | _ => #[]
-  let collectOps := fun ops => ops.foldl (fun acc op => acc ++ collectOp op) #[]
-  match inst with
-  | .binOp _ l r _ => collectOp l ++ collectOp r
-  | .unOp _ op => collectOp op
-  | .copy op => collectOp op
-  | .load ptr _ => collectOp ptr
-  | .store ptr val => collectOp ptr ++ collectOp val
-  | .call _ args _ => collectOps args
-  | .callIndirect ptr args _ => collectOp ptr ++ collectOps args
-  | .callClosure cls args _ => collectOp cls ++ collectOps args
-  | .phi incoming _ => incoming.foldl (fun acc (op, _) => acc ++ collectOp op) #[]
-  | .select c t e => collectOp c ++ collectOp t ++ collectOp e
-  | .structLit fields _ => collectOps fields
-  | .extractField v _ => collectOp v
-  | .getFieldPtr v _ _ => collectOp v
-  | .makeClosure _ env => collectOp env
-  | .makeClosurePoly _ _ env => collectOp env
-  | .makeClosureDyn fnClo env _ => collectOp fnClo ++ collectOp env
-  | .stackClosure _ env => collectOp env
-  | .stackClosurePoly _ _ env => collectOp env
-  | .stackClone src _ _ => collectOp src
-  | .malloc sz => collectOp sz
-  | .free ptr => collectOp ptr
-  | .callIntrinsic _ args _ => collectOps args
-  | .callExtern _ args _ => collectOps args
-  | .callExternPoly _ _ args _ => collectOps args
-  | _ => #[]
-
 /-- Lower an Alloy basic block to LLVM -/
 def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Option LLVMType := none) : CodegenM Unit := do
   let label ← CodegenM.getOrCreateBlock block.id.id
@@ -2747,10 +2658,6 @@ def lowerFuncWithName (func : ClosedFunc) (name : String) : CodegenM LLVMFunc :=
       blocks := blocks
       isDeclaration := false
     }
-
-/-- Lower an Alloy function to LLVM -/
-def lowerFunc (func : ClosedFunc) : CodegenM LLVMFunc := do
-  lowerFuncWithName func func.sig.name
 
 /-- Add runtime function declarations -/
 def addRuntimeDeclarations : CodegenM Unit := do

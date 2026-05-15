@@ -25,8 +25,6 @@ structure FunctionAttrs where
 
 namespace FunctionAttrs
 
-def default : FunctionAttrs := {}
-
 end FunctionAttrs
 
 /-- Information about a closure (lifted lambda) -/
@@ -41,8 +39,6 @@ structure FunctionParam where
   deriving Repr, Inhabited
 
 namespace FunctionParam
-
-def ofName (n : String) : FunctionParam := { name := n }
 
 end FunctionParam
 
@@ -60,16 +56,7 @@ structure Function where
 
 namespace Function
 
-def qualifiedName (f : Function) : QualifiedName :=
-  f.name
-
-def arity (f : Function) : Nat := f.params.size
-
 def paramNames (f : Function) : Array String := f.params.map (·.name)
-
-def isClosure (f : Function) : Bool := f.closureInfo.isSome
-
-def hasSignature (f : Function) : Bool := f.declaredTypeSyntax.isSome
 
 end Function
 
@@ -89,13 +76,6 @@ structure TypedFunction where
   isExternStub : Bool := false
 
 namespace TypedFunction
-
-def qualifiedName (f : TypedFunction) : QualifiedName :=
-  f.name
-
-def arity (f : TypedFunction) : Nat := f.params.size
-
-def isClosure (f : TypedFunction) : Bool := f.closureInfo.isSome
 
 /-- Build the structured "errored body" sentinel for a function whose elaboration failed -/
 def erroredBody (name : QualifiedName) : Expr :=

@@ -6,8 +6,6 @@ import Soma.Unique
 
 namespace Soma.Core
 
-/-! ## Evaluation Context -/
-
 /-- Global environment for looking up definitions -/
 structure GlobalEnv where
   /-- Map from global names to their values -/
@@ -79,18 +77,8 @@ namespace EvalCtx
 
 def empty : EvalCtx := ⟨Env.empty, GlobalEnv.empty, MetaState.empty⟩
 
-def withEnv (ctx : EvalCtx) (env : Env) : EvalCtx :=
-  { ctx with env := env }
-
 def extendEnv (ctx : EvalCtx) (name : String) (v : Value) : EvalCtx :=
   { ctx with env := ctx.env.extend name v }
-
-/-- Create a fresh variable at the current level -/
-def freshVar (ctx : EvalCtx) (name : String) : Value :=
-  let lvl := ctx.env.level
-  let bv : BoundVar := ⟨name, lvl⟩
-  -- The type is unknown, use a placeholder
-  .vNeutral .type0 (.nVar bv)
 
 end EvalCtx
 
@@ -107,10 +95,6 @@ def vFieldAccess (v : Value) (field : String) (fieldIdx : Nat := 0) : Value :=
     | none => v
   | .vNeutral ty neu => .vNeutral ty (.nFieldAccess neu field)
   | _ => v  -- Type error
-
-/-- Convert a De Bruijn index to a level -/
-def indexToLevel (ctx : EvalCtx) (idx : Nat) : DeBruijnLvl :=
-  ⟨ctx.env.size - idx - 1⟩
 
 /-- Helper to enumerate a list with indices -/
 def listEnumerate (xs : List α) : List (Nat × α) :=
@@ -384,10 +368,6 @@ def evalExprPure (env : Env) (e : Soma.Core.Expr) : Value :=
 def vAppPure (fn arg : Value) : Value :=
   vApp fn arg EvalCtx.empty
 
-/-- Apply a value to a spine of arguments left-to-right with no context -/
-def vAppSpinePure (fn : Value) (args : Array Value) : Value :=
-  args.foldl vAppPure fn
-
 /-- Apply a Pi type to an argument, computing the codomain type.
     Works for both non-dependent (Closure.const) and dependent (Closure.term) Pi types. -/
 def Value.piApply (v : Value) (arg : Value) : Option Value :=
@@ -435,10 +415,6 @@ partial def Value.explicitArityFull (v : Value) (unfold? : Option (Value → Val
 /-- Evaluate a closed Core expression. -/
 def evalClosed (e : Soma.Core.Expr) : Value :=
   evalCoreExpr EvalCtx.empty e
-
-/-- Evaluate a Core expression with a global environment. -/
-def evalWithGlobals (globals : GlobalEnv) (e : Soma.Core.Expr) : Value :=
-  evalCoreExpr { EvalCtx.empty with globals := globals } e
 
 /-- Apply type arguments to a Pi-wrapped class record type, stripping one Pi per argument -/
 partial def applyClassRecordType (recordType : Value) (args : List Value) : Option Value :=

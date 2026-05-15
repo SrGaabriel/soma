@@ -6,7 +6,6 @@ import Soma.Core.Eval
 
 namespace Soma.Core
 
-
 mutual
 
 /-- Format a neutral head -/

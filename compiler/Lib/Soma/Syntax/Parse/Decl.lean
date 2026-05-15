@@ -627,7 +627,6 @@ def parseInductiveDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) :=
             | none => recordExpected "type after ':'"; pure none
           else pure none
 
-
           let whereTok ← tryConsume .kw_where
           let constructors ← match whereTok with
             | some _ => layoutSepBy parseDataConstructor
@@ -1003,24 +1002,9 @@ end Soma.Syntax.Parse
 
 namespace Soma.Syntax
 
-/-- Parse source code into a green tree -/
-def parseGreen (tokens : Array GreenNode) (source : SourceFile)
-    (diag : Soma.DiagBuilder) : GreenNode × Diagnostics :=
-  parseGreenWith Parse.parseSourceFile tokens source diag
-
-/-- Full parsing pipeline: lex + parse -/
-def parse (source : SourceFile) (diag : Soma.DiagBuilder)
-    : GreenNode × Diagnostics :=
-  parseWith Parse.parseSourceFile source diag
-
 /-- Parse and wrap in a red tree with stable NodeIds -/
 def parseToTree (source : SourceFile) (diag : Soma.DiagBuilder)
     : ParsedTree × Diagnostics :=
   parseToTreeWith Parse.parseSourceFile source diag
-
-/-- Reparse with an old tree, preserving NodeIds where possible -/
-def reparseToTree (oldTree : ParsedTree) (source : SourceFile) (diag : Soma.DiagBuilder)
-    : ParsedTree × Diagnostics :=
-  reparseToTreeWith Parse.parseSourceFile oldTree source diag
 
 end Soma.Syntax

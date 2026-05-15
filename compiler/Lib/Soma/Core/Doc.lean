@@ -29,10 +29,6 @@ def append (a b : Doc) : Doc := .concat a b
 
 instance : Append Doc := ⟨append⟩
 
-def lit (s : String) : Doc := .text s
-
-def space : Doc := .text " "
-
 partial def flatten : Doc → Doc
   | .empty => .empty
   | .text s => .text s

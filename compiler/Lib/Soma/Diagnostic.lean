@@ -29,12 +29,6 @@ namespace Diagnostics
 def hasErrors (ds : Diagnostics) : Bool :=
   ds.any fun d => d.severity.level == .error
 
-def errors (ds : Diagnostics) : Diagnostics :=
-  ds.filter fun d => d.severity.level == .error
-
-def errorCount (ds : Diagnostics) : Nat :=
-  (errors ds).size
-
 end Diagnostics
 
 inductive Phase where
@@ -85,10 +79,6 @@ def psyOfSpan (ctx : Psychopomp.SourceContext) (s : Soma.Syntax.Span)
     : Psychopomp.Span :=
   ctx.spanOfBytes s.start.byteOffset s.stop.byteOffset
 
-/-- Whether the span represents a real source location (todo: fix) -/
-def hasRealLocation (s : Soma.Syntax.Span) : Bool :=
-  s.start.line > 0 || s.stop.line > 0
-
 end Bridge
 
 structure SubstrateRepo where
@@ -103,10 +93,6 @@ namespace SubstrateRepo
 
 /-- An empty project repository -/
 def empty : SubstrateRepo := {}
-
-/-- Look up a `FileId`'s substrate ref, if registered -/
-def find? (r : SubstrateRepo) (fid : Soma.Syntax.FileId) : Option Psychopomp.SubstrateRef :=
-  r.byFile[fid]?
 
 /-- Register a `SourceFile` and return the new repository plus the allocated ref -/
 def putFile (r : SubstrateRepo) (sf : Soma.Syntax.SourceFile)
@@ -233,13 +219,6 @@ def insert (ctx : DiagContext) (sf : Soma.Syntax.SourceFile)
     let (repo', b) := DiagBuilder.ofSourceFile ctx.repo sf
     ({ repo := repo', files := ctx.files.insert sf.id b }, b)
 
-/-- Build a context covering every file in a `SourceFileMap` -/
-def build (sm : Soma.Syntax.SourceFileMap) : DiagContext := Id.run do
-  let mut ctx : DiagContext := DiagContext.empty
-  for (_, sf) in sm.files do
-    ctx := (ctx.insert sf).1
-  return ctx
-
 /-- A context for a single isolated source file -/
 def ofSourceFile (sf : Soma.Syntax.SourceFile) : DiagContext :=
   (DiagContext.empty.insert sf).1
@@ -318,26 +297,6 @@ def renameSuggestions (ctx : DiagContext) (span : Soma.Syntax.Span)
       { description := s!"rename to `{candidate}`"
         edits
         preview := renderPreview view edits }
-
-/-- Build a `QuickFix.delete` for an attribute span -/
-def deleteSpan (ctx : DiagContext) (span : Soma.Syntax.Span)
-    (description : String) : List Psychopomp.QuickFix :=
-  match ctx.builderFor? span with
-  | none => []
-  | some b =>
-    let view := b.srcCtx.toSubstrateView
-    let edits : List Psychopomp.Edit := [.delete b.subRef (b.psy span)]
-    [{ description, edits, preview := renderPreview view edits }]
-
-/-- Build a `QuickFix.replace` for a single span -/
-def replaceSpan (ctx : DiagContext) (span : Soma.Syntax.Span)
-    (newText : String) (description : String) : List Psychopomp.QuickFix :=
-  match ctx.builderFor? span with
-  | none => []
-  | some b =>
-    let view := b.srcCtx.toSubstrateView
-    let edits : List Psychopomp.Edit := [.replace b.subRef (b.psy span) newText]
-    [{ description, edits, preview := renderPreview view edits }]
 
 end Fix
 
@@ -431,18 +390,6 @@ def encodeJsonCtx (ctx : DiagContext) (ds : Array Psychopomp.Diagnostic) : Strin
   encodeJson ctx.repo ds
 
 -- todo: do this properly
-def encodeCheckOutput (repo : SubstrateRepo) (ds : Array Psychopomp.Diagnostic)
-    (moduleName? : Option String := none) : String :=
-  let success := !Diagnostics.hasErrors ds
-  let diagsJson := encodeJson repo ds
-  let successField := s!"\"success\":{if success then "true" else "false"}"
-  let diagsField := s!"\"diagnostics\":{diagsJson}"
-  let moduleField? := moduleName?.map fun n =>
-    s!"\"module\":\"{n}\""
-  let fields := match moduleField? with
-    | some m => [successField, diagsField, m]
-    | none => [successField, diagsField]
-  "{" ++ String.intercalate "," fields ++ "}"
 
 end Render
 

@@ -214,11 +214,6 @@ def run : IO TestRunner := do
 
 end TermTests
 
-/-! ## Node Tests
-
-  Tests for high-level node types and port configurations.
--/
-
 namespace NodeTests
 
 /-- Test: Node port counts -/
@@ -403,11 +398,6 @@ def run : IO TestRunner := do
   return runner
 
 end NodeTests
-
-/-! ## Graph Tests
-
-  Tests for graph construction, wiring, and queries.
--/
 
 namespace GraphTests
 
@@ -599,8 +589,6 @@ def run : IO TestRunner := do
 
 end GraphTests
 
-/-! ## Pretty Printing Tests -/
-
 namespace PrettyTests
 
 /-- Test: ppNode produces non-empty output -/
@@ -671,11 +659,6 @@ def run : IO TestRunner := do
   return runner
 
 end PrettyTests
-
-/-! ## Integration Tests
-
-  Tests that combine multiple components.
--/
 
 namespace IntegrationTests
 
@@ -803,8 +786,6 @@ def run : IO TestRunner := do
   return runner
 
 end IntegrationTests
-
-/-! ## Main Test Runner -/
 
 def run : IO TestRunner := do
   IO.println "=== Circuit IR Tests ==="

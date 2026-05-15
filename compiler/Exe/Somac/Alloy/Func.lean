@@ -37,12 +37,6 @@ structure Signature (n : Nat) where
 
 namespace Signature
 
-def arity (sig : Signature n) : Nat := sig.params.size
-
-def isPolymorphic (_ : Signature n) : Bool := n > 0
-
-def paramTypes (sig : Signature n) : Array (Ty n) := sig.params.map (·.ty)
-
 /-- Instantiate all types in a signature -/
 def instantiate (sig : Signature n) (env : TyEnv n) (newName : String) : Signature 0 :=
   { name := newName
@@ -105,7 +99,6 @@ instance : ToString FuncAttrs where
 
 end FuncAttrs
 
-
 /-- A complete function -/
 structure Func (n : Nat) where
   id : FuncId
@@ -119,15 +112,6 @@ structure Func (n : Nat) where
 
 namespace Func
 
-def extern (id : FuncId) (name : String) (params : Array (Param 0)) (retTy : ClosedTy)
-    (externName : String) : Func 0 :=
-  { id
-  , sig := { name, params, retTy }
-  , body := none
-  , attrs := { extern := some externName }
-  , nextLocalId := params.size
-  }
-
 def withBody (id : FuncId) (sig : Signature n) (cfg : CFG n) : Func n :=
   let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat (Ty n))) fun acc p =>
     acc.insert p.id.id p.ty
@@ -138,15 +122,6 @@ def withBody (id : FuncId) (sig : Signature n) (cfg : CFG n) : Func n :=
   , localTypes := paramTypes
   }
 
-def isExtern (f : Func n) : Bool := f.attrs.extern.isSome
-
-def isPolymorphic (_ : Func n) : Bool := n > 0
-
-def numTypeParams (_ : Func n) : Nat := n
-
-def freshLocal (f : Func n) : LocalId × Func n :=
-  (⟨f.nextLocalId⟩, { f with nextLocalId := f.nextLocalId + 1 })
-
 def freshLocalTyped (f : Func n) (ty : Ty n) : LocalId × Func n :=
   let id := ⟨f.nextLocalId⟩
   (id, { f with
@@ -156,19 +131,6 @@ def freshLocalTyped (f : Func n) (ty : Ty n) : LocalId × Func n :=
 
 def getLocalType (f : Func n) (id : LocalId) : Option (Ty n) :=
   f.localTypes.get? id.id
-
-def setLocalType (f : Func n) (id : LocalId) (ty : Ty n) : Func n :=
-  { f with localTypes := f.localTypes.insert id.id ty }
-
-def updateBody (f : Func n) (update : CFG n → CFG n) : Func n :=
-  match f.body with
-  | some cfg => { f with body := some (update cfg) }
-  | none => f
-
-def blocks (f : Func n) : Array (Block n) :=
-  match f.body with
-  | some cfg => cfg.allBlocks
-  | none => #[]
 
 /-- Instantiate a polymorphic function to produce a monomorphic one -/
 def instantiate (f : Func n) (env : TyEnv n) (newId : FuncId) (newName : String) : Func 0 :=
@@ -229,8 +191,6 @@ instance : ToString SomeFunc where
 
 end SomeFunc
 
-/-! ## Globals -/
-
 /-- A global constant or variable -/
 structure Global where
   /-- Global ID -/
@@ -255,8 +215,6 @@ instance : ToString Global where
 
 end Global
 
-/-! ## Type Definitions -/
-
 /-- A named type definition -/
 structure TypeDef where
   /-- Type name -/
@@ -270,8 +228,6 @@ instance : ToString TypeDef where
   toString td := s!"type {td.name} = {td.ty}"
 
 end TypeDef
-
-/-! ## String Table -/
 
 /-- Interned string table -/
 structure StringTable where
@@ -295,10 +251,6 @@ def intern (st : StringTable) (s : String) : Nat × StringTable :=
     let idx := st.strings.size
     (idx, { strings := st.strings.push s
           , index := st.index.insert hash idx })
-
-/-- Get a string by index -/
-def get (st : StringTable) (idx : Nat) : Option String :=
-  st.strings[idx]?
 
 end StringTable
 
@@ -344,51 +296,21 @@ def addFunc (m : Module) (f : SomeFunc) : Module :=
 def addMonoFunc (m : Module) (f : ClosedFunc) : Module :=
   m.addFunc (SomeFunc.ofMono f)
 
-def addGlobal (m : Module) (g : Global) : Module :=
-  let id := GlobalId.mk m.globals.size
-  { m with globals := m.globals.push { g with id } }
-
-/-- Add a type definition -/
-def addType (m : Module) (td : TypeDef) : Module :=
-  { m with types := m.types.push td }
-
-/-- Intern a string -/
-def internString (m : Module) (s : String) : Nat × Module :=
-  let (idx, strings') := m.strings.intern s
-  (idx, { m with strings := strings' })
-
 /-- Get function by ID -/
 def getFunc (m : Module) (id : FuncId) : Option SomeFunc :=
   m.funcs[id.id]?
-
-/-- Get function by name -/
-def getFuncByName (m : Module) (name : String) : Option SomeFunc :=
-  m.funcIndex.get? name |>.bind m.getFunc
 
 /-- Get monomorphic function by ID -/
 def getMonoFunc (m : Module) (id : FuncId) : Option ClosedFunc :=
   m.getFunc id |>.bind SomeFunc.asMono?
 
-def getGlobal (m : Module) (id : GlobalId) : Option Global :=
-  m.globals[id.id]?
-
 /-- Set the main function -/
 def withMain (m : Module) (id : FuncId) : Module :=
   { m with mainFunc := some id }
 
-/-- Set main by name -/
-def withMainByName (m : Module) (name : String) : Module :=
-  match m.funcIndex.get? name with
-  | some id => { m with mainFunc := some id }
-  | none => m
-
 /-- Get all monomorphic functions -/
 def monoFuncs (m : Module) : Array ClosedFunc :=
   m.funcs.filterMap SomeFunc.asMono?
-
-/-- Check if module is fully monomorphic -/
-def isFullyMonomorphic (m : Module) : Bool :=
-  m.funcs.all (·.isMono)
 
 /-- Rebuild the wired function index from FuncAttrs.wiredRole on all functions -/
 def rebuildWiredFuncIndex (m : Module) : Module :=

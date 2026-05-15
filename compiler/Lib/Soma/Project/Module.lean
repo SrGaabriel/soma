@@ -38,18 +38,6 @@ def toString (m : ModuleName) : String :=
 
 instance : ToString ModuleName := ⟨ModuleName.toString⟩
 
-/-- The last component of the path, or package name if path is empty -/
-def baseName (m : ModuleName) : String :=
-  m.path.back?.getD m.package
-
-/-- Check if this is the prelude module -/
-def isPrelude (m : ModuleName) : Bool :=
-  m.package == "stdlib" && m.path == #["prelude"]
-
-/-- Create module name from package and relative path -/
-def fromParts (package : String) (path : Array String) : ModuleName :=
-  { package, path }
-
 /-- Create from a simple qualified string -/
 def fromString (s : String) : ModuleName :=
   parse s |>.getD { package := s, path := #[] }
@@ -77,30 +65,6 @@ structure ModuleInfo where
   deriving Repr
 
 namespace ModuleInfo
-
-/-- Get the string representation of the module name -/
-def nameStr (m : ModuleInfo) : String := m.name.toString
-
-/-- Extract import declarations from the AST -/
-def imports (m : ModuleInfo) : Array QualName :=
-  m.ast.decls.filterMap fun decl =>
-    match decl with
-    | .use _ path _ _ => some path
-    | _ => none
-
-/-- Collect all pub use items -/
-def pubUseItems (m : ModuleInfo) : Array (QualName × Array QualName) :=
-  m.ast.decls.filterMap fun decl =>
-    match decl with
-    | .use true path items _ => some (path, items)
-    | _ => none
-
-/-- Check if this module has any pub use declarations -/
-def hasPubUses (m : ModuleInfo) : Bool :=
-  m.ast.decls.any fun decl =>
-    match decl with
-    | .use true _ _ _ => true
-    | _ => false
 
 end ModuleInfo
 

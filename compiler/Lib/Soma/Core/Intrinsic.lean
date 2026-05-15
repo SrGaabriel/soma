@@ -42,14 +42,7 @@ def symbol : PrimOp → String
   | .eq => "==" | .ne => "!=" | .lt => "<" | .le => "<=" | .gt => ">" | .ge => ">="
   | .and => "&&" | .or => "||" | .not => "!" | .neg => "neg"
 
-def name : PrimOp → String
-  | .add => "add" | .sub => "sub" | .mul => "mul" | .div => "div" | .mod => "mod"
-  | .eq => "eq" | .ne => "ne" | .lt => "lt" | .le => "le" | .gt => "gt" | .ge => "ge"
-  | .and => "and" | .or => "or" | .not => "not" | .neg => "neg"
-
 instance : ToString PrimOp := ⟨PrimOp.symbol⟩
-
-def llvmName (op : PrimOp) : String := s!"primop_{op.name}"
 
 end PrimOp
 
@@ -96,8 +89,6 @@ def name : FFIOp → String
 
 instance : ToString FFIOp := ⟨FFIOp.name⟩
 
-def llvmName (op : FFIOp) : String := s!"soma_ffi_{op.name}"
-
 end FFIOp
 
 /-- Compiler intrinsics (LLVM, runtime, primitive ops, FFI ops, or externs) -/
@@ -119,34 +110,7 @@ def display : Intrinsic → String
   | .ffiOp f => f.name
   | .extern s => s
 
-def llvmName : Intrinsic → String
-  | .llvm s => s
-  | .runtime r => r.name
-  | .primOp p => p.llvmName
-  | .ffiOp f => f.llvmName
-  | .extern s => s
-
 instance : ToString Intrinsic := ⟨Intrinsic.display⟩
-
-/-- Check if this is an FFI operation -/
-def isFfiOp : Intrinsic → Bool
-  | .ffiOp _ => true
-  | _ => false
-
-/-- Check if this is an extern function -/
-def isExtern : Intrinsic → Bool
-  | .extern _ => true
-  | _ => false
-
-/-- Get FFI operation if this is one -/
-def ffiOp? : Intrinsic → Option FFIOp
-  | .ffiOp op => some op
-  | _ => none
-
-/-- Get extern name if this is one -/
-def externName? : Intrinsic → Option String
-  | .extern name => some name
-  | _ => none
 
 /-- Resolve an explicit @[intrinsic "tag"] value to an Intrinsic -/
 def fromTag? : String → Option Intrinsic

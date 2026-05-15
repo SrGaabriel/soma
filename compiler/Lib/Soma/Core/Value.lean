@@ -63,7 +63,6 @@ inductive Value where
   /-- Constructor application -/
   | vConstructor (name : QualifiedName) (tag : Nat) (args : List Value) (resultTy : Value)
 
-
 /-- Represents a function waiting for an argument -/
 inductive Closure where
   /-- Expr-based closure: evaluates body under extended environment -/
@@ -127,16 +126,6 @@ def env : Closure → Env
 def body : Closure → Option Soma.Core.Expr
   | .term _ _ b => some b
   | .const _ _ => none
-
-/-- Check if this is a constant (non-dependent) closure -/
-def isConst : Closure → Bool
-  | .const _ _ => true
-  | .term _ _ _ => false
-
-/-- Get the constant value if this is a const closure -/
-def constValue? : Closure → Option Value
-  | .const _ v => some v
-  | .term _ _ _ => none
 
 end Closure
 
@@ -226,19 +215,10 @@ def Value.typeConstructorKind (arity : Nat) : Value :=
 /-- Create Type₀ -/
 def Value.type0 : Value := Value.vType Level.zero
 
-/-- Create Type₁ -/
-def Value.type1 : Value := Value.vType Level.one
-
 /-- Check if value is a type (universe) -/
 def Value.isType (v : Value) : Bool :=
   match v with
   | Value.vType _ => true
-  | _ => false
-
-/-- Check if value is a neutral term -/
-def Value.isNeutral (v : Value) : Bool :=
-  match v with
-  | Value.vNeutral _ _ => true
   | _ => false
 
 /-- Check if value is a pi type -/
@@ -260,12 +240,6 @@ partial def Value.rowFieldType (row : Value) (idx : Nat) : Option Value :=
   | .vRowExtend _ _ tail, n + 1 => Value.rowFieldType tail n
   | _, _ => none
 
-/-- Extract field type from a record type at a given index -/
-def Value.recordFieldType (v : Value) (idx : Nat) : Option Value :=
-  match v with
-  | .vRecord row => Value.rowFieldType row idx
-  | _ => none
-
 /-- Collect all field names and types from a record row type -/
 partial def Value.rowFields (row : Value) : Array (String × Value) :=
   match row with
@@ -278,11 +252,6 @@ def Value.recordFields (v : Value) : Array (String × Value) :=
   match v with
   | .vRecord row => Value.rowFields row
   | _ => #[]
-
-/-- Look up a field index by name in a record type -/
-def Value.recordFieldIndex (v : Value) (name : String) : Option Nat :=
-  let fields := v.recordFields
-  fields.findIdx? (·.1 == name) |>.map (·)
 
 /-- Extract the first type parameter from a data type -/
 def Value.dataTypeFirstParam? (v : Value) : Option Value :=
@@ -369,14 +338,6 @@ def nApp (fn : Neutral) (arg : Value) : Neutral := fn.pushElim (.eApp arg)
 /-- Field access on a neutral record -/
 def nFieldAccess (record : Neutral) (field : String) : Neutral :=
   record.pushElim (.eField field)
-
-/-- Convenience: create a variable neutral from a name + level -/
-def var (name : String) (lvl : DeBruijnLvl) : Neutral :=
-  nVar ⟨name, lvl⟩
-
-/-- Create a metavariable neutral from a raw nat id -/
-def mkMeta (id : Nat) : Neutral :=
-  nMeta ⟨id⟩
 
 end Neutral
 
@@ -477,8 +438,6 @@ structure MetaDependencies where
 
 namespace MetaDependencies
 
-def empty : MetaDependencies := {}
-
 /-- Register a new constraint and return its ID -/
 def registerConstraint (deps : MetaDependencies) (metas : Array MetaId)
     (levelVars : Array LevelVarId := #[]) : ConstraintId × MetaDependencies :=
@@ -500,23 +459,6 @@ def registerConstraint (deps : MetaDependencies) (metas : Array MetaId)
     levelVarToConstraints := levelVarToConstraints
     nextConstraintId := deps.nextConstraintId + 1
   })
-
-/-- Get all constraints that involve a given meta -/
-def getConstraintsFor (deps : MetaDependencies) (mid : MetaId) : Array ConstraintId :=
-  deps.metaToConstraints.getD mid.id #[]
-
-/-- Get all constraints that involve a given level variable -/
-def getConstraintsForLevelVar (deps : MetaDependencies) (lv : LevelVarId)
-    : Array ConstraintId :=
-  deps.levelVarToConstraints.getD lv.id #[]
-
-/-- Get all metas involved in a constraint -/
-def getMetasFor (deps : MetaDependencies) (cid : ConstraintId) : Array MetaId :=
-  deps.constraintToMetas.getD cid.id #[]
-
-/-- Get all level variables involved in a constraint -/
-def getLevelVarsFor (deps : MetaDependencies) (cid : ConstraintId) : Array LevelVarId :=
-  deps.constraintToLevelVars.getD cid.id #[]
 
 /-- Remove a constraint from tracking (after it's been solved) -/
 def removeConstraint (deps : MetaDependencies) (cid : ConstraintId) : MetaDependencies :=
@@ -540,16 +482,6 @@ def removeConstraint (deps : MetaDependencies) (cid : ConstraintId) : MetaDepend
     constraintToMetas := constraintToMetas
     constraintToLevelVars := constraintToLevelVars
   }
-
-/-- Check if any constraints reference a given meta -/
-def hasConstraints (deps : MetaDependencies) (mid : MetaId) : Bool :=
-  match deps.metaToConstraints.get? mid.id with
-  | some arr => !arr.isEmpty
-  | none => false
-
-/-- Count how many metas a constraint depends on -/
-def constraintComplexity (deps : MetaDependencies) (cid : ConstraintId) : Nat :=
-  deps.constraintToMetas.getD cid.id #[] |>.size
 
 end MetaDependencies
 
@@ -583,14 +515,6 @@ def MetaState.solve (state : MetaState) (id : MetaId) (v : Value) : MetaState :=
     { state with metas := state.metas.insert id.id info' }
   | none => state
 
-/-- Clear a metavariable's solution (make it unsolved again) -/
-def MetaState.unsolve (state : MetaState) (id : MetaId) : MetaState :=
-  match state.metas.get? id.id with
-  | some info =>
-    let info' : MetaInfo := { info with solution := none }
-    { state with metas := state.metas.insert id.id info' }
-  | none => state
-
 def MetaState.lookup (state : MetaState) (id : MetaId) : Option MetaInfo :=
   state.metas.get? id.id
 
@@ -612,22 +536,9 @@ def MetaState.registerConstraint (state : MetaState) (metas : Array MetaId)
   let (cid, deps') := state.dependencies.registerConstraint metas levelVars
   (cid, { state with dependencies := deps' })
 
-/-- Get constraints affected by solving a meta -/
-def MetaState.getAffectedConstraints (state : MetaState) (mid : MetaId) : Array ConstraintId :=
-  state.dependencies.getConstraintsFor mid
-
-/-- Get constraints affected by solving a level variable -/
-def MetaState.getAffectedConstraintsForLevelVar (state : MetaState) (lv : LevelVarId)
-    : Array ConstraintId :=
-  state.dependencies.getConstraintsForLevelVar lv
-
 /-- Remove a constraint after it's been solved -/
 def MetaState.removeConstraint (state : MetaState) (cid : ConstraintId) : MetaState :=
   { state with dependencies := state.dependencies.removeConstraint cid }
-
-/-- Get constraint complexity (number of metas) -/
-def MetaState.constraintComplexity (state : MetaState) (cid : ConstraintId) : Nat :=
-  state.dependencies.constraintComplexity cid
 
 /-- Add a dependency: meta1 depends on meta2 -/
 def MetaState.addDependency (state : MetaState) (meta1 meta2 : MetaId) : MetaState :=
@@ -647,18 +558,6 @@ def MetaState.addDependency (state : MetaState) (meta1 meta2 : MetaId) : MetaSta
       let info' := { info with dependents := info.dependents.push meta1 }
       { state' with metas := state'.metas.insert meta2.id info' }
   | none => state'
-
-/-- Get all metas that depend on a given meta -/
-def MetaState.getDependents (state : MetaState) (mid : MetaId) : Array MetaId :=
-  match state.metas.get? mid.id with
-  | some info => info.dependents
-  | none => #[]
-
-/-- Get all metas that a given meta depends on -/
-def MetaState.getDependencies (state : MetaState) (mid : MetaId) : Array MetaId :=
-  match state.metas.get? mid.id with
-  | some info => info.dependsOn
-  | none => #[]
 
 /-- Result of matching a Core `Pattern` against a `Value` during NbE -/
 inductive PatMatchResult where

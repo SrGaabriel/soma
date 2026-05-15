@@ -530,12 +530,6 @@ def Node.portRole (n : Node) (p : PortIdx) : Option PortRole :=
     | .slice, 3       => some .sliceLength
     | _, _            => none
 
-/-! ## Active Pairs
-
-  An active pair is two nodes connected principal-to-principal.
-  These are the sites where interaction (reduction) can occur.
--/
-
 /-- An active pair: two nodes whose principal ports are connected -/
 structure ActivePair where
   /-- First node in the pair -/

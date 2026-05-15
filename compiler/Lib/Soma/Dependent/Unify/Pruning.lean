@@ -8,17 +8,6 @@ namespace Soma.Dependent
 
 open Soma.Core
 
-/-- Determine which variables from the spine can potentially appear in the RHS.
-    Returns the "safe" levels that can be part of the solution. -/
-def computeSafeScope (spine : List Value) (rhs : Value) : List DeBruijnLvl :=
-  let rhsFreeVars := collectFreeVars rhs
-  -- A level is safe if it either:
-  -- 1. Appears in the spine (can be referenced through the lambda binding), OR
-  -- 2. Does not appear free in the RHS at all
-  let spineLevels := spine.filterMap asBoundVar
-  spineLevels.filter fun lvl =>
-    rhsFreeVars.contains lvl || !rhsFreeVars.any (· == lvl)
-
 /-- Enumerate a list with indices starting from 0 (for pruning) -/
 def enumListForPrune {α : Type} (xs : List α) : List (Nat × α) :=
   let rec go (i : Nat) : List α → List (Nat × α)
@@ -170,18 +159,6 @@ def tryPrune (m : MetaId) (spine : List Value) (rhs : Value) : TCM (Option MetaI
 
       return some newMetaId
 
-/-! ## Spine Intersection for Flex-Flex Unification
-
-When unifying `?X spine1 = ?Y spine2` where both are metas with different spines,
-we compute the intersection of variables that appear in both spines. This allows
-us to prune both metas to only depend on the common variables.
-
-For example:
-  ?X x y = ?Y x z
-  Intersection: {x}
-  Result: Create ?W : A -> R, then ?X := λx y. ?W x, ?Y := λx z. ?W x
--/
-
 /-- Compute the intersection of two spines as (level, position in spine1, position in spine2).
     Only includes levels that appear as distinct bound variables in both spines. -/
 def computeSpineIntersection (spine1 spine2 : List Value)
@@ -263,23 +240,6 @@ def tryFlexFlexIntersection (m1 : MetaId) (spine1 : List Value)
     return true
   | _, _ => return false
 
-/-! ## Twin Variables for Dependent Pattern Matching
-
-When pattern matching introduces variables with dependent types, we may have
-situations like:
-  match xs with
-  | Cons (x : a) (xs' : Vec n a) => ...
-
-Here `a` and `n` are pattern variables, and `xs' : Vec n a` depends on both.
-When type-checking, we might generate constraints like:
-  ?X n a = Vec n a
-
-The key insight is that if `?X`'s solution would need to mention `n` and `a`,
-and those are exactly the spine variables, then we can solve directly.
-
-Twin variables are pairs of variables that must be unified together because
-they represent the same pattern variable appearing in different contexts. -/
-
 /-- Information about a twin variable pair -/
 structure TwinVar where
   /-- The original level -/
@@ -289,41 +249,6 @@ structure TwinVar where
   /-- The name from the second occurrence (may differ) -/
   name2 : String
   deriving Inhabited
-
-/-- Detect if a constraint involves twin variables.
-    Returns the pairs of variables that are twins. -/
-def detectTwinVars (spine : List Value) (rhs : Value) : List TwinVar :=
-  let spineLevels := spine.filterMap asBoundVar
-  let rhsFreeVars := collectFreeVars rhs
-  -- Variables are twins if they appear in both spine and rhs with the same level
-  spineLevels.filterMap fun lvl =>
-    if rhsFreeVars.contains lvl then
-      -- Find the name from the spine
-      let name := match spine.find? (fun v => asBoundVar v == some lvl) with
-        | some (.vNeutral _ (.nVar v)) => v.name
-        | _ => s!"twin{lvl.lvl}"
-      some { originalLevel := lvl, name1 := name, name2 := name }
-    else
-      none
-
-/-- Check if all free variables in the RHS are covered by twin variables.
-    If so, the pattern is solvable via identity substitution. -/
-def allVarsCoveredByTwins (twins : List TwinVar) (rhs : Value) : Bool :=
-  let twinLevels := twins.map (·.originalLevel)
-  let rhsFreeVars := collectFreeVars rhs
-  rhsFreeVars.all fun lvl => twinLevels.contains lvl
-
-/-! ## Occurs Check with Pruning
-
-When the occurs check fails (e.g., ?X = List ?X), we can sometimes recover
-by pruning the problematic argument. This is useful when the occurrence is
-under a lambda that doesn't use all spine variables.
-
-For example:
-  ?X x = Pair x (?X x)  -- fails occurs check
-But:
-  ?X x = Pair x ?Y      -- ?Y doesn't depend on x
-If we can show ?X x only appears where x is not used, we can prune. -/
 
 /-- Collect the "depth" at which a meta occurs in a value.
     Depth 0 means top-level, depth 1 means under one constructor, etc.
@@ -410,22 +335,6 @@ def tryOccursCheckPruning (_m : MetaId) (_spine : List Value) (_rhs : Value)
     : TCM Bool := do
   return false
 
-/-! ## Heterogeneous Constraint Handling
-
-When we have constraints involving metas whose types are also metas, we need
-to be careful about solving order. We track these dependencies and solve
-the type metas first. -/
-
-/-- Check if a value's type involves unsolved metavariables -/
-def hasMetaType (v : Value) : TCM Bool := do
-  match v with
-  | .vNeutral ty _ =>
-    let metas := Value.collectMetas ty
-    metas.anyM fun mid => do
-      let solved ← TCM.isMetaSolved mid
-      return !solved
-  | _ => return false
-
 /-- Record that meta1 depends on meta2 (meta2's solution is needed to solve meta1) -/
 def recordMetaDependency (meta1 meta2 : MetaId) : TCM Unit := do
   TCM.modifyState fun s => { s with metas := s.metas.addDependency meta1 meta2 }
@@ -444,19 +353,6 @@ def shouldDeferMeta (m : MetaId) : TCM Bool := do
         recordMetaDependency m mid
         return true
     return false
-
-/-! ## Eta Expansion Helpers -/
-
-/-- Try η-expansion on a lambda to potentially create a pattern.
-    If `rhs = λx. body` and we have `?m spine = rhs`, we can try to solve
-    `?m spine x = body` instead, which might be a pattern. -/
-def tryEtaExpandLambda (rhs : Value) : Option (String × Value × Value) :=
-  match rhs with
-  | .vLam name _body =>
-    -- We can η-expand: instead of ?m = λx. body, solve ?m x = body
-    -- where body is the closure applied to a fresh variable
-    some (name, .type0, .vNeutral .type0 (.nVar ⟨name, ⟨0⟩⟩))  -- Placeholder, actual application done in caller
-  | _ => none
 
 /-- Check if a spine can be made into a pattern by η-expanding the meta.
     Returns the extended spine and corresponding RHS if successful. -/

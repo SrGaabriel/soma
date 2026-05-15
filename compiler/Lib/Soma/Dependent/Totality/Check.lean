@@ -228,7 +228,6 @@ where
         | none =>
           checkTerm armBody
 
-
     | .closure _ caps _ =>
       for cap in caps do
         checkTerm cap
@@ -278,36 +277,5 @@ def checkFunctionTotality (fnInfo : FunctionInfo) (body : Soma.Core.Expr) : Tota
       { status := .isPartial, errors := state.errors, recursiveCalls := state.recursiveCalls }
   | .error e =>
     { status := .isPartial, errors := #[e], recursiveCalls := #[] }
-
-/-- Check if a function is total (for use in type indices) -/
-def assertFunctionTotal (name : QualifiedName) (status : TotalityStatus) (span : Span) : TCM Unit := do
-  match status with
-  | .isTotal => pure ()
-  | .isPartial => TCM.throw (.partialInTypeIndex name span)
-  | .isUnknown => TCM.addWarning (.totalityUnknown name span)
-
-/-- Check and register a function's totality -/
-def checkAndRegisterTotality (fnInfo : FunctionInfo) (body : Soma.Core.Expr)
-    (registry : TotalityRegistry) : TotalityRegistry × TotalityCheckResult :=
-  if fnInfo.markedTotal then
-    let result := checkFunctionTotality fnInfo body
-    let registry' := registry.register fnInfo.name.display result.status
-    (registry', result)
-  else
-    let registry' := registry.register fnInfo.name.display .isPartial
-    (registry', { status := .isPartial, errors := #[], recursiveCalls := #[] })
-
-/-- Check mutual recursion termination using call matrix -/
-def checkMutualTermination (functions : Array FunctionInfo) (bodies : Array Soma.Core.Expr)
-    : TotalityCheckResult :=
-  let matrix := buildCallMatrix functions bodies
-  match matrix.verifyTermination with
-  | some reason =>
-    let calls : Array RecursiveCallInfo := matrix.rows.map fun row =>
-      { callSpan := row.span, callee := dummyName, argNames := #[], decrease := .arg 0 reason }
-    { status := .isTotal, errors := #[], recursiveCalls := calls }
-  | none =>
-    let err := TCError.terminationCheckFailed dummyName "mutual recursion does not decrease" Span.uninhabited #[] #[]
-    { status := .isPartial, errors := #[err], recursiveCalls := #[] }
 
 end Soma.Dependent.Totality

@@ -34,19 +34,11 @@ inductive Level where
 
 namespace Level
 
-/-! ## Common Levels -/
-
-/-- The `Prop` universe. -/
-def propL : Level := .prop
-
 /-- Type₀ (the base universe) -/
 def zero : Level := .lit 0
 
 /-- Type₁ -/
 def one : Level := .lit 1
-
-/-- Type₂ -/
-def two : Level := .lit 2
 
 /-- Is this level the `Prop` universe? -/
 def isProp : Level → Bool
@@ -118,16 +110,6 @@ def substMap (l : Level) (σ : Std.HashMap LevelVarId Level) : Level :=
   | .max l1 l2 => mkMax (substMap l1 σ) (substMap l2 σ)
   | .succ l' => mkSucc (substMap l' σ)
 
-/-- Check if level is a concrete literal -/
-def isLit : Level → Bool
-  | .lit _ => true
-  | _ => false
-
-/-- Try to get literal value -/
-def toLit? : Level → Option Nat
-  | .lit n => some n
-  | _ => none
-
 /-- Check if level contains variables -/
 def hasVars : Level → Bool
   | .prop => false
@@ -144,25 +126,7 @@ def freeVars : Level → List LevelVarId
   | .max l1 l2 => freeVars l1 ++ freeVars l2
   | .succ l => freeVars l
 
-/-- Get unique level variables -/
-def freeVarsUnique (l : Level) : List LevelVarId :=
-  let vars := l.freeVars
-  vars.foldl (fun acc v => if acc.any (· == v) then acc else v :: acc) [] |>.reverse
-
-/-- Compare two concrete levels -/
-def leLit? (l1 l2 : Level) : Option Bool :=
-  match l1.simplify, l2.simplify with
-  | .prop, .prop => some true
-  | .prop, .lit _ => some true
-  | .lit _, .prop => some false
-  | .lit n1, .lit n2 => some (n1 ≤ n2)
-  | _, _ => none
-
-/-- Check if l1 ≤ l2 when both are concrete -/
-def leDecide (l1 l2 : Level) : Bool :=
-  match leLit? l1 l2 with
-  | some b => b
-  | none => false  -- Can't decide, assume false
+  -- Can't decide, assume false
 
 /-- Convert level to subscript string -/
 def toSubscript (l : Level) : String :=

@@ -162,10 +162,6 @@ def funcRefFromSerializable : SerializableFuncRef → FuncRef
   | .primOp op => .primOp op
   | .externC name => .externC name
 
-/-! ## Instruction Serialization -/
-
-/-- Serializable instruction — mirrors every constructor of `Inst n`.
-    Each constructor is assigned a numeric tag for stable binary encoding. -/
 inductive SerializableInst where
   | binOp (op : Nat) (lhs rhs : SerializableOperand) (ty : SerializableTy)
   | unOp (op : SerializableUnOp) (operand : SerializableOperand)
@@ -326,8 +322,6 @@ def instFromSerializableN (n : Nat) : SerializableInst → Inst n
   | .callExtern name as ty => .callExtern name (dops as) (dty n ty)
   | .callExternPoly name ta as ty => .callExternPoly name (dtys n ta) (dops as) (dty n ty)
 
-/-! ## Terminator Serialization -/
-
 /-- Serializable Terminator -/
 inductive SerializableTerminator where
   | jump (target : Nat)
@@ -354,8 +348,6 @@ def terminatorFromSerializable : SerializableTerminator → Terminator
   | .retUnit => .retUnit
   | .unreachable => .unreachable
 
-/-! ## Statement Serialization -/
-
 structure SerializableStmt where
   result : Option Nat
   inst : SerializableInst
@@ -366,8 +358,6 @@ def stmtToSerializable (s : Stmt n) : SerializableStmt :=
 
 def stmtFromSerializableN (n : Nat) (ss : SerializableStmt) : Stmt n :=
   { result := ss.result.map (⟨·⟩), inst := instFromSerializableN n ss.inst }
-
-/-! ## Block Serialization -/
 
 structure SerializableBlock where
   id : Nat
@@ -393,8 +383,6 @@ def blockFromSerializableN (n : Nat) (sb : SerializableBlock) : Block n :=
   , terminator := terminatorFromSerializable sb.terminator
   }
 
-/-! ## CFG Serialization -/
-
 structure SerializableCFG where
   /-- Blocks stored as array of (blockId, block) pairs (HashMap is not directly serializable) -/
   blocks : Array SerializableBlock
@@ -413,8 +401,6 @@ def cfgFromSerializableN (n : Nat) (sc : SerializableCFG) : CFG n :=
     let block := blockFromSerializableN n sb
     acc.insert block.id.id block
   { blocks, entry := ⟨sc.entry⟩, nextBlockId := sc.nextBlockId }
-
-/-! ## Param, Signature, Func Serialization -/
 
 /-- Serializable Param -/
 structure SerializableParam where
@@ -490,8 +476,6 @@ def someFuncFromSerializable (sf : SerializableFunc) : SomeFunc :=
         (k, tyFromSerializableN n v))
     }
   ⟨n, func⟩
-
-/-! ## Global, TypeDef, Module Serialization -/
 
 /-- Serializable Global -/
 structure SerializableGlobal where

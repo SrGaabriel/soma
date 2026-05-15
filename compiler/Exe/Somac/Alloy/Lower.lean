@@ -1,16 +1,3 @@
-/-
-  Circuit IR to Alloy IR Lowering
-
-  This pass transforms the interaction net representation (Circuit IR) into
-  an imperative SSA representation (Alloy IR). The key transformations are:
-
-  1. Nodes → Instructions: Each Circuit node becomes one or more Alloy instructions
-  2. Wires → Values: Port connections become SSA value references
-  3. DUP chains → Clone calls: Explicit duplication becomes clone operations
-  4. Pattern matching → Switches: MAT chains become switch statements
-  5. Closures → Struct + FnPtr: Lambda with captures becomes closure type
--/
-
 import Somac.Alloy.Func
 import Somac.Circuit.Graph
 import Somac.Circuit.Lower
@@ -38,7 +25,6 @@ abbrev CNodeEntry := Somac.Circuit.Graph.NodeEntry
 
 open Somac.Circuit.Term (Op1Code Op2Code Tag)
 open Soma.Core (QualifiedName PrimOp FFIOp Intrinsic PrimType)
-
 
 /-- Mapping from de Bruijn level to bounded type variable index -/
 structure TyVarMapping (n : Nat) where
@@ -173,11 +159,6 @@ def init (funcId : FuncId) (sig : Signature n)
   , stringTy
   }
 
-/-- Allocate a fresh local -/
-def freshLocal (s : LowerState n) : LocalId × LowerState n :=
-  let (id, func') := s.func.freshLocal
-  (id, { s with func := func' })
-
 /-- Allocate a fresh local with type -/
 def freshLocalTyped (s : LowerState n) (ty : Ty n) : LocalId × LowerState n :=
   let (id, func') := s.func.freshLocalTyped ty
@@ -211,14 +192,6 @@ def finishBlock (s : LowerState n) (term : Terminator) (nextId : BlockId) : Lowe
 def terminate (s : LowerState n) (term : Terminator) : LowerState n :=
   { s with currentBlock := s.currentBlock.withTerminator term }
 
-/-- Register a port-to-value mapping -/
-def bindPort (s : LowerState n) (port : CPortId) (val : LocalId) : LowerState n :=
-  { s with portMap := s.portMap.insert (port.node.id, port.port.idx) val }
-
-/-- Look up value for a port -/
-def lookupPort (s : LowerState n) (port : CPortId) : Option LocalId :=
-  s.portMap.get? (port.node.id, port.port.idx)
-
 /-- Build the final CFG -/
 def finalize (s : LowerState n) : Func n :=
   let allBlocks := s.blocks.push s.currentBlock
@@ -244,26 +217,11 @@ def run' (funcId : FuncId) (sig : Signature n)
   let (result, state) := Id.run (StateT.run m (LowerState.init funcId sig intrinsics panicMsgIdx stringTy))
   (result, state.finalize)
 
-def freshLocal : LowerM n LocalId := do
-  let s ← get
-  let (id, s') := s.freshLocal
-  set s'
-  pure id
-
-def freshLocalTyped (ty : Ty n) : LowerM n LocalId := do
-  let s ← get
-  let (id, s') := s.freshLocalTyped ty
-  set s'
-  pure id
-
 def freshBlockId : LowerM n BlockId := do
   let s ← get
   let (id, s') := s.freshBlockId
   set s'
   pure id
-
-def emit (stmt : Stmt n) : LowerM n Unit :=
-  modify fun s => s.emit stmt
 
 def emitInst (inst : Inst n) (ty : Ty n) : LowerM n LocalId := do
   let s ← get
@@ -279,13 +237,6 @@ def finishBlock (term : Terminator) (nextId : BlockId) : LowerM n Unit :=
 
 def terminate (term : Terminator) : LowerM n Unit :=
   modify fun s => s.terminate term
-
-def bindPort (port : CPortId) (val : LocalId) : LowerM n Unit :=
-  modify fun s => s.bindPort port val
-
-def lookupPort (port : CPortId) : LowerM n (Option LocalId) := do
-  let s ← get
-  pure (s.lookupPort port)
 
 def getCurrentBlockId : LowerM n BlockId := do
   let s ← get
@@ -676,7 +627,6 @@ def computeStringTy (wiredIn : Soma.Dependent.WiredIn)
         else if kept.size == 1 then .ok kept[0]!.2
         else .ok (.struct kept)
 
-
 mutual
 
 /-- Collect all de Bruijn levels from a neutral head -/
@@ -793,33 +743,6 @@ partial def matchPolyAgainstConcrete (poly concrete : Value)
   let concrete := stripLeadingImplicits concrete
   matchTypeStructural poly concrete levels bindings
 end
-
-/-- Collect all tyVar levels from all reachable nodes in a definition's graph -/
-def collectAllTyVarLevels (graph : CGraph) (def_ : CDefinition) : Std.HashSet Nat := Id.run do
-  let mut levels := collectTyVarLevels def_.ty
-
-  let mut visited : Std.HashSet Nat := {}
-  let mut queue : Array CNodeId := #[def_.root]
-
-  while !queue.isEmpty do
-    let nodeId := queue.back!
-    queue := queue.pop
-
-    if visited.contains nodeId.id then
-      continue
-    visited := visited.insert nodeId.id
-
-    match graph.getNode nodeId with
-    | some entry =>
-      levels := collectTyVarLevels entry.ty levels
-
-      for conn in entry.connections do
-        let (_, targetPort) := conn
-        if !visited.contains targetPort.node.id then
-          queue := queue.push targetPort.node
-    | none => pure ()
-
-  levels
 
 /-- Build a type variable mapping from collected levels -/
 def buildTyVarMapping (levels : Std.HashSet Nat) : Σ n, TyVarMapping n :=
@@ -1014,25 +937,6 @@ partial def extractReturnTypeWithMapping (ty : Value) (ctx : TypeConvCtx n) : Ty
       extractReturnTypeWithMapping nextTy ctx
   | other => convertValueTypeWithMapping other ctx
 
-/-- Build function signature from a Value type with known type parameter count -/
-def buildSignatureFromType (name : QualifiedName) (ty : Value) (arity : Nat)
-    (ctx : TypeConvCtx n) (numTypeParams : Nat) : Signature n :=
-  let (explicitTypeParams, paramInfos) := extractParamsUsingMapping ty ctx
-  let typeParamNames := if explicitTypeParams.size >= numTypeParams then
-      explicitTypeParams.extract 0 numTypeParams
-    else
-      let extra := (List.range (numTypeParams - explicitTypeParams.size)).toArray.map fun i =>
-        s!"T{explicitTypeParams.size + i}"
-      explicitTypeParams ++ extra
-  let defaultTy : Ty n := .prim .i64
-  let params := (List.range arity).toArray.map fun i =>
-    if h : i < paramInfos.size then
-      let (pname, pty) := paramInfos[i]
-      { id := ⟨i⟩, name := pname, ty := pty : Param n }
-    else { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param n }
-  let retTy := extractReturnTypeWithMapping ty ctx
-  { name := name.symbolName, typeParamNames, params, retTy }
-
 /-- Runtime arity under the same type conversion rules used to build signatures -/
 def runtimeArityOfDefinition (def_ : CDefinition) (ctx : TypeConvCtx n) : Nat :=
   (extractParamsUsingMapping def_.ty ctx).2.size
@@ -1047,86 +951,15 @@ def valueType : Ty n := .prim .i64
 /-- Type for constructor tag -/
 def tagType : Ty n := .prim .u32
 
-/-- Type for closure (fn ptr + env ptr) -/
-def closureType : Ty n := .struct #[("fn", .rawPtr), ("env", .rawPtr)]
-
 /-- Reserved tag for closure CTORs in Circuit IR -/
 def closureTag : Nat := 0xFFFE
-
-/-- Reserved tag for panic CTORs in Circuit IR -/
-def panicTag : Nat := 0xFFFF
-
-/-- NODE_FLAT_ARRAY tag value -/
-def flatArrayTag : Nat := 4
-
-/-- NODE_FLAT_ARRAY_VIEW tag value -/
-def flatArrayViewTag : Nat := 5
-
-/-- Size of the flat array backing header in bytes -/
-def flatArrayHeaderSize : Nat := 16
 
 /-- Alloy struct type for flat array backing header: { i64 header, i64 length } -/
 def flatArrayHeaderStructTy : Ty n := .struct #[("header", .prim .i64), ("length", .prim .i64)]
 
-/-- Alloy struct type for flat array view: { i64 header, i64 length, ptr data, ptr backing } -/
-def viewStructTy : Ty n := .struct #[
-  ("header", .prim .i64), ("length", .prim .i64),
-  ("data", .rawPtr), ("backing", .rawPtr)]
-
-/-- Emit the 8-byte flat array backing header: tag=4, elem_size, pad, reserved=0 -/
-def emitFlatArrayHeader (bufPtr : LocalId) (elemSizeBytes : Nat) : LowerM n Unit := do
-  let headerVal : Nat := flatArrayTag + (elemSizeBytes <<< 8)
-  let hdr ← LowerM.emitInst (.copy (.const (.int (Int.ofNat headerVal) .i64))) (.prim .i64)
-  let hdrFieldPtr ← LowerM.emitInst (.getFieldPtr (.local bufPtr) 0 flatArrayHeaderStructTy) (.ptr (.prim .i64))
-  LowerM.emitVoid (.store (.local hdrFieldPtr) (.local hdr))
-
 /-- Get a pointer to the data region of a flat array (past the header) -/
 def emitFlatArrayDataPtr (bufPtr : LocalId) : LowerM n LocalId :=
   LowerM.emitInst (.getElemPtr (.local bufPtr) (.const (.int 1 .i64)) flatArrayHeaderStructTy) (.ptr flatArrayHeaderStructTy)
-
-/-- Store the length field of a flat array backing header -/
-def emitStoreFlatArrayLength (bufPtr : LocalId) (len : LocalId) : LowerM n Unit := do
-  let lenFieldPtr ← LowerM.emitInst (.getFieldPtr (.local bufPtr) 1 flatArrayHeaderStructTy) (.ptr (.prim .i64))
-  LowerM.emitVoid (.store (.local lenFieldPtr) (.local len))
-
-/-- Emit a complete view struct: allocate 32 bytes, write header, length, data ptr, backing ptr -/
-def emitAllocView (length : LocalId) (dataPtr : LocalId) (backingPtr : LocalId)
-    : LowerM n LocalId := do
-  let view ← LowerM.emitInst (.callExtern "soma_alloc_view" #[] .rawPtr) .rawPtr
-  -- Store header (field 0)
-  let headerVal : Nat := flatArrayViewTag
-  let hdr ← LowerM.emitInst (.copy (.const (.int (Int.ofNat headerVal) .i64))) (.prim .i64)
-  let hdrFieldPtr ← LowerM.emitInst (.getFieldPtr (.local view) 0 viewStructTy) (.ptr (.prim .i64))
-  LowerM.emitVoid (.store (.local hdrFieldPtr) (.local hdr))
-  -- Store length (field 1)
-  let lenFieldPtr ← LowerM.emitInst (.getFieldPtr (.local view) 1 viewStructTy) (.ptr (.prim .i64))
-  LowerM.emitVoid (.store (.local lenFieldPtr) (.local length))
-  -- Store data pointer (field 2)
-  let dataFieldPtr ← LowerM.emitInst (.getFieldPtr (.local view) 2 viewStructTy) (.ptr .rawPtr)
-  LowerM.emitVoid (.store (.local dataFieldPtr) (.local dataPtr))
-  -- Store backing pointer (field 3)
-  let backFieldPtr ← LowerM.emitInst (.getFieldPtr (.local view) 3 viewStructTy) (.ptr .rawPtr)
-  LowerM.emitVoid (.store (.local backFieldPtr) (.local backingPtr))
-  pure view
-
-/-- Load the length field from a view (field 1) -/
-def emitLoadViewLength (viewPtr : LocalId) : LowerM n LocalId := do
-  let lenFieldPtr ← LowerM.emitInst (.getFieldPtr (.local viewPtr) 1 viewStructTy) (.ptr (.prim .i64))
-  LowerM.emitInst (.load (.local lenFieldPtr) (.prim .i64)) (.prim .i64)
-
-/-- Load the data pointer from a view (field 2) -/
-def emitLoadViewData (viewPtr : LocalId) : LowerM n LocalId := do
-  let dataFieldPtr ← LowerM.emitInst (.getFieldPtr (.local viewPtr) 2 viewStructTy) (.ptr .rawPtr)
-  LowerM.emitInst (.load (.local dataFieldPtr) .rawPtr) .rawPtr
-
-/-- Load the backing pointer from a view (field 3) -/
-def emitLoadViewBacking (viewPtr : LocalId) : LowerM n LocalId := do
-  let backFieldPtr ← LowerM.emitInst (.getFieldPtr (.local viewPtr) 3 viewStructTy) (.ptr .rawPtr)
-  LowerM.emitInst (.load (.local backFieldPtr) .rawPtr) .rawPtr
-
-def emitStoreViewBacking (viewPtr : LocalId) (newBackingPtr : LocalId) : LowerM n Unit := do
-  let backFieldPtr ← LowerM.emitInst (.getFieldPtr (.local viewPtr) 3 viewStructTy) (.ptr .rawPtr)
-  LowerM.emitVoid (.store (.local backFieldPtr) (.local newBackingPtr))
 
 /-- Default element size for lists when element type is unknown (pointer-sized) -/
 def defaultElemSize (ptrBytes : Nat) : Nat := ptrBytes

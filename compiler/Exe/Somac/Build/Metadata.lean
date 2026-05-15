@@ -35,8 +35,6 @@ def succeeded (pm : ProjectMetadata) : MetadataResult :=
 
 end MetadataResult
 
-/-! ## Main Entry Point -/
-
 /-- Generate metadata for a project (file or directory) -/
 def metadata (opts : MetadataOptions) (loadDeps : Array (String × System.FilePath) → IO (Except CheckError (Array ExternalDependency))) : IO MetadataResult := do
   let config : ProjectConfig := {

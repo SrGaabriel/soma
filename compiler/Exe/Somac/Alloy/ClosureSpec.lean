@@ -18,14 +18,6 @@ def getFuncParamCount (m : Module) (fid : FuncId) : Nat :=
   | some f => f.sig.params.size
   | none => 0
 
-/-- Check if a type represents an empty closure env -/
-def isUnitTy (ty : ClosedTy) : Bool := Ty.isZeroWidth ty
-
-/-- Check if an operand is a unit constant -/
-def isUnitOperand : Operand → Bool
-  | .const .unit => true
-  | _ => false
-
 /-- Check if an operand represents a zero-width value, using type info -/
 def isUnitEnv (op : Operand) (localTypes : Std.HashMap Nat ClosedTy) : Bool :=
   match op with
@@ -51,7 +43,6 @@ private def insertAtIdx [Inhabited α] (arr : Array α) (idx : Nat) (val : α) :
     result := result.push arr[i]!
   if idx >= arr.size then result := result.push val
   return result
-
 
 /-- Collect all LocalId.ids referenced as operands in statements + terminator -/
 private def collectUsedLocals (stmts : Array ClosedStmt) (term : Terminator) : Std.HashSet Nat := Id.run do
@@ -716,10 +707,6 @@ inductive ClosureVal where
   deriving Inhabited
 
 namespace ClosureVal
-
-def isKnown : ClosureVal → Bool
-  | .known .. => true
-  | _ => false
 
 /-- Check structural equality of two known closures (ignoring operand identity -/
 def structEq : ClosureVal → ClosureVal → Bool

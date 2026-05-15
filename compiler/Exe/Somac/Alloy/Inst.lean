@@ -145,18 +145,6 @@ abbrev ClosedInst := Inst 0
 
 namespace Inst
 
-/-- Does this instruction have a result value? -/
-def hasResult : Inst n → Bool
-  | .store _ _ => false
-  | .free _ => false
-  | .memcpy _ _ _ => false
-  | .memset _ _ _ => false
-  | .erase _ _ => false
-  | .clone _ _ _ => true
-  | .panic _ _ => false
-  | .callIntrinsic op _ _ => op.hasResult
-  | _ => true
-
 /-- Instantiate all types in an instruction -/
 def instantiate : Inst n → TyEnv n → ClosedInst
   | .binOp op lhs rhs ty, env => .binOp op lhs rhs (Somac.Alloy.instantiate ty env)
@@ -450,8 +438,6 @@ def mapOperands (inst : Inst 0) (f : Operand → Operand) : Inst 0 :=
   | .panic idx line => .panic idx line
 
 end Inst
-
-/-! ## Block Terminators -/
 
 /-- A terminator ends a basic block with control flow -/
 inductive Terminator where

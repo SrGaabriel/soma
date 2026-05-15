@@ -216,8 +216,6 @@ abbrev TabledM := StateT TabledState TCM
 
 namespace TabledM
 
-def getTable : TabledM (Std.HashMap String TableEntry) := return (← get).table
-
 def lookupEntry (key : String) : TabledM (Option TableEntry) :=
   return (← get).table.get? key
 
@@ -315,24 +313,6 @@ def originalHasSolution : TabledM (Option Solution) := do
   | some entry => return entry.solutions[0]?
   | none => return none
 
-/-- Scans the entire table and removes every exhausted entry -/
-def pruneExhausted : TabledM Nat := do
-  let s ← get
-  let mut kept : Std.HashMap String TableEntry := {}
-  let mut removed := 0
-  for (key, entry) in s.table.toList do
-    let exhausted :=
-      entry.generatorDone &&
-      entry.solutions.isEmpty &&
-      entry.dependents.isEmpty &&
-      key != s.originalKey
-    if exhausted then
-      removed := removed + 1
-    else
-      kept := kept.insert key entry
-  set { s with table := kept }
-  return removed
-
 end TabledM
 
 /-- Result of instance resolution -/
@@ -349,25 +329,21 @@ inductive ResolutionResult where
 
 namespace ResolutionResult
 
+def toString : ResolutionResult → String
+  | .found _ ids => s!"found (used {ids.size} instances)"
+  | .notFound cid _ reason => s!"not found for '{cid.original}': {reason}"
+  | .cycle cid _ => s!"cycle detected: {cid.original}"
+  | .depthExceeded cid => s!"search depth exceeded: {cid.original}"
+
 def isFound : ResolutionResult → Bool
   | .found _ _ => true
   | _ => false
-
-def getValue? : ResolutionResult → Option Value
-  | .found v _ => some v
-  | _ => none
 
 def getClassId? : ResolutionResult → Option Unique
   | .notFound cid _ _ => some cid
   | .cycle cid _ => some cid
   | .depthExceeded cid => some cid
   | .found _ _ => none
-
-def toString : ResolutionResult → String
-  | .found _ ids => s!"found (used {ids.size} instances)"
-  | .notFound cid _ reason => s!"not found for '{cid.original}': {reason}"
-  | .cycle cid _ => s!"cycle detected: {cid.original}"
-  | .depthExceeded cid => s!"search depth exceeded: {cid.original}"
 
 instance : ToString ResolutionResult := ⟨ResolutionResult.toString⟩
 
@@ -732,11 +708,6 @@ partial def resolveInstance (classId : Unique) (args : Array Value)
     mainLoop classId args
   let (r, _) ← action.run { originalKey := key }
   return r
-
-/-- Resolve an instance, returning just the value or none -/
-def resolveInstanceValue (classId : Unique) (args : Array Value) : TCM (Option Value) := do
-  let result ← resolveInstance classId args
-  return result.getValue?
 
 /-- Detailed failure information for instance resolution -/
 structure InstanceFailure where

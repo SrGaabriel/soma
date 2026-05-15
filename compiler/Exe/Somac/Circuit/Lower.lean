@@ -27,9 +27,6 @@ open Soma (Unique)
 /-- Usage map: maps local unique id to exact usage count from type checking -/
 abbrev UsageMap := Std.HashMap Unique Nat
 
-/-- Convert TCState.usages to UsageMap for clear boundaries -/
-def UsageMap.fromTCUsages (usages : Std.HashMap Unique Nat) : UsageMap := usages
-
 structure VarAlloc where
   /-- Current owned source port for this binding -/
   source : PortId
@@ -160,10 +157,6 @@ def isBindingErased (ctx : LowerCtx) (id : Unique) : Bool :=
   | some alloc => alloc.erased
   | none => false
 
-/-- Look up type for a binding -/
-def getVarType (ctx : LowerCtx) (id : Unique) : Option Value :=
-  ctx.bindings.get? id |>.map (·.ty)
-
 /-- Register a global function -/
 def registerGlobal (ctx : LowerCtx) (name : QualifiedName) (idx : Nat) : LowerCtx :=
   { ctx with globals := ctx.globals.insert name idx }
@@ -186,17 +179,9 @@ def registerCtorType (ctx : LowerCtx) (unique : Soma.Unique) (tag : Nat)
 def lookupCtor (ctx : LowerCtx) (name : QualifiedName) : Option (QualifiedName × Nat × Nat) :=
   ctx.constructors.get? name
 
-/-- Look up the full type for a global -/
-def lookupGlobalType (ctx : LowerCtx) (name : QualifiedName) : Option Value :=
-  ctx.globalTypes.get? name
-
 /-- Register a global function's type -/
 def registerGlobalType (ctx : LowerCtx) (name : QualifiedName) (ty : Value) : LowerCtx :=
   { ctx with globalTypes := ctx.globalTypes.insert name ty }
-
-/-- Look up usage count for a binding. Returns 1 if not found (safe default) -/
-def getUsageCount (ctx : LowerCtx) (id : Unique) : Nat :=
-  ctx.usageMap.getD id 1
 
 /-- Create context with a usage map -/
 def withUsageMap (usageMap : UsageMap) : LowerCtx :=
@@ -206,13 +191,6 @@ def withUsageMap (usageMap : UsageMap) : LowerCtx :=
 def freshSyntheticUnique (ctx : LowerCtx) (name : String) : Unique × LowerCtx :=
   let unique : Unique := { id := ctx.nextSyntheticId, module := "$lam", original := name }
   (unique, { ctx with nextSyntheticId := ctx.nextSyntheticId + 1 })
-
-/-- Push a new binder onto the bvar context -/
-def pushBvar (ctx : LowerCtx) (name : String) (ty : Value) : LowerCtx :=
-  let neutral : Value := .vNeutral ty (.nVar ⟨name, ctx.bvarEnv.level⟩)
-  { ctx with
-    bvarCtx := ctx.bvarCtx.push ty
-    bvarEnv := ctx.bvarEnv.extend name neutral }
 
 /-- Look up a wired-in primitive type's canonical `Value` -/
 def primTy (ctx : LowerCtx) (p : Soma.Core.PrimType) : Value :=
@@ -299,16 +277,6 @@ partial def isWorldTy (ctx : LowerCtx) (v : Value) : Bool :=
   | .vDataType uid _ => ctx.worldUid?.any (· == uid.id)
   | _ => false
 
-/-- True iff `v` is an IO `Pair World a` (wired-in Pair applied with World as its first parameter) -/
-partial def isIOPairTy (ctx : LowerCtx) (v : Value) : Bool :=
-  let v := unfoldValue v ctx.abbrevEnv
-  match v with
-  | .vDataType uid params =>
-    ctx.pairUid?.any (· == uid.id) && match params with
-      | fst :: _ :: _ => ctx.isWorldTy fst
-      | _ => false
-  | _ => false
-
 /-- True iff a type mentions the wired-in world token -/
 partial def mentionsWorldTy (ctx : LowerCtx) (v : Value) : Bool :=
   let v := unfoldValue v ctx.abbrevEnv
@@ -330,14 +298,6 @@ partial def mentionsWorldTy (ctx : LowerCtx) (v : Value) : Bool :=
   | .vConstructor _ _ args resultTy =>
     args.any ctx.mentionsWorldTy || ctx.mentionsWorldTy resultTy
   | _ => false
-
-/-- Is this qualified name `io_bind` -/
-def isIOBindName (ctx : LowerCtx) (qn : QualifiedName) : Bool :=
-  ctx.ioBindName?.any (· == qn)
-
-/-- Is this qualified name `pure_io` -/
-def isPureIOName (ctx : LowerCtx) (qn : QualifiedName) : Bool :=
-  ctx.pureIOName?.any (· == qn)
 
 end LowerCtx
 
@@ -367,14 +327,6 @@ def setCtx (ctx : LowerCtx) : LowerM Unit := set ctx
 
 /-- Modify the context -/
 def modifyCtx (f : LowerCtx → LowerCtx) : LowerM Unit := modify f
-
-/-- Run with a temporarily modified context (restores after) -/
-def withCtx (f : LowerCtx → LowerCtx) (m : LowerM α) : LowerM α := do
-  let saved ← getCtx
-  setCtx (f saved)
-  let result ← m
-  setCtx saved
-  pure result
 
 /-- Add a node to the graph. `World` and `Pair World X` flow through the Circuit IR as real types -/
 def addNode (n : Node) (ty : Value) : LowerM NodeId :=
@@ -697,7 +649,6 @@ def primOpToOp2Code : PrimOp → Option Op2Code
   | .or  => some .or
   | .not => none  -- Unary operation
   | .neg => none  -- Unary operation
-
 
 /-- Lower a global function or constructor reference to a circuit node -/
 def lowerGlobal (name : QualifiedName) (ty : Value) : LowerM PortId := do

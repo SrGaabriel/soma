@@ -68,11 +68,6 @@ def mangleSpecName (baseName : String) (typeArgs : Array ClosedTy) : String :=
     let suffix := String.intercalate "_" (typeArgs.toList.map mangleTy)
     s!"{baseName}${suffix}"
 
-/-! ## Discovery Phase
-
-Find all polymorphic call sites and collect specialization requests.
--/
-
 /-- Extract specialization keys from a closed instruction -/
 def collectInstRequests : ClosedInst → Array SpecKey
   | .callPoly funcId typeArgs _ _ => #[⟨funcId, typeArgs⟩]
@@ -144,8 +139,6 @@ def rewriteFunc (func : ClosedFunc) (specMap : Std.HashMap SpecKey FuncId) : Clo
   match func.body with
   | none => func
   | some cfg => { func with body := some (rewriteCFG cfg specMap) }
-
-/-! ## Monomorphization State -/
 
 /-- State for the monomorphization pass -/
 structure MonoState where
@@ -301,7 +294,6 @@ def rewriteAllFuncs : StateM MonoState Unit := do
     | none => sf -- keep polymorphic (will be removed)
   set { s with module := { s.module with funcs := newFuncs } }
 
-
 /-- Remap function reference -/
 def remapFuncId (fid : FuncId) (idMap : Std.HashMap Nat Nat) : FuncId :=
   match idMap.get? fid.id with
@@ -448,8 +440,6 @@ def removePolymorphicAndCompact : StateM MonoState Unit := do
     mainFunc := newMain
   }}
 
-/-! ## Entry Point -/
-
 /-- Run the monomorphization pass on a module -/
 def monomorphize (m : Module) : Module := Id.run do
   -- Initialize state
@@ -468,8 +458,6 @@ def monomorphize (m : Module) : Module := Id.run do
 
   let ((), finalState) := Id.run (StateT.run removePolymorphicAndCompact stateAfterRewrite)
   return finalState.module
-
-/-! ## Verification -/
 
 /-- Check if a module is fully monomorphic -/
 def isFullyMonomorphic (m : Module) : Bool :=

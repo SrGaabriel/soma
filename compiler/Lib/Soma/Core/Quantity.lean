@@ -22,12 +22,6 @@ instance : ToString Quantity where
     | .one => "1"
     | .omega => "ω"
 
-/-- Display with descriptive name -/
-def displayName : Quantity → String
-  | .zero => "erased"
-  | .one => "linear"
-  | .omega => "unrestricted"
-
 /-- Addition of quantities (how many times is x used total?)
     0 + q = q
     1 + 1 = ω
@@ -128,8 +122,6 @@ theorem mul_add (q1 q2 q3 : Quantity) : q1 * (q2 + q3) = q1 * q2 + q1 * q3 := by
 theorem add_mul (q1 q2 q3 : Quantity) : (q1 + q2) * q3 = q1 * q3 + q2 * q3 := by
   cases q1 <;> cases q2 <;> cases q3 <;> rfl
 
-/-! ## Ordering Laws -/
-
 /-- Ordering is reflexive -/
 theorem le_refl (q : Quantity) : q ≤ q := by
   cases q <;> decide
@@ -146,49 +138,6 @@ theorem le_antisymm {q1 q2 : Quantity} (h1 : q1 ≤ q2) (h2 : q2 ≤ q1) : q1 = 
 def isErased : Quantity → Bool
   | .zero => true
   | _ => false
-
-/-- Check if a quantity is linear (one) -/
-def isLinear : Quantity → Bool
-  | .one => true
-  | _ => false
-
-/-- Check if a quantity is unrestricted (omega) -/
-def isUnrestricted : Quantity → Bool
-  | .omega => true
-  | _ => false
-
-/-- Check if a quantity allows usage (non-zero) -/
-def allowsUsage : Quantity → Bool
-  | .zero => false
-  | _ => true
-
-/-- Check if a quantity allows duplication (not linear) -/
-def allowsDuplication : Quantity → Bool
-  | .one => false
-  | _ => true
-
-/-- Join (least upper bound) of two quantities -/
-def join : Quantity → Quantity → Quantity
-  | .omega, _ => .omega
-  | _, .omega => .omega
-  | .one, _ => .one
-  | _, .one => .one
-  | .zero, .zero => .zero
-
-/-- Meet (greatest lower bound) of two quantities -/
-def meet : Quantity → Quantity → Quantity
-  | .zero, _ => .zero
-  | _, .zero => .zero
-  | .one, .one => .one
-  | .one, .omega => .one
-  | .omega, .one => .one
-  | .omega, .omega => .omega
-
-/-- The default quantity for user code (unrestricted) -/
-def default : Quantity := .omega
-
-/-- Scale a quantity: multiply by another quantity -/
-def scale (q1 q2 : Quantity) : Quantity := q1 * q2
 
 end Quantity
 

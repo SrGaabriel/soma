@@ -9,8 +9,6 @@ open Somac.Circuit.Graph (Graph GraphM NodeEntry Definition enumList)
 open Somac.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label PortRole)
 open Somac.Circuit.Term (Term Tag Loc Op2Code PrimType)
 
-/-! ## Configuration -/
-
 /-- Pretty printing configuration -/
 structure Config where
   /-- Indentation size -/
@@ -29,8 +27,6 @@ structure Config where
 
 /-- Default configuration -/
 def Config.default : Config := {}
-
-/-! ## Pretty Printing -/
 
 /-- Pretty print a label -/
 def ppLabel (l : Label) : String := s!"&{l.id}"
@@ -64,10 +60,6 @@ def ppNode (cfg : Config) (n : Node) : String :=
 def ppPortId (p : PortId) : String :=
   if p.port.isPrincipal then s!"n{p.node.id}●"
   else s!"n{p.node.id}.{p.port.idx}"
-
-/-- Pretty print a wire -/
-def ppWire (w : Wire) : String :=
-  s!"{ppPortId w.src} ~ {ppPortId w.dst}"
 
 /-- Pretty print an active pair -/
 def ppActivePair (ap : ActivePair) : String :=
@@ -120,8 +112,6 @@ def ppBook (cfg : Config := .default) (g : Graph) : String :=
 /-- Full graph dump including book -/
 def ppFull (cfg : Config := .default) (g : Graph) : String :=
   s!"{ppGraph cfg g}\n\n{ppBook cfg g}"
-
-/-! ## Term-level Pretty Printing -/
 
 /-- Pretty print a term (packed representation) -/
 def ppTerm (t : Term) : String :=

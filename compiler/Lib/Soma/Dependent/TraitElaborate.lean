@@ -119,9 +119,6 @@ partial def substituteElim (e : Elim) (paramNames : Array String)
 
 end
 
-
-/-! ## Trait Elaboration
-
 Elaborate a type class (trait) declaration into a ClassInfo structure.
 The record type for the class is built from the method signatures.
 -/
@@ -417,20 +414,6 @@ def substituteMethodType (methodTypeSyntax : Soma.Syntax.Expr)
 
   substituteTypeArgsInValue zonked paramNames typeArgs 0
 
-/-- Build a lambda value from parameter names and types wrapping a body value. -/
-partial def buildLambdaValue (paramNames : Array String) (paramTypes : Array Value)
-    (bodyVal : Value) : TCM Value := do
-  -- Wrap in lambdas for each parameter (right to left)
-  let mut result := bodyVal
-  for i in [:paramNames.size] do
-    let idx := paramNames.size - 1 - i
-    if h₁ : idx < paramNames.size then
-      let name := paramNames[idx]
-      let _paramTy := if h₂ : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
-      result := Value.vLam name (Closure.const name result)
-
-  return result
-
 /-- Result of elaborating a single instance method -/
 structure MethodElabResult where
   /-- The method value for the instance record -/
@@ -558,7 +541,6 @@ where
       return #[(name, ty)] ++ restFields
     | .vRowEmpty => return #[]
     | _ => return #[]
-
 
 /-- Build the record type for a constraint dict (class record type applied to args) -/
 private partial def buildConstraintDictType (constraintClassId : Unique)
@@ -702,15 +684,6 @@ partial def collectInstanceMethodJobsFromClassInfo
       selfRefs := selfRefs.push (methodName, method.name, expectedType)
     | none => pure ()
   pure (jobs, selfRefs)
-
-/-- Build a stub instance value without elaborating method bodies -/
-partial def elaborateInstanceSkeletonFromClassInfo
-    (classInfo : ClassInfo) (typeArgs : Array Value)
-    (methods : Array Soma.Core.UntypedFunction)
-    : TCM InstanceSkeleton := do
-  let (jobs, selfRefs) ← collectInstanceMethodJobsFromClassInfo classInfo typeArgs methods
-  pure { value := buildIndirectInstanceValue jobs,
-         methodJobs := jobs, selfRefs := selfRefs }
 
 /-- Elaborate a full instance value (setup + body elab) -/
 partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
@@ -950,15 +923,6 @@ def collectInstanceMethodJobs
       selfRefs := selfRefs.push (method.name.display, method.name, expectedType)
     | none => pure ()
   pure (jobs, selfRefs)
-
-/-- Skeleton variant of `elaborateInstanceValue` -/
-def elaborateInstanceSkeleton
-    (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
-    (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
-    (typeClass : Soma.Core.TypeClassMeta) : TCM InstanceSkeleton := do
-  let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures typeClass
-  pure { value := buildIndirectInstanceValue jobs,
-         methodJobs := jobs, selfRefs := selfRefs }
 
 /-- Build the instance value (a record of method implementations -/
 def elaborateInstanceValue (typeArgs : Array Value)

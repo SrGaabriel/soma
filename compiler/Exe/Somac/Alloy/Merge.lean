@@ -58,8 +58,6 @@ structure FuncRefResolver where
 
 namespace FuncRefResolver
 
-def empty : FuncRefResolver := {}
-
 /-- Resolve a FuncRef to a FuncId -/
 def resolve (r : FuncRefResolver) (ref : FuncRef) : Option FuncId :=
   match ref with
@@ -205,11 +203,6 @@ def remapFunc (remap : IdRemap) (moduleName : String) (func : Func n) (newId : F
     sig := newSig
     body := newBody
   }
-
-/-- Rewrite FuncId references in a SomeFunc -/
-def remapSomeFunc (remap : IdRemap) (moduleName : String) (sf : SomeFunc) (newId : FuncId) (newName : String) : SomeFunc :=
-  let ⟨n, func⟩ := sf
-  ⟨n, remapFunc remap moduleName func newId newName⟩
 
 /-- State for merging modules -/
 structure MergeState where

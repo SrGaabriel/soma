@@ -18,21 +18,6 @@ structure Constructor where
 
 namespace Constructor
 
-def qualifiedName (c : Constructor) : QualifiedName :=
-  c.name
-
-/-- Binder info for the i-th field -/
-def fieldBinderInfo (c : Constructor) (i : Nat) : BinderInfo :=
-  c.fieldBinderInfos[i]?.getD .explicit
-
-/-- Quantity for the i-th field -/
-def fieldQuantity (c : Constructor) (i : Nat) : Quantity :=
-  c.fieldQuantities[i]?.getD .omega
-
-/-- Name for the i-th field -/
-def fieldName (c : Constructor) (i : Nat) : String :=
-  c.fieldNames[i]?.getD "_"
-
 end Constructor
 
 /-- A record field declaration captured during lowering -/
@@ -43,9 +28,6 @@ structure RecordFieldDef where
   quantity : Quantity := .omega
 
 namespace RecordFieldDef
-
-def mkExplicit (name : Option String) (type : Syntax.Expr) : RecordFieldDef :=
-  { name, type }
 
 end RecordFieldDef
 
@@ -60,54 +42,6 @@ inductive TypeDef where
       (fields : Array RecordFieldDef) (span : Soma.Syntax.Span)
 
 namespace TypeDef
-
-def name : TypeDef → QualifiedName
-  | .algebraic _ n _ _ _ _ _ => n
-  | .record _ n _ _ _ _ => n
-
-def qualifiedName (td : TypeDef) : QualifiedName :=
-  td.name
-
-def typeVarBinders : TypeDef → Array Syntax.TypeVarBinder
-  | .algebraic _ _ vs _ _ _ _ => vs
-  | .record _ _ vs _ _ _ => vs
-
-def typeVarNames (td : TypeDef) : Array String :=
-  td.typeVarBinders.map (·.name.name)
-
-def typeVarCount : TypeDef → Nat
-  | .algebraic _ _ vs _ _ _ _ => vs.size
-  | .record _ _ vs _ _ _ => vs.size
-
-/-- Number of parameter binders -/
-def paramCount : TypeDef → Nat
-  | .algebraic _ _ _ p _ _ _ => p
-  | .record _ _ vs _ _ _ => vs.size
-
-def attrs : TypeDef → Array Syntax.Attribute
-  | .algebraic attrs _ _ _ _ _ _ => attrs
-  | .record attrs _ _ _ _ _ => attrs
-
-def constructors : TypeDef → Array Constructor
-  | .algebraic _ _ _ _ cs _ _ => cs
-  | .record _ _ _ cn fields _ =>
-      #[{ name := cn, tag := 0,
-          fieldTypeSyntax := fields.map (·.type),
-          fieldBinderInfos := fields.map (·.binderInfo),
-          fieldQuantities := fields.map (·.quantity),
-          fieldNames := fields.map (fun f => f.name.getD "_") }]
-
-/-- The universe the type itself lives in -/
-def headSort : TypeDef → Level
-  | .algebraic _ _ _ _ _ s _ => s
-  | .record _ _ _ _ _ _ => .lit 0
-
-/-- Is this an `inductive … : Prop` declaration? -/
-def isProp (td : TypeDef) : Bool := td.headSort.isProp
-
-def span : TypeDef → Soma.Syntax.Span
-  | .algebraic _ _ _ _ _ _ s => s
-  | .record _ _ _ _ _ s => s
 
 end TypeDef
 
@@ -159,44 +93,6 @@ structure Module where
   abbreviations : Array TypeAbbrev := #[]
 
 namespace Module
-
-def empty (name : String) : Module :=
-  { name, functions := #[], theorems := #[],
-    types := #[], instances := #[], typeClasses := #[], abbreviations := #[] }
-
-def findFunction (m : Module) (name : QualifiedName) : Option UntypedFunction :=
-  m.functions.find? (·.name == name)
-
-def findFunctionByQualifiedName (m : Module) (name : QualifiedName) : Option UntypedFunction :=
-  m.functions.find? (fun fn => fn.name == name)
-
-/-- Look up a theorem declaration by name -/
-def findTheorem (m : Module) (name : QualifiedName) : Option UntypedFunction :=
-  m.theorems.find? (·.name == name)
-
-/-- Every top-level `def`/`theorem` in the module, regardless of kind -/
-def allDeclarations (m : Module) : Array UntypedFunction :=
-  m.functions ++ m.theorems
-
-def findType (m : Module) (name : QualifiedName) : Option TypeDef :=
-  m.types.find? (·.name == name)
-
-def findTypeByQualifiedName (m : Module) (name : QualifiedName) : Option TypeDef :=
-  m.types.find? (fun td => td.qualifiedName == name)
-
-def allConstructors (m : Module) : Array (QualifiedName × Constructor) :=
-  m.types.foldl (fun acc td => acc ++ td.constructors.map (fun c => (c.name, c))) #[]
-
-def allConstructorsByQualifiedName (m : Module) : Array (QualifiedName × Constructor) :=
-  m.types.foldl (fun acc td =>
-    acc ++ td.constructors.map (fun c => (c.qualifiedName, c))
-  ) #[]
-
-def findConstructor (m : Module) (name : QualifiedName) : Option Constructor :=
-  m.allConstructors.find? (·.1 == name) |>.map (·.2)
-
-def findConstructorByQualifiedName (m : Module) (name : QualifiedName) : Option Constructor :=
-  m.allConstructorsByQualifiedName.find? (·.1 == name) |>.map (·.2)
 
 end Module
 

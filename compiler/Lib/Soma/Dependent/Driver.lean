@@ -207,17 +207,6 @@ def elaborateTraitMethodType
       piExpr := .pi .omega .implicit name kindExpr piExpr
     TCM.evalExprInEnv Soma.Core.Env.empty piExpr
 
-
-/-- Convert a `TCError` to a `Psychopomp.Diagnostic` -/
-def tcErrorToDiagnostic (ctx : Soma.DiagContext) (pp : Soma.Core.PpContext)
-    (e : TCError) : Diagnostic :=
-  TCError.toDiagnostic ctx pp e
-
-/-- Convert an array of `TCError`s -/
-def tcErrorsToDiagnostics (ctx : Soma.DiagContext) (pp : Soma.Core.PpContext)
-    (errors : Array TCError) : Diagnostics :=
-  errors.map (TCError.toDiagnostic ctx pp)
-
 /-- State maintained across function checks for totality tracking -/
 structure CheckState where
   /-- Registry of function totality status -/
@@ -240,20 +229,6 @@ private def inferIntrinsicInfo (fn : Soma.Core.UntypedFunction) : TCM (Option In
           fn.span .unknown)
   | none =>
     pure (fn.attrs.extern.map Intrinsic.extern)
-
-/-- Check totality for a function if it's marked @[total] -/
-def checkFunctionTotality (fn : Soma.Core.UntypedFunction) (body : Soma.Core.Expr)
-    (registry : Totality.TotalityRegistry) : Totality.TotalityRegistry × Array TCError :=
-  let fnInfo : Totality.FunctionInfo := {
-    name := fn.name
-    markedTotal := fn.attrs.total
-    status := .isUnknown
-    params := fn.paramNames
-    fnType := Value.vType .zero
-    span := fn.span
-  }
-  let (registry', result) := Totality.checkAndRegisterTotality fnInfo body registry
-  (registry', result.errors)
 
 /-- Extract explicit parameter types from a Pi type, returning (paramTypes, resultType) -/
 partial def extractParamTypes (ty : Value) (numParams : Nat) : TCM (Array Value × Value) := do
@@ -318,43 +293,6 @@ def withFunctionParams (params : Array Soma.Core.FunctionParam) (paramTypes : Ar
         go (idx + 1)
   let result ← go 0
   return (bindings, result)
-
-/-- Extend the context with a signature telescope prefix, then run an action.
-  Explicit binders in the prefix are renamed to the concrete function parameter names.
-  QTT quantities from the type signature are preserved in the binding context.
-  Returns generated Unique×String pairs for those explicit term parameters. -/
-def withSignaturePrefixBindings (allParams : Array (String × Value × Soma.Core.BinderInfo × Soma.Core.Quantity))
-    (explicitParams : Array String)
-    (span : Span) (action : TCM α) : TCM (Array (Soma.Unique × String) × α) := do
-  -- Pre-generate all local ids to collect them
-  let mut explicitBindings : Array (Soma.Unique × String) := #[]
-  let mut allBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo × Soma.Core.Quantity) := #[]
-  let mut eIdx : Nat := 0
-  for (name, _, binder, qty) in allParams do
-    if binder.isImplicit then
-      let bindingId ← TCM.freshLocalId name
-      allBindings := allBindings.push (bindingId, name, binder, qty)
-    else
-      let paramName := if h : eIdx < explicitParams.size then explicitParams[eIdx] else name
-      let bindingId ← TCM.freshLocalId paramName
-      allBindings := allBindings.push (bindingId, paramName, .explicit, qty)
-      explicitBindings := explicitBindings.push (bindingId, paramName)
-      eIdx := eIdx + 1
-  -- Now bind them all, using the quantity from the type signature
-  let rec go (idx : Nat) : TCM α := do
-    if idx >= allBindings.size then
-      action
-    else
-      let (bindingId, paramName, binder, qty) := allBindings[idx]!
-      let (_, ty, _, _) := allParams[idx]!
-      withCheckedBinding paramName bindingId ty qty binder span do
-        if binder == .instance_ then
-          Soma.Dependent.withLocalInstanceForBoundDict
-            paramName bindingId ty span (go (idx + 1))
-        else
-          go (idx + 1)
-  let result ← go 0
-  return (explicitBindings, result)
 
 /-- Like `withSignaturePrefixBindings`, but also returns the full value telescope used to publish an unfoldable NbE value -/
 def withSignaturePrefixBindingsFull

@@ -23,15 +23,11 @@ open Soma.Core
 open Soma.Syntax (Span)
 open Test.Fixtures
 
-/-! ## Inhabited instances for test types -/
-
 instance : Inhabited (Soma.Unique × Array Nat) where
   default := ({ id := 0, module := "", original := "" }, #[])
 
 instance : Inhabited (Soma.Unique × Array Value) where
   default := ({ id := 0, module := "", original := "" }, #[])
-
-/-! ## Test Helpers -/
 
 /-- Create a test class unique -/
 def mkTestClassId (name : String) (id : Nat) : Soma.Unique :=
@@ -49,8 +45,6 @@ def testBoolTyUid : Soma.Unique := ⟨1002, "test", "Bool"⟩
 def testIntTy : Soma.Core.Value := .vDataType testIntTyUid []
 def testStringTy : Soma.Core.Value := .vDataType testStringTyUid []
 def testBoolTy : Soma.Core.Value := .vDataType testBoolTyUid []
-
-/-! ## Instance Environment Tests -/
 
 namespace InstanceEnvTests
 
@@ -392,8 +386,6 @@ def run : IO TestRunner := do
 
 end DiscrTreeTests
 
-/-! ## Built-in Environment Tests -/
-
 namespace BuiltinTests
 
 /-- Test: Default environment has Eq class -/
@@ -536,8 +528,6 @@ def run : IO TestRunner := do
   return runner
 
 end BuiltinTests
-
-/-! ## Resolution Tests -/
 
 namespace ResolutionTests
 
@@ -689,8 +679,6 @@ def run : IO TestRunner := do
 
 end ResolutionTests
 
-/-! ## TCContext Tests -/
-
 namespace TCContextTests
 
 /-- Test: withDefaultInstances creates context with instance env -/
@@ -719,8 +707,6 @@ def run : IO TestRunner := do
   return runner
 
 end TCContextTests
-
-/-! ## Main Test Runner -/
 
 def run : IO TestRunner := do
   IO.println "=== Dependent Types Instance Tests (Phase 6) ==="

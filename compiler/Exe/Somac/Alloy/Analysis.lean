@@ -6,7 +6,6 @@ namespace Somac.Alloy.Analysis
 
 open Somac.Alloy
 
-
 /-- An abstract value domain forming a join-semilattice -/
 structure Domain (α : Type) where
   /-- Bottom element: no information (unreached path) -/
@@ -72,12 +71,6 @@ structure ForwardResult (α : Type) where
   deriving Inhabited
 
 namespace ForwardResult
-
-/-- Look up the abstract value of a local at a given block's exit -/
-def getVal (d : Domain α) (r : ForwardResult α) (blockId : Nat) (localId : Nat) : α :=
-  match r.exitStates.get? blockId with
-  | some state => state.get d localId
-  | none => d.bot
 
 /-- Get the exit state of a block, defaulting to empty -/
 def getExitState (r : ForwardResult α) (blockId : Nat) : AbsState α :=

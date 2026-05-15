@@ -93,17 +93,6 @@ def describe : TokenKind → String
 
 instance : ToString TokenKind := ⟨describe⟩
 
-def isKeyword : TokenKind → Bool
-  | .kw_def | .kw_theorem | .kw_let | .kw_in | .kw_case | .kw_if | .kw_then | .kw_else
-  | .kw_inductive | .kw_struct | .kw_trait | .kw_instance | .kw_where
-  | .kw_use | .kw_pub | .kw_forall | .kw_bind | .kw_compose
-  | .kw_abbrev | .true_ | .false_ => true
-  | _ => false
-
-def isLayout : TokenKind → Bool
-  | .layoutStart | .layoutSep | .layoutEnd | .whitespace | .comment => true
-  | _ => false
-
 /-- Check if token is a name-like identifier (variable, type name, or operator) -/
 def isNameLike : TokenKind → Bool
   | .lowerIdent | .upperIdent | .varSymbol => true
@@ -185,12 +174,6 @@ def isTrivia : GreenNode → Bool
   | .token .comment _ => true
   | _ => false
 
-/-- Check if this is an error node -/
-def isError : GreenNode → Bool
-  | .error _ _ _ => true
-  | .missing _ => true
-  | _ => false
-
 /-- Get the token kind if this is a token -/
 def tokenKind? : GreenNode → Option TokenKind
   | .token k _ => some k
@@ -205,13 +188,6 @@ def syntaxKind? : GreenNode → Option SyntaxKind
 def text? : GreenNode → Option String
   | .token _ t => some t
   | _ => none
-
-/-- Get the raw kind (unified token/syntax kind) -/
-def rawKind : GreenNode → RawKind
-  | .token k _ => .token k
-  | .node k _ _ => .node k
-  | .error _ _ _ => .node .sourceFile  -- Error nodes don't have a specific kind
-  | .missing k => .node k
 
 /-- Check if any descendant has an error -/
 partial def hasErrors : GreenNode → Bool
@@ -292,29 +268,6 @@ structure GreenBuilder where
   deriving Inhabited
 
 namespace GreenBuilder
-
-/-- Intern a node, returning the cached version if it exists -/
-def intern (b : GreenBuilder) (node : GreenNode) : GreenBuilder × GreenNode :=
-  let h := node.contentHash
-  match b.cache.get? h with
-  | some existing => (b, existing)
-  | none => ({ cache := b.cache.insert h node }, node)
-
-/-- Create a token node -/
-def token (b : GreenBuilder) (kind : TokenKind) (text : String) : GreenBuilder × GreenNode :=
-  b.intern (.token kind text)
-
-/-- Create an interior node -/
-def node (b : GreenBuilder) (kind : SyntaxKind) (children : Array GreenNode) : GreenBuilder × GreenNode :=
-  b.intern (GreenNode.mkNode kind children)
-
-/-- Create an error node -/
-def error (b : GreenBuilder) (msg : String) (children : Array GreenNode) : GreenBuilder × GreenNode :=
-  b.intern (GreenNode.mkError msg children)
-
-/-- Create a missing node -/
-def missing (b : GreenBuilder) (expected : SyntaxKind) : GreenBuilder × GreenNode :=
-  b.intern (.missing expected)
 
 end GreenBuilder
 

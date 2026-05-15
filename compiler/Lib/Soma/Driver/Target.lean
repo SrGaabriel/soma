@@ -47,11 +47,6 @@ def isWindowsABI : TargetOS → Bool
   | .windows => true
   | _ => false
 
-/-- Whether this OS uses Mach-O object format -/
-def isMachO : TargetOS → Bool
-  | .macos => true
-  | _ => false
-
 end TargetOS
 
 /-- Target architecture -/
@@ -91,11 +86,6 @@ instance : Deserialize TargetArch where
   deserialize := do
     let s : String ← Deserialize.deserialize
     pure (TargetArch.fromString s)
-
-/-- Default pointer width in bits for this architecture -/
-def defaultPointerWidth : TargetArch → Nat
-  | .wasm32 => 32
-  | _ => 64
 
 end TargetArch
 

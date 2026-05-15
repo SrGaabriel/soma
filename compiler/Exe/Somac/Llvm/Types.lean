@@ -68,16 +68,6 @@ def isInt : LLVMType → Bool
   | .i1 | .i8 | .i16 | .i32 | .i64 | .i128 => true
   | _ => false
 
-/-- Check if this is a floating point type -/
-def isFloat : LLVMType → Bool
-  | .half | .float | .double | .fp128 => true
-  | _ => false
-
-/-- Check if this is a pointer type -/
-def isPtr : LLVMType → Bool
-  | .ptr => true
-  | _ => false
-
 /-- Check if this is a struct type -/
 def isStruct : LLVMType → Bool
   | .struct _ _ => true
@@ -283,16 +273,6 @@ instance : ToString LLVMValue where
 /-- Create an integer constant -/
 def intConst (val : Int) (bits : Nat := 64) : LLVMValue :=
   .const (.int val bits)
-
-/-- Create a boolean constant -/
-def boolConst (val : Bool) : LLVMValue :=
-  .const (.bool val)
-
-/-- Create a null pointer -/
-def nullPtr : LLVMValue := .const .null
-
-/-- Create an undef value -/
-def undef (ty : LLVMType) : LLVMValue := .const (.undef ty)
 
 end LLVMValue
 

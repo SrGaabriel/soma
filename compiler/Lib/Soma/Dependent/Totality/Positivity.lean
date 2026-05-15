@@ -103,9 +103,7 @@ partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value)
 
   | .vNeutral _ _ => .ok
 
-
   | .vRecordVal fields => checkPositivityFields unique pol fields
-
 
 end
 
@@ -171,18 +169,5 @@ where
   checkNeutral (neu : Neutral) (reg : TotalityRegistry) : List String :=
     checkHead neu.head reg ++
       neu.spine.foldl (fun acc e => acc ++ checkElim e reg) []
-
-/-- Check that a type index only uses total functions -/
-def checkTypeIndexTotality (idx : Value) (registry : TotalityRegistry) : List String :=
-  checkIndexValue idx registry
-
-/-- Validate a type index (TCM version) -/
-def validateTypeIndex (idx : Value) (registry : TotalityRegistry) (span : Span) : TCM Unit := do
-  let partials := checkTypeIndexTotality idx registry
-  match partials with
-  | [] => pure ()
-  | name :: _ =>
-    let u ← TCM.freshUnique name
-    TCM.throw (.partialInTypeIndex ⟨u⟩ span)
 
 end Soma.Dependent.Totality

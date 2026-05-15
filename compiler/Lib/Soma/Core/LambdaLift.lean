@@ -132,24 +132,7 @@ def buildFnType (paramTypes : Array Value) (resultType : Value) : Value :=
     Value.vPi Soma.Core.Quantity.omega Soma.Core.BinderInfo.explicit "_" paramTy
       (Soma.Core.Closure.const "_" acc)
 
-/-- Apply an argument to an expression, pushing the application down through
-    control-flow scaffolding so it reaches the point where the function is
-    actually available.
-
-    Used by η-expansion and by the `io_bind` inliner's continuation step:
-    when an IO function's body evaluates to a term of type
-    `World -> Pair World X` that's guarded by `case` / `let` / `if`, a naive
-    `App(body, w)` parks the world application OUTSIDE the guard — Circuit
-    lowering can't thread `w` into the inner computation. Pushing down
-    instead lets each inner IO-producing branch see its `w` directly, so
-    `io_bind m f w` reaches the inliner saturated and inlines to a let
-    chain.
-
-    - `lambda`: β-reduce (substitute `arg` for the binder)
-    - `case`: distribute into each arm's body
-    - `let_`: push into the in-body
-    - `if`: push into both branches
-    - else: just `App(expr, arg)` -/
+/-- Apply an argument to an expression while pushing the application down through lambdas, cases, lets, and ifs -/
 partial def applyPushingDown (expr : Soma.Core.Expr) (arg : Soma.Core.Expr)
     : Soma.Core.Expr :=
   match expr with
@@ -386,43 +369,6 @@ partial def inlineIOBind (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   | .ann x t =>
     return .ann (← inlineIOBind x) (← inlineIOBind t)
   | _ => pure e
-
-/-- Collect free variables with their type expressions from an expression tree -/
-partial def collectFVarsWithTypes (e : Soma.Core.Expr) : HashMap Soma.Unique Soma.Core.Expr :=
-  go e {}
-where
-  go (e : Soma.Core.Expr) (acc : HashMap Soma.Unique Soma.Core.Expr)
-      : HashMap Soma.Unique Soma.Core.Expr :=
-    match e with
-    | .fvar u ty => go ty (acc.insert u ty)
-    | .const _ ty => go ty acc
-    | .bvar _ | .mvar _ | .sort _ | .rowSort
-    | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-    | .lit _ | .tyvar _ _ => acc
-    | .app f a => go a (go f acc)
-    | .lam _ _ d b => go b (go d acc)
-    | .let_ _ t v b => go b (go v (go t acc))
-    | .pi _ _ _ d c => go c (go d acc)
-    | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
-    | .«case» scruts motive arms =>
-      let acc := scruts.foldl (fun a e => go e a) acc
-      let acc := go motive acc
-      arms.foldl (fun a arm => go arm.body a) acc
-    | .record fields => fields.foldl (fun a (_, e) => go e a) acc
-    | .recordUpdate b us =>
-      let acc := go b acc
-      us.foldl (fun a (_, e) => go e a) acc
-    | .fieldAccess x _ _ => go x acc
-    | .inject _ args rty => go rty (args.foldl (fun a e => go e a) acc)
-    | .if_ c t el => go el (go t (go c acc))
-    | .closure _ caps ty => go ty (caps.foldl (fun a e => go e a) acc)
-    | .array es ety => go ety (es.foldl (fun a e => go e a) acc)
-    | .tuple es => es.foldl (fun a e => go e a) acc
-    | .rowExtend l f t => go t (go f (go l acc))
-    | .recordTy r => go r acc
-    | .variantTy r => go r acc
-    | .dataTy _ ps => ps.foldl (fun a e => go e a) acc
-    | .ann x t => go t (go x acc)
 
 /-- Collect free variables with their type expressions in deterministic first-occurrence order -/
 partial def collectFVarsOrderedWithTypes (e : Soma.Core.Expr)

@@ -5,16 +5,12 @@ open Kenosis
 
 namespace Somac.Alloy
 
-/-! ## Identifiers -/
-
 /-- A local value in SSA form (assigned exactly once) -/
 structure LocalId where
   id : Nat
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace LocalId
-
-def zero : LocalId := ⟨0⟩
 
 instance : ToString LocalId where
   toString v := s!"%{v.id}"
@@ -59,7 +55,6 @@ instance : ToString GlobalId where
 
 end GlobalId
 
-
 /-- Primitive types at the Alloy level -/
 inductive PrimTy where
   | i8 | i16 | i32 | i64
@@ -82,10 +77,6 @@ def bitWidth : PrimTy → Nat
 
 def isSigned : PrimTy → Bool
   | .i8 | .i16 | .i32 | .i64 => true
-  | _ => false
-
-def isFloat : PrimTy → Bool
-  | .f32 | .f64 => true
   | _ => false
 
 /-- True iff this primitive has zero runtime representation -/
@@ -192,12 +183,7 @@ def Ty.close (ty : Ty n) : ClosedTy :=
 
 namespace Ty
 
-def i64 : Ty n := .prim .i64
-def i32 : Ty n := .prim .i32
-def u64 : Ty n := .prim .u64
-def u32 : Ty n := .prim .u32
 def bool : Ty n := .prim .bool
-def unit : Ty n := .prim .unit
 
 /-- Array-backed list: { data: ptr, len: u32, offset: u32 } -/
 def somaList : Ty n := .struct #[("data", .rawPtr), ("len", .prim .u32), ("offset", .prim .u32)]
@@ -400,8 +386,6 @@ def isStackCloneable : Ty n → Bool
 
 end Ty
 
-/-! ## Constants -/
-
 /-- Compile-time constants -/
 inductive Const where
   /-- Integer literal -/
@@ -453,8 +437,6 @@ instance : ToString Const where
     | .undef t => s!"undef:{t}"
 
 end Const
-
-/-! ## Operands -/
 
 /-- An operand is either a local value or a constant -/
 inductive Operand where
@@ -578,10 +560,6 @@ def hasResult : IntrinsicOp → Bool
   | .ptrWrite => false
   | _ => true
 
-/-- Whether this intrinsic is a closure call -/
-def isClosureCall : IntrinsicOp → Bool
-  | _ => false
-
 /-- Return type of an intrinsic when known statically -/
 def fixedRetTy : IntrinsicOp → Option ClosedTy
   | .ptrNull => some .rawPtr
@@ -646,18 +624,10 @@ inductive FuncRef where
 
 namespace FuncRef
 
-/-- Check if this reference is fully resolved -/
-def isResolved : FuncRef → Bool
-  | .local _ => true
-  | _ => false
-
 /-- Get the FuncId if this is a resolved local reference -/
 def toFuncId? : FuncRef → Option FuncId
   | .local id => some id
   | _ => none
-
-/-- Create a local reference -/
-def mk (id : FuncId) : FuncRef := .local id
 
 instance : ToString FuncRef where
   toString

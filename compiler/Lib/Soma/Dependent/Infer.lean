@@ -43,15 +43,6 @@ def inferUniverse (ty : Value) : TCM Level := do
     -- If it's not obviously a Type, create a fresh level variable
     TCM.freshLevel "u"
 
-/-- Ensure a value is a type (has type Type) -/
-def ensureType (v : Value) (span : Span) (context : Option String := none) : TCM Level := do
-  let v' ← force v
-  match v' with
-  | .vType l => return l
-  | .vNeutral (.vType l) _ => return l
-  | _ =>
-    TCM.throw (.expectedType v' span context)
-
 /-- Ensure a value is a Pi type -/
 def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none)
     : TCM (Quantity × BinderInfo × String × Value × Closure) := do
@@ -238,26 +229,6 @@ partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
         let _ ← solveConstraints
         let finalTy ← force fnTy'
         return (finalTy, fnExpr', implicitMetas)
-
-/-- Check if we can solve a meta from the expected type -/
-def trySolveMetaFromExpected (metaId : MetaId) (expected : Value) : TCM Bool := do
-  match ← TCM.lookupMeta metaId with
-  | some info =>
-    match info.solution with
-    | some _ => return false
-    | none =>
-      let metaVal := Value.vNeutral info.type (.nMeta metaId)
-      let success ← tryUnify metaVal expected
-      if success then
-        let _ ← solveConstraints
-      return success
-  | none => return false
-
-/-- Aggressively propagate type information during inference -/
-def propagateTypeInfo (inferredTy : Value) (targetTy : Value) : TCM Unit := do
-  unify inferredTy targetTy
-  let _ ← solveConstraints
-
 
 /-- Build nested Core lambdas from `(fvar, name, domainExpr)` bindings. -/
 partial def buildLambdas (bindings : List (Unique × String × Soma.Core.Expr))
@@ -942,7 +913,6 @@ where
         | _ => return none
       else return none
     | _ => return none
-
 
 /-- Desugar a compose block into nested >>= applications -/
 private def desugarCompose (stmts : Array Soma.Syntax.ComposeStmt)
@@ -2055,32 +2025,6 @@ partial def checkSyntaxTupleAgainstSigma (elems : List Soma.Syntax.Expr) (sigmaT
       let (_, expr) ← inferSyntaxTuple elems Span.uninhabited
       return expr
 
-end -- mutual
-
-/-! ## Top-Level Interface -/
-
-/-- Type check an expression, inferring its type -/
-def typeInfer (e : Soma.Syntax.Expr) (ctx : TCContext := TCContext.empty)
-    : Except TCError (Value × Soma.Core.Expr × TCState) := do
-  let ((ty, expr), state) ← (inferSyntax e).run ctx
-  return (ty, expr, state)
-
-/-- Type check an expression against an expected type -/
-def typeCheck (e : Soma.Syntax.Expr) (expected : Value)
-    (ctx : TCContext := TCContext.empty) : Except TCError (Soma.Core.Expr × TCState) := do
-  let (expr, state) ← (checkSyntax e expected).run ctx
-  return (expr, state)
-
-/-- Type check a Syntax expression, inferring its type -/
-def typeInferSyntax (e : Soma.Syntax.Expr) (ctx : TCContext := TCContext.empty)
-    : Except TCError (Value × Soma.Core.Expr × TCState) := do
-  let ((ty, expr), state) ← (inferSyntax e).run ctx
-  return (ty, expr, state)
-
-/-- Type check a Syntax expression against an expected type -/
-def typeCheckSyntax (e : Soma.Syntax.Expr) (expected : Value)
-    (ctx : TCContext := TCContext.empty) : Except TCError (Soma.Core.Expr × TCState) := do
-  let (expr, state) ← (checkSyntax e expected).run ctx
-  return (expr, state)
+end
 
 end Soma.Dependent

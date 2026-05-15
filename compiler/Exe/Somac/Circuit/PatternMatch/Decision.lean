@@ -88,8 +88,6 @@ instance : ToString Binding := ⟨format⟩
 
 end Binding
 
-/-! ## Decision Tree -/
-
 /-- What to test at a switch node -/
 inductive TestKind where
   /-- Test constructor tag -/
@@ -162,8 +160,6 @@ partial def reachableArms : DecisionTree → Array Nat
     -- Deduplicate
     (fromCases ++ fromDefault).foldl (init := #[]) fun acc idx =>
       if acc.contains idx then acc else acc.push idx
-
-/-! ## Pretty Printing -/
 
 /-- Format a decision tree with indentation -/
 partial def format (tree : DecisionTree) (indent : Nat := 0) : String :=

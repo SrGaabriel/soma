@@ -179,7 +179,6 @@ partial def zonkValue (v : Value) : TCM Value := do
     let rty' ← zonkValue rty
     return .vConstructor name tag args' rty'
 
-
 /-- Zonk a neutral head -/
 partial def zonkHead (h : Head) : TCM Head := do
   match h with

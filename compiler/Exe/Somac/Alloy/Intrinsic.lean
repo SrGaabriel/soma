@@ -301,37 +301,11 @@ inductive WrapperNeeded where
   | externC (name : String)
   deriving Repr, BEq, Hashable
 
-/-- Collect all FuncRefs needing wrappers from a module -/
-def collectWrappersNeeded (mod : Module) : Std.HashSet WrapperNeeded := Id.run do
-  let mut result : Std.HashSet WrapperNeeded := {}
-
-  for ⟨_, func⟩ in mod.funcs do
-    if let some cfg := func.body then
-      for block in cfg.allBlocks do
-        for stmt in block.stmts do
-          match stmt.inst with
-          | .makeClosure funcRef _ | .makeClosurePoly funcRef _ _
-          | .stackClosure funcRef _ | .stackClosurePoly funcRef _ _ =>
-            match funcRef with
-            | .primOp op => result := result.insert (.primOp op)
-            | .intrinsic op => result := result.insert (.intrinsicOp op)
-            | .externC name => result := result.insert (.externC name)
-            | _ => pure ()
-          | _ => pure ()
-
-  result
-
 /-- Generate a wrapper function for a WrapperNeeded -/
 def generateWrapper (needed : WrapperNeeded) (stringTy : ClosedTy) (funcId : FuncId) : ClosedFunc :=
   match needed with
   | .primOp op => generatePrimOpWrapper op funcId
   | .intrinsicOp op => generateIntrinsicOpWrapper op stringTy funcId
   | .externC name => generateExternCWrapper name #[.prim .i64] (.prim .i64) funcId
-
-/-- Get the wrapper name for a WrapperNeeded -/
-def wrapperName : WrapperNeeded → String
-  | .primOp op => s!"$intrinsic$$primop_{op.name}"
-  | .intrinsicOp op => s!"$intrinsic$${op.name}"
-  | .externC name => s!"$intrinsic$$extern_{name}"
 
 end Somac.Alloy.Intrinsic

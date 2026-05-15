@@ -209,11 +209,6 @@ def findRuntime (sysroot : Option String) (abi : ClangAbi) : IO (Option System.F
       | .error e => IO.eprintln e
   return none
 
-/-- Check if a tool is available -/
-def checkTool (path : String) : IO Bool := do
-  let result ← runCommand "which" #[path]
-  pure (result.exitCode == 0)
-
 /-- Compile LLVM IR (.ll) to object file (.o) using clang -/
 def compileToObject
     (tools : ToolPaths)
@@ -285,23 +280,6 @@ def linkExecutable
   else
     pure (.error s!"linker failed (exit {result.exitCode}):\n{result.stderr}")
 
-/-- Create a static library archive from object files -/
-def createArchive
-    (tools : ToolPaths)
-    (objs : Array System.FilePath)
-    (output : System.FilePath)
-    : IO (Except String Unit) := do
-  let mut args := #["rcs", output.toString]
-  for obj in objs do
-    args := args.push obj.toString
-
-  let result ← runCommand tools.ar args
-
-  if result.exitCode == 0 then
-    pure (.ok ())
-  else
-    pure (.error s!"ar failed (exit {result.exitCode}):\n{result.stderr}")
-
 /-- Create a tarball -/
 def createTarball
     (tools : ToolPaths)
@@ -315,22 +293,6 @@ def createTarball
 
   let flags := if compressed then "-czf" else "-cf"
   let args := #[flags, output.toString, "-C", parent.toString, dirName]
-
-  let result ← runCommand tools.tar args
-
-  if result.exitCode == 0 then
-    pure (.ok ())
-  else
-    pure (.error s!"tar failed (exit {result.exitCode}):\n{result.stderr}")
-
-/-- Extract a tarball -/
-def extractTarball
-    (tools : ToolPaths)
-    (archive : System.FilePath)
-    (targetDir : System.FilePath)
-    : IO (Except String Unit) := do
-  -- tar -xf archive.tar.gz -C targetDir
-  let args := #["-xf", archive.toString, "-C", targetDir.toString]
 
   let result ← runCommand tools.tar args
 

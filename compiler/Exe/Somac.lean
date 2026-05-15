@@ -28,20 +28,7 @@ def parseDep (s : String) : Except String (String × String) :=
       .ok (name, path)
   | _ => .error s!"Invalid dependency format: '{s}'. Expected NAME=PATH"
 
-/-- Parse compilation mode from string -/
-def parseMode (s : String) : Except String CompilationMode :=
-  match s with
-  | "standard" => .ok .standard
-  | "graph" => .ok .graph
-  | "hybrid" => .ok .hybrid
-  | _ => .error s!"Unknown mode: '{s}'. Use 'standard', 'graph', or 'hybrid'"
 
-/-- Parse output format from string -/
-def parseFormat (s : String) : Except String OutputFormat :=
-  match s with
-  | "json" => .ok .json
-  | "human" => .ok .human
-  | _ => .error s!"Unknown format: '{s}'. Use 'json' or 'human'"
 
 /-- Handler for the `lex` command -/
 def runLex (p : Parsed) : IO UInt32 := do

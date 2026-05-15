@@ -138,7 +138,6 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
     let rtyE ← rename ren rty
     .ok (.construct name tag argExprs.toArray rtyE)
 
-
 partial def renameHead (ren : PartialRenaming) : Head → RenameResult
   | .hVar v =>
     match ren.lookupIdx v.level.lvl with

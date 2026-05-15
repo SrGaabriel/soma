@@ -59,7 +59,6 @@ def buildClassMethodRegistry (globals : Globals) (instanceEnv : InstanceEnv)
             }
   return registry
 
-
 /-- Try to inline a field access on a known record literal -/
 private def inlineFieldAccess (dictExpr : Expr) (methodName : String) (fieldIdx : Nat)
     : Option Expr :=
@@ -74,13 +73,11 @@ private def inlineFieldAccess (dictExpr : Expr) (methodName : String) (fieldIdx 
         none
   | _ => none
 
-
 /-- Find the index of the dictionary argument in a class method application spine -/
 private def findDictArgIdx (args : Array Expr) (methodName : String) : Option Nat :=
   args.findIdx? fun
     | .record fields => fields.any (fun (n, _) => n == methodName)
     | _ => false
-
 
 mutual
 

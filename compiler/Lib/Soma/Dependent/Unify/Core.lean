@@ -19,15 +19,6 @@ structure Spine where
   args : List Value
   deriving Inhabited
 
-/-- Extract a pattern spine (list of argument values) from a neutral -/
-def getSpine (neu : Neutral) : Option Spine := Id.run do
-  let mut args : List Value := []
-  for e in neu.spine do
-    match e with
-    | .eApp arg => args := args ++ [arg]
-    | _ => return none
-  return some ⟨args⟩
-
 /-- Check if a value is a bound variable at a specific level (no spine) -/
 def asBoundVar : Value → Option DeBruijnLvl
   | .vNeutral _ neu =>
@@ -257,64 +248,8 @@ def solveMetaProjectionSpine? (neu : Neutral) : Option (MetaId × Array Elim) :=
     if hasProjection then some (m, neu.spine) else none
   | _ => none
 
-/-- Build a neutral from a metavariable head and a spine of argument values -/
-def buildMetaSpine (m : MetaId) (spine : List Value) : Neutral :=
-  Neutral.mk (.hMeta m) (spine.foldl (fun acc arg => acc.push (.eApp arg)) #[])
-
-/-- Convert a Value to a Neutral (for eta expansion) -/
-def valueToNeutral (v : Value) : Neutral :=
-  match v with
-  | .vNeutral _ neu => neu
-  | _ => .nVar ⟨"_eta", ⟨0⟩⟩
-
-/-- Enumerate a list with indices starting from 0 -/
-def enumList {α : Type} (xs : List α) : List (Nat × α) :=
-  let rec go (i : Nat) : List α → List (Nat × α)
-    | [] => []
-    | x :: rest => (i, x) :: go (i + 1) rest
-  go 0 xs
-
-/-- Check if a level appears in the spine -/
-def levelInSpine (lvl : DeBruijnLvl) (spine : List Value) : Bool :=
-  spine.any fun arg =>
-    match asBoundVar arg with
-    | some l => l == lvl
-    | none => false
-
 /-- A default span for internal use -/
 def defaultSpan : Span := Span.uninhabited
-
-/-- Throw a unification error -/
-def getValueKind : Value → String
-  | .vType _ => "vType"
-  | .vPi _ _ _ _ _ => "vPi"
-  | .vLam _ _ => "vLam"
-  | .vNeutral _ n => s!"vNeutral({getNeutralKind n})"
-  | .vIntLit _ => "vIntLit"
-  | .vFloatLit _ => "vFloatLit"
-  | .vStringLit _ => "vStringLit"
-  | .vRowEmpty => "vRowEmpty"
-  | .vRowExtend _ _ _ => "vRowExtend"
-  | .vRecord _ => "vRecord"
-  | .vVariant _ => "vVariant"
-  | .vRecordVal _ => "vRecordVal"
-  | .vLabelLit _ => "vLabelLit"
-  | .vRowSort => "vRowSort"
-  | .vLabelSort => "vLabelSort"
-  | .vDataType id _ => s!"vDataType({id.original})"
-  | .vConstructor n _ _ _ => s!"vConstructor({n})"
-where
-  getNeutralKind (n : Neutral) : String :=
-    let headKind : String := match n.head with
-      | .hVar v => s!"nVar({v.name})"
-      | .hConst qn _ => s!"nConst({qn})"
-      | .hMeta m => s!"nMeta({m.id})"
-      | .hErrored => "hErrored"
-      | .hCase _ _ _ => "nCase"
-    let elimsStr := String.intercalate "," (n.spine.toList.map fun
-      | .eApp _ => "app"
-      | .eField f => s!"field({f})")
-    if elimsStr.isEmpty then headKind else s!"{headKind}[{elimsStr}]"
 
 /-- Build a `PpContext` for rendering values -/
 private def diagnosticPpContext : TCM Soma.Core.PpContext := do
@@ -420,20 +355,5 @@ def throwLevelMismatch (l1 l2 : Level) : TCM Unit := do
   let roots ← TCM.getUnifyRoot
   TCM.throw (.unificationFailed
     (.levelMismatch l1 l2 path roots) .general span #[] #[])
-
-/-- Throw a row-label-not-found failure preserving path + roots -/
-def throwRowLabelNotFound (label : String) (row : Value) : TCM Unit := do
-  let span ← TCM.getSpan
-  let path ← TCM.getPath
-  let roots ← TCM.getUnifyRoot
-  TCM.throw (.unificationFailed
-    (.rowLabelNotFound label row path roots) .general span #[] #[])
-
-/-- Throw a unification error with constraint chain context -/
-def throwUnifyErrorWithContext (v1 v2 : Value) (chain : Array ConstraintInfo)
-    (metas : Array MetaId) (purpose : CheckPurpose := .general) : TCM Unit := do
-  let span ← TCM.getSpan
-  let failure ← buildHeadMismatch v1 v2
-  TCM.throw (.unificationFailed failure purpose span chain metas)
 
 end Soma.Dependent

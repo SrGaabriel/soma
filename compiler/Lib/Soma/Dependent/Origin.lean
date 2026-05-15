@@ -130,18 +130,6 @@ inductive ConstraintOrigin where
 
 namespace ConstraintOrigin
 
-def span : ConstraintOrigin → Option Span
-  | .checking _ _ s => some s
-  | .inferring _ s => some s
-  | .application _ _ s => some s
-  | .implicitArg _ _ s => some s
-  | .annotation s => some s
-  | .patternMatch _ s => some s
-  | .instanceSearch _ s => some s
-  | .letBinding _ s => some s
-  | .returnType _ s => some s
-  | .unknown => none
-
 def describeWith (pp : PpContext) : ConstraintOrigin → String
   | .checking expr expected _ =>
       s!"checking `{expr.describe}` against `{Soma.Core.Value.pp pp expected}`"

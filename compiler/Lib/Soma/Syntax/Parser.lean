@@ -24,9 +24,6 @@ namespace PosToken
 def kind (t : PosToken) : Option TokenKind := t.green.tokenKind?
 def text (t : PosToken) : String := t.green.text?.getD ""
 
-/-- Width of the token only (not including trivia) -/
-def tokenWidth (t : PosToken) : Nat := t.green.width
-
 /-- Total width including leading trivia -/
 def totalWidth (t : PosToken) : Nat :=
   t.leadingTrivia.foldl (fun acc g => acc + g.width) 0 + t.green.width
@@ -83,9 +80,6 @@ def advance (s : ParserState) : ParserState :=
   if s.atEnd then s
   else { s with pos := s.pos + 1 }
 
-def currentOffset (s : ParserState) : Nat := s.current.tokenOffset
-def currentLoc (s : ParserState) : SourceLoc := SourceLoc.fromOffset s.source s.currentOffset
-
 end ParserState
 
 /-- Parser context for error messages -/
@@ -93,8 +87,6 @@ structure ParserContext where
   stack : Array String := #[]
 
 namespace ParserContext
-def push (ctx : ParserContext) (label : String) : ParserContext :=
-  { ctx with stack := ctx.stack.push label }
 end ParserContext
 
 abbrev ParserM := ReaderT ParserContext (StateT ParserState (StateT Diagnostics Id))
@@ -107,8 +99,6 @@ def run' (p : ParserM α) (tokens : Array PosToken) (source : SourceFile)
   let initCtx : ParserContext := {}
   let ((result, _), diagnostics) := ((p.run initCtx).run initState).run #[]
   (result, diagnostics)
-
-/-! ## Diagnostics -/
 
 def recordDiagnostic (d : Diagnostic) : ParserM Unit :=
   (StateT.lift (modify (·.push d)) : StateT ParserState (StateT Diagnostics Id) Unit)
@@ -129,28 +119,11 @@ def recordError (msg : String) : ParserM Unit := do
   let span := s.current.span s.source
   recordDiagnostic (buildDiag s msg span)
 
-def recordErrorAt (msg : String) (span : Span) : ParserM Unit := do
-  let s ← get
-  recordDiagnostic (buildDiag s msg span)
-
-def recordRichError (msg : String) (span : Span)
-    (secondary : Array (Span × String) := #[])
-    (notes : Array String := #[])
-    (help : Option String := none) : ParserM Unit := do
-  let s ← get
-  recordDiagnostic (buildDiag s msg span secondary notes help)
-
-
 def atEnd : ParserM Bool := do return (← get).atEnd
 def current : ParserM PosToken := do return (← get).current
 def peekNext : ParserM PosToken := do return (← get).peek
 def peekAhead (n : Nat) : ParserM PosToken := do return (← get).peekN n
 def advance : ParserM Unit := modify ParserState.advance
-def currentLoc : ParserM SourceLoc := do return (← get).currentLoc
-def getSource : ParserM SourceFile := do return (← get).source
-
-def labelled (label : String) (p : ParserM α) : ParserM α :=
-  withReader (·.push label) p
 
 /-- Describe what the parser is currently looking at -/
 def describeCurrent : ParserM String := do
@@ -163,11 +136,6 @@ def describeCurrent : ParserM String := do
 def recordExpected (expected : String) : ParserM Unit := do
   let got ← describeCurrent
   recordError s!"expected {expected}, got {got}"
-
-/-- Like `recordExpected` but with an explicit span -/
-def recordExpectedAt (expected : String) (span : Span) : ParserM Unit := do
-  let got ← describeCurrent
-  recordErrorAt s!"expected {expected}, got {got}" span
 
 def check (kind : TokenKind) : ParserM Bool := do
   return (← current).kind == some kind
@@ -199,8 +167,6 @@ def expect (kind : TokenKind) (forKind : SyntaxKind) : ParserM GreenNode := do
       recordExpected kind.describe
       return .missing forKind
 
-
-
 /-- Check if a token kind is a layout token -/
 def isLayoutToken (kind : Option TokenKind) : Bool :=
   kind == some .layoutStart || kind == some .layoutSep || kind == some .layoutEnd
@@ -219,7 +185,6 @@ def peekNextRelevant : ParserM (Option TokenKind) := do
 /-- Check if the next relevant (non-layout) token is of the given kind -/
 def checkNextRelevant (kind : TokenKind) : ParserM Bool := do
   return (← peekNextRelevant) == some kind
-
 
 /-- Consume layoutStart if present -/
 def tryLayoutStart : ParserM Bool := do
@@ -261,25 +226,6 @@ def layoutSepBy (p : ParserM (Option GreenNode)) : ParserM (Array GreenNode) := 
     | none => break
   let _ ← tryLayoutEnd
   return results
-
-/-- Parse one or more items separated by layoutSep, inside an optional layout block. -/
-def layoutSepBy1 (p : ParserM (Option GreenNode)) : ParserM (Option (Array GreenNode)) := do
-  let _ ← tryLayoutStart
-  -- Parse first item (required)
-  match ← p with
-  | some first =>
-      let mut results := #[first]
-      -- Parse remaining items, each preceded by layoutSep
-      while (← check .layoutSep) do
-        advance
-        match ← p with
-        | some node => results := results.push node
-        | none => break
-      let _ ← tryLayoutEnd
-      return some results
-  | none =>
-      let _ ← tryLayoutEnd
-      return none
 
 /-- Parse a lower-case identifier -/
 def parseLowerIdent : ParserM (Option GreenNode) := do
@@ -347,8 +293,6 @@ def skipToSync : ParserM (Array GreenNode) := do
     skipped := skipped.push (← consumeAny)
   return skipped
 
-
-
 /-- Parse zero or more items -/
 def many (p : ParserM (Option GreenNode)) : ParserM (Array GreenNode) := do
   let mut results : Array GreenNode := #[]
@@ -357,18 +301,6 @@ def many (p : ParserM (Option GreenNode)) : ParserM (Array GreenNode) := do
     | some node => results := results.push node
     | none => break
   return results
-
-/-- Parse one or more items -/
-def many1 (p : ParserM (Option GreenNode)) : ParserM (Option (Array GreenNode)) := do
-  match ← p with
-  | some first =>
-      let mut results := #[first]
-      repeat do
-        match ← p with
-        | some node => results := results.push node
-        | none => break
-      return some results
-  | none => return none
 
 def sepBy (p : ParserM (Option GreenNode)) (sep : TokenKind) : ParserM (Array GreenNode) := do
   match ← p with
@@ -422,17 +354,6 @@ def delimitedSepBy (openTok closeTok : TokenKind) (sep : TokenKind)
   let _ ← tryLayoutEnd
   let closeNode ← expect closeTok forKind
   return (openNode, items, closeNode)
-
-def choice (parsers : Array (ParserM (Option GreenNode))) : ParserM (Option GreenNode) := do
-  for p in parsers do
-    match ← p with
-    | some node => return some node
-    | none => continue
-  return none
-
-def buildNode (kind : SyntaxKind) (p : ParserM (Array GreenNode)) : ParserM GreenNode := do
-  let children ← p
-  return GreenNode.mkNode kind children
 
 end ParserM
 
@@ -505,11 +426,5 @@ def parseToTreeWith (parser : ParserM GreenNode) (source : SourceFile)
     (diag : DiagBuilder) : ParsedTree × Diagnostics :=
   let (green, diags) := parseWith parser source diag
   (ParsedTree.fromGreen green source, diags)
-
-/-- Reparse with an old tree, preserving NodeIds where possible -/
-def reparseToTreeWith (parser : ParserM GreenNode) (oldTree : ParsedTree)
-    (source : SourceFile) (diag : DiagBuilder) : ParsedTree × Diagnostics :=
-  let (green, diags) := parseWith parser source diag
-  (oldTree.reparse green source, diags)
 
 end Soma.Syntax

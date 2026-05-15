@@ -248,8 +248,6 @@ def buildDupChain {M : Type → Type} [Monad M] [MonadGraph M]
     usePorts := usePorts.push chainPort
     pure usePorts
 
-/-! ## Decision Tree Lowering -/
-
 /-- Context passed to arm body lowering. -/
 structure ArmContext where
   /-- Variable bindings: (id, name, source port, use count, type). -/
@@ -257,8 +255,6 @@ structure ArmContext where
 
 /-- Type of callback for lowering arm bodies -/
 abbrev ArmCallback (M : Type → Type) := Nat → ArmContext → M PortId
-
-/-! ## Mutually Recursive Lowering Functions -/
 
 mutual
 
@@ -426,8 +422,6 @@ partial def lowerMATChain {M : Type → Type} [Monad M] [MonadGraph M]
     lowerWithPorts scrutPorts.toList cases
 
 end
-
-/-! ## Public API -/
 
 /-- Lower a compiled decision tree to Circuit IR with type tracking. -/
 def lower {M : Type → Type} [Monad M] [MonadGraph M]

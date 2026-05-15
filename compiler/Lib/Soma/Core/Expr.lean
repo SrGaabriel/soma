@@ -27,14 +27,9 @@ instance : Hashable QualifiedName where
   hash q := hash q.id
 
 def display (qn : QualifiedName) : String := qn.id.display
-def qualifiedDisplay (qn : QualifiedName) : String := qn.id.qualifiedDisplay
-def mangle (qn : QualifiedName) : String := qn.id.mangle
 def symbolName (qn : QualifiedName) : String := qn.id.symbolName
-def module (qn : QualifiedName) : String := qn.id.module
 
 instance : ToString QualifiedName := ⟨QualifiedName.display⟩
-
-def ofUnique (u : Unique) : QualifiedName := ⟨u⟩
 
 end QualifiedName
 
@@ -516,78 +511,6 @@ partial def replaceFVar (e : Expr) (fvar : Unique) (replacement : Expr) : Expr :
   | .dataTy id ps => .dataTy id (ps.map (·.replaceFVar fvar replacement))
   | .ann x t =>
     .ann (x.replaceFVar fvar replacement) (t.replaceFVar fvar replacement)
-
-/-- Collect all free variables (FVars) in an expression -/
-partial def collectFVars (e : Expr) : Std.HashSet Unique :=
-  go e {}
-where
-  go (e : Expr) (acc : Std.HashSet Unique) : Std.HashSet Unique :=
-    match e with
-    | .fvar u ty => go ty (acc.insert u)
-    | .const _ ty => go ty acc
-    | .bvar _ | .mvar _ | .sort _ | .rowSort
-    | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-    | .lit _ | .tyvar _ _ => acc
-    | .app f a => go a (go f acc)
-    | .lam _ _ d b => go b (go d acc)
-    | .let_ _ t v b => go b (go v (go t acc))
-    | .pi _ _ _ d c => go c (go d acc)
-    | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
-    | .«case» scruts motive arms =>
-      let acc := scruts.foldl (fun a e => go e a) acc
-      let acc := go motive acc
-      arms.foldl (fun a arm => go arm.body a) acc
-    | .record fields => fields.foldl (fun a (_, e) => go e a) acc
-    | .recordUpdate b us =>
-      let acc := go b acc
-      us.foldl (fun a (_, e) => go e a) acc
-    | .fieldAccess x _ _ => go x acc
-    | .inject _ args rty => go rty (args.foldl (fun a e => go e a) acc)
-    | .if_ c t el => go el (go t (go c acc))
-    | .closure _ caps ty => go ty (caps.foldl (fun a e => go e a) acc)
-    | .array es ety => go ety (es.foldl (fun a e => go e a) acc)
-    | .tuple es => es.foldl (fun a e => go e a) acc
-    | .rowExtend l f t => go t (go f (go l acc))
-    | .recordTy r => go r acc
-    | .variantTy r => go r acc
-    | .dataTy _ ps => ps.foldl (fun a e => go e a) acc
-    | .ann x t => go t (go x acc)
-
-/-- Collect every global (`.const`) reference in an expression, keyed by the callee's `QualifiedName`) -/
-partial def collectConsts (e : Expr) : Std.HashSet QualifiedName :=
-  go e {}
-where
-  go (e : Expr) (acc : Std.HashSet QualifiedName) : Std.HashSet QualifiedName :=
-    match e with
-    | .const name ty => go ty (acc.insert name)
-    | .fvar _ ty => go ty acc
-    | .bvar _ | .mvar _ | .sort _ | .rowSort
-    | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
-    | .lit _ | .tyvar _ _ => acc
-    | .app f a => go a (go f acc)
-    | .lam _ _ d b => go b (go d acc)
-    | .let_ _ t v b => go b (go v (go t acc))
-    | .pi _ _ _ d c => go c (go d acc)
-    | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
-    | .«case» scruts motive arms =>
-      let acc := scruts.foldl (fun a e => go e a) acc
-      let acc := go motive acc
-      arms.foldl (fun a arm => go arm.body a) acc
-    | .record fields => fields.foldl (fun a (_, e) => go e a) acc
-    | .recordUpdate b us =>
-      let acc := go b acc
-      us.foldl (fun a (_, e) => go e a) acc
-    | .fieldAccess x _ _ => go x acc
-    | .inject _ args rty => go rty (args.foldl (fun a e => go e a) acc)
-    | .if_ c t el => go el (go t (go c acc))
-    | .closure _ caps ty => go ty (caps.foldl (fun a e => go e a) acc)
-    | .array es ety => go ety (es.foldl (fun a e => go e a) acc)
-    | .tuple es => es.foldl (fun a e => go e a) acc
-    | .rowExtend l f t => go t (go f (go l acc))
-    | .recordTy r => go r acc
-    | .variantTy r => go r acc
-    | .dataTy _ ps => ps.foldl (fun a e => go e a) acc
-    | .ann x t => go t (go x acc)
 
 /-- Check if an expression contains a specific free variable -/
 partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=

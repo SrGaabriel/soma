@@ -22,7 +22,6 @@ structure Result where
   diagnostics : Diagnostics
   uniqueSupply : Soma.UniqueSupply
 
-
 private def isSimpleVarPattern : Syntax.Pattern → Bool
   | .var _ => true
   | .wildcard _ => true

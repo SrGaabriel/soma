@@ -1,8 +1,5 @@
 namespace Soma.Driver
 
-/-- File extension for Soma source files -/
-def fileExt : String := ".soma"
-
 /-- Output format for diagnostic messages -/
 inductive OutputFormat where
   | human : OutputFormat
@@ -131,15 +128,5 @@ inductive Command where
   | lower : LowerOptions → Command
   | circuit : CircuitOptions → Command
   deriving Repr
-
-/-- Get the input file path from a command -/
-def Command.inputFile : Command → String
-  | .build opts => opts.input
-  | .check opts => opts.input
-  | .metadata opts => opts.input
-  | .lex path => path
-  | .parse path => path
-  | .lower opts => opts.input
-  | .circuit opts => opts.input
 
 end Soma.Driver

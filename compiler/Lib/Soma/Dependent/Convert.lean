@@ -16,12 +16,6 @@ def convertLevel (l1 l2 : Level) : TCM Bool := do
   let l2' := l2.simplify
   return l1' == l2'
 
-def patternBindingCount (p : Pattern) : Nat :=
-  p.bindingCount
-
-def patternsBindingCount (ps : Array Pattern) : Nat :=
-  ps.foldl (fun acc p => acc + patternBindingCount p) 0
-
 mutual
 
 partial def patternAlphaEq : Pattern → Pattern → Bool
@@ -48,12 +42,6 @@ partial def patternsAlphaEq (ps1 ps2 : Array Pattern) : Bool := Id.run do
   return true
 
 end
-
-def patternPrefixEq (small big : Array Pattern) : Bool := Id.run do
-  if small.size > big.size then return false
-  for _h : i in [:small.size] do
-    if !patternAlphaEq small[i]! big[i]! then return false
-  return true
 
 def freshCasePatternArg (baseLvl : DeBruijnLvl) (idx : Nat) : Value :=
   Value.vNeutral .type0 (.nVar ⟨s!"_arm_arg_{idx}", ⟨baseLvl.lvl + idx⟩⟩)
@@ -105,22 +93,6 @@ partial def alignPatternBindings
       | some p1, some p2 => alignPatternBindings p1 p2 baseLvl next
       | _, _ => none
   | _, _ => none
-
-partial def alignPatternArrayBindings
-    (small big : Array Pattern) (baseLvl : DeBruijnLvl)
-    : Option (Array Value × Array Value) := Id.run do
-  if small.size != big.size then return none
-  let mut smallArgs : Array Value := #[]
-  let mut bigArgs : Array Value := #[]
-  let mut next := 0
-  for _h : i in [:small.size] do
-    match alignPatternBindings small[i]! big[i]! baseLvl next with
-    | none => return none
-    | some (sArgs, bArgs, next') =>
-      smallArgs := smallArgs ++ sArgs
-      bigArgs := bigArgs ++ bArgs
-      next := next'
-  return some (smallArgs, bigArgs)
 
 def trivialExtraPatternArgs
     (patterns : Array Pattern) (scruts : Array Value) (start : Nat)
@@ -614,28 +586,6 @@ partial def applyValueArgsAsFunction? (v : Value) (args : Array Value) : TCM (Op
     | _ => return none
   return some result
 
-/-- Eta-expand a value to a lambda if checking against a Pi type
-    For a value v and Pi type (x : A) -> B, we create λx. v x -/
-def etaExpandLam (v : Value) (piTy : Value) : TCM Value := do
-  match v with
-  | .vLam _ _ => return v
-  | _ =>
-    match piTy with
-    | .vPi _qty _binder name _domain _codomain =>
-      -- η-expand: v becomes λx. v x
-      -- We need to create a closure that, when applied to an argument,
-      -- applies v to that argument.
-      let env ← TCM.getEnv
-      -- Create the body Expr: application of v to the bound variable
-      -- After closure application, env has _eta_fn(lvl=env.size) and param(lvl=env.size+1)
-      -- bvar 0 = param (the closure arg), bvar 1 = _eta_fn (= v)
-      let bodyExpr := Soma.Core.Expr.app (.bvar 1) (.bvar 0)
-      -- Extend environment with v so it's available in the closure
-      let env' := env.extend "_eta_fn" v
-      let closure := Closure.term name env' bodyExpr
-      return .vLam name closure
-    | _ => return v
-
 /-- Find a label in a row and return the field type and remaining row -/
 partial def findAndRemoveLabel (label : String) (row : Value) : TCM (Option (Value × Value)) := do
   match row with
@@ -1055,22 +1005,6 @@ partial def recordEtaConvert
 
 end
 
-/-- Cumulative subtyping query: returns whether `v1 <: v2` -/
-partial def subtype (v1 v2 : Value) : TCM Bool := do
-  let v1' ← force v1
-  let v2' ← force v2
-  match v1', v2' with
-  | .vType l1, .vType l2 =>
-    let l1' := l1.simplify
-    let l2' := l2.simplify
-    match l1', l2' with
-    | .lit n1, .lit n2 => return n1 ≤ n2
-    | .prop, _ => return true
-    | _, .prop => return false
-    | .lit 0, _ => return true
-    | _, _ => convert v1' v2'
-  | _, _ => convert v1' v2'
-
 /-- Check if two values have structurally incompatible heads -/
 partial def structurallyIncompatible (v1 v2 : Value) : TCM Bool := do
   let v1' ← force v1
@@ -1096,17 +1030,5 @@ where
       if ← structurallyIncompatible a1 a2 then return true
       incompatPairwise rest1 rest2
     | _, _ => return false
-
-/-- Assert that two values are convertible, throwing an error if not -/
-def assertConvert (v1 v2 : Value) (purpose : CheckPurpose) : TCM Unit := do
-  let eq ← convert v1 v2
-  if !eq then
-    let span ← TCM.getSpan
-    TCM.throw (.typeMismatch v2 v1 purpose span span #[])
-
-/-- Check conversion and return the result as an Option -/
-def tryConvert (v1 v2 : Value) : TCM (Option Unit) := do
-  let eq ← convert v1 v2
-  if eq then return some () else return none
 
 end Soma.Dependent

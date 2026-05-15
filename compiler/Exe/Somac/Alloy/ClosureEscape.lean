@@ -3,59 +3,10 @@ import Somac.Alloy.Analysis
 import Std.Data.HashMap
 import Std.Data.HashSet
 
-/-!
-# Closure Escape Analysis + Stack Clone Promotion
-
-Promotes closure-producing instructions (`makeClosure`, `makeClosurePoly`)
-and their matching `clone` instructions into their stack-allocated
-counterparts (`stackClosure`, `stackClosurePoly`, `stackClone`) when the
-result provably does not escape the enclosing function. Paired `erase`
-instructions on promoted results are elided.
-
-## Architecture
-
-**Escape analysis** rides on `Alloy.Analysis.forwardAnalysis`, which handles
-reverse-postorder fixpoint iteration and phi-node joins natively. The
-lattice is a two-point order `clean ⊑ escaped`; transfer marks any operand
-that appears in a publishing position (ADT field, closure env, lazySup,
-store, call arg, etc.) as `escaped`. Phi merges via the framework's built-in
-`join`, which correctly propagates taint across branches.
-
-**Size tracking** is a second, independent pass over the result of the
-escape analysis. For each promoted `makeClosure`, the closure's ptr-slot
-count is computed once via `Ty.closureTotalSlotCount` (the single source of
-truth shared with LLVM codegen) and recorded in a `sizeMap`. For each
-non-escaping `clone`, if its source local is in `sizeMap` and its type is
-`Ty.isStackCloneable`, it rewrites to `.stackClone src ty slots`. The
-resulting local is itself added to `sizeMap`, so multi-step clone chains
-(`clone (clone c)`) also promote.
-
-Phi sizing is handled by a fixpoint pre-pass: a phi result inherits the
-shared size of its inputs iff every input's size is known and equal. A few
-iterations converge; in practice one pass suffices unless closures are
-threaded through nested control-flow loops.
-
-## Invariants
-
-1. **Layout parity.** Promoted `stackClosure` and `stackClone` buffers are
-   `[closureTotalSlotCount x ptr]`, matching the heap layout byte-for-byte.
-   The shared helper `Ty.closureTotalSlotCount` makes drift impossible.
-2. **No stale `erase`.** Any `erase L _` where `L`'s origin is a promoted
-   stack site is dropped; the stack buffer dies with the frame and the
-   runtime never sees the pointer.
-3. **Whitelist-based transfer function.** The dataflow's transfer function
-   marks any operand appearing outside the enumerated safe-use positions
-   as escaped. New `Inst` variants fail-safe: they land in the
-   `markUnsafeOperands` catch-all and are treated as publishing every
-   operand, blocking promotion until a deliberate review classifies them.
--/
-
 namespace Somac.Alloy.ClosureEscape
 
 open Somac.Alloy
 open Somac.Alloy.Analysis
-
-/-! ## Escape lattice and dataflow spec -/
 
 /-- Two-point lattice: `clean` is the bottom (not yet observed escaping);
     `escaped` is the top (at least one use has published the value). -/
@@ -87,16 +38,7 @@ private def markOp (s : AbsState Escape) : Operand → AbsState Escape
 private def markOps (s : AbsState Escape) (ops : Array Operand) : AbsState Escape :=
   ops.foldl markOp s
 
-/-- Transfer function. For each statement, determine which operand positions
-    are *unsafe* (publish the operand beyond the current frame) and mark
-    their locals as escaped. Safe positions leave the state untouched.
-
-    The whitelist is the inverse of what `Borrow.instEscapesLocal` uses:
-    same semantic framing, rephrased forward instead of as an "is this an
-    escape" predicate.
-
-    Phi nodes are *not* processed here — the framework's `forwardAnalysis`
-    handles them specially, joining predecessor states via `domain.join`. -/
+/-- Transfer function. -/
 private def escapeTransfer (state : AbsState Escape) (stmt : ClosedStmt)
     : AbsState Escape :=
   match stmt.inst with
@@ -173,8 +115,6 @@ private def escapeSpec : ForwardSpec Escape where
   transfer := escapeTransfer
   resolveOp := escapeResolve
 
-/-! ## Escape set extraction -/
-
 /-- Compute the set of locals that escape at any point in the function's
     lifetime. A local is escaped iff it either (a) appears at an unsafe use
     in some statement or (b) is returned by a terminator. The exit-state
@@ -193,8 +133,6 @@ private def computeEscapedLocals (f : ClosedFunc) : Std.HashSet Nat := Id.run do
     | _ => pure ()
 
   escaped
-
-/-! ## Stats -/
 
 structure EscapeStats where
   /-- `makeClosure` / `makeClosurePoly` rewritten to stack. -/
@@ -216,20 +154,7 @@ def merge (a b : EscapeStats) : EscapeStats :=
 def isEmpty (s : EscapeStats) : Bool :=
   s.promotedClosures == 0 && s.promotedClones == 0 && s.erasesEliminated == 0
 
-def total (s : EscapeStats) : Nat :=
-  s.promotedClosures + s.promotedClones
-
 end EscapeStats
-
-/-! ## Phi-aware size inference
-
-`sizeMap : Nat → Nat` maps each local id that holds a known-size stack
-closure (from `stackClosure` or `stackClone`) to its ptr-slot count. The
-rewrite pass populates it in RPO as it visits statements. Phi results need
-a separate pass: a phi is added to the map iff every one of its incoming
-operands is in the map *and* all inputs agree on the same size. The pass
-iterates until fixpoint — rare to need more than one iteration, but loops
-with closure-carrying phis can. -/
 
 private def propagatePhiSizes (cfg : ClosedCFG) (sizeMap : Std.HashMap Nat Nat)
     : Std.HashMap Nat Nat := Id.run do
@@ -264,8 +189,6 @@ private def propagatePhiSizes (cfg : ClosedCFG) (sizeMap : Std.HashMap Nat Nat)
             | none => pure ()
         | _, _ => pure ()
   sm
-
-/-! ## Rewrite -/
 
 private def rewriteFunc (f : ClosedFunc) : ClosedFunc × EscapeStats := Id.run do
   let some cfg := f.body | return (f, {})
@@ -336,9 +259,6 @@ private def rewriteFunc (f : ClosedFunc) : ClosedFunc × EscapeStats := Id.run d
           newStmts := newStmts.push { stmt with inst := .stackClosurePoly ref tys env }
           stats := { stats with promotedClosures := stats.promotedClosures + 1 }
       | .clone (.local srcId) ty _label, some rid =>
-        -- Promote iff result is non-escaping AND we have a known size.
-        -- sizeMap membership is the authoritative signal — it implies the
-        -- source traces to a stackClosure or stackClone.
         if !escaped.contains rid.id && ty.isStackCloneable
             && sizeMap.contains rid.id then
           if let some sz := sizeMap.get? srcId.id then

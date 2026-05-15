@@ -72,7 +72,6 @@ private def mkDiag (ctx : DiagContext) (code : String) (message : String)
     helps := match help with | some h => [h] | none => []
     fixes }
 
-
 /-- Information about a constraint in the solving chain -/
 structure ConstraintInfo where
   /-- Where this constraint came from -/
@@ -481,45 +480,6 @@ def isCascadeRoot : TCError → Bool
   | .impossiblePattern _ _ _ _ => true
   | .propElimToType _ _ _ => true
   | _ => false
-
-/-- Get the primary span of an error -/
-def span : TCError → Span
-  | .unificationFailed _ _ s _ _ => s
-  | .typeMismatch _ _ _ _ s _ => s
-  | .branchTypeMismatch _ _ s => s
-  | .expectedFunction _ s _ => s
-  | .expectedType _ s _ => s
-  | .expectedRecord _ s _ => s
-  | .expectedVariant _ s => s
-  | .unboundVariable _ s _ => s
-  | .unboundGlobal _ s _ => s
-  | .fieldNotFound _ _ s _ _ => s
-  | .wrongConstructorArity _ _ _ s => s
-  | .quantityMismatch _ _ _ s => s
-  | .linearNotUsed _ s => s
-  | .linearUsedMultiple _ _ s => s
-  | .erasedUsedAtRuntime _ s _ => s
-  | .unsolvedMeta _ s _ _ _ => s
-  | .ambiguousImplicit _ s _ _ => s
-  | .cannotInfer _ s _ => s
-  | .compilerBug _ s => s
-  | .noInstance _ _ s _ _ => s
-  | .instanceCycle _ s _ => s
-  | .instanceDepthExceeded _ s _ => s
-  | .terminationCheckFailed _ _ s _ _ => s
-  | .partialInTypeIndex _ s => s
-  | .partialInhabitsUninhabited _ s => s
-  | .positivityViolation _ _ s _ => s
-  | .impossiblePattern _ _ _ s => s
-  | .nonExhaustiveMatch _ _ s => s
-  | .bodilessNotDerivable _ _ s => s
-  | .patternArityMismatch _ _ _ _ s => s
-  | .partialTheorem _ s => s
-  | .propElimToType _ _ s => s
-  | .classNotInScope _ s => s
-  | .unknownClass _ s => s
-  | .unknownInstanceMethod _ _ _ s => s
-  | .missingInstanceMethods _ _ s => s
 
 /-- Build secondary labels from constraint chain -/
 private def chainToLabels (ctx : DiagContext) (pp : Soma.Core.PpContext)
@@ -1060,11 +1020,6 @@ abbrev TCErrors := Array TCError
 
 namespace TCErrors
 
-/-- Convert all errors to diagnostics -/
-def toDiagnostics (ctx : DiagContext) (pp : Soma.Core.PpContext)
-    (errs : TCErrors) : Array Diagnostic :=
-  errs.map (TCError.toDiagnostic ctx pp)
-
 /-- Convert all errors to diagnostics with substrate decoration -/
 def toDiagnosticsDecorated (ctx : DiagContext) (pp : Soma.Core.PpContext)
     (errs : TCErrors) : DiagContext × Array Diagnostic := Id.run do
@@ -1075,10 +1030,6 @@ def toDiagnosticsDecorated (ctx : DiagContext) (pp : Soma.Core.PpContext)
     c := c'
     diags := diags.push d
   return (c, diags)
-
-/-- Check if there are any errors -/
-def hasErrors (errs : TCErrors) : Bool :=
-  !errs.isEmpty
 
 end TCErrors
 

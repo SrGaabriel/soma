@@ -66,12 +66,6 @@ def selectColumn (m : PatternMatrix) : Nat :=
       if score.isBetterThan best then score else best
     best.column
 
-/-! ## Binding Resolution
-
-    Convert row bindings (which use column indices) to tree bindings
-    (which use occurrences).
--/
-
 /-- Convert a row's bindings to decision tree bindings.
     This includes both accumulated bindings from specialization
     and bindings from variable patterns still in the row. -/
@@ -97,8 +91,6 @@ where
           patBindings.foldl (init := acc) fun a (id, name) =>
             a.push ⟨id, name, tocc.occurrence, tocc.ty⟩
       collectPatternBindings patterns toccMap (col + 1) acc'
-
-/-! ## Core Compilation Algorithm -/
 
 /-- Compilation state -/
 structure CompileState where

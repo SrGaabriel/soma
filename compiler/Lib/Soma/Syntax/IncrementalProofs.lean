@@ -68,7 +68,6 @@ theorem lower_reparse_eq (oldTree : ParsedTree) (source : SourceFile) (moduleNam
     hSource
   exact congrArg Prod.fst h
 
-
 /-- If a subtree's content hash is unchanged and it's at the same position,
     its NodeId is preserved by diffRedTree -/
 axiom unchanged_subtree_preserves_id (oldTree : RedTree) (newGreen : GreenNode)
@@ -127,7 +126,6 @@ theorem incremental_ast_correct (oldTree : ParsedTree) (newSource : SourceFile) 
     (lower freshTree (diagOf newSource) moduleName).1 =
         (lower incrTree (diagOf newSource) moduleName).1 := by
   exact lower_reparse_eq oldTree newSource moduleName
-
 
 /-- The probability of hash collision is negligible -/
 axiom hash_collision_negligible :

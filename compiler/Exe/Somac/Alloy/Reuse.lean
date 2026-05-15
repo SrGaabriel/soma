@@ -56,16 +56,6 @@ def remove (s : TokenSet) (payloadId : Nat) : TokenSet :=
 def contains (s : TokenSet) (payloadId : Nat) : Bool :=
   s.tokens.contains payloadId
 
-def get? (s : TokenSet) (payloadId : Nat) : Option ReuseToken :=
-  s.tokens.get? payloadId
-
-def toArray (s : TokenSet) : Array ReuseToken :=
-  s.tokens.toArray.map (·.2)
-
-def size (s : TokenSet) : Nat := s.tokens.size
-
-def isEmpty (s : TokenSet) : Bool := s.tokens.isEmpty
-
 /-- Intersection: keep only tokens present in both sets (with matching fields) -/
 def intersect (a b : TokenSet) : TokenSet :=
   let merged := a.tokens.fold (init := ({} : Std.HashMap Nat ReuseToken)) fun acc k tokA =>
@@ -169,14 +159,6 @@ def preAnalyzeBlock (block : ClosedBlock) (localTypes : Std.HashMap Nat ClosedTy
 
   return eraseSites
 private def _tokenSetKey : Nat := 0
-
-/-- Domain for TokenSet: bot is empty, join is intersection (must-analysis) -/
-def tokenSetDomain : Domain TokenSet where
-  bot := TokenSet.empty
-  join := TokenSet.intersect
-  eq := TokenSet.beq
-
-/-! ## Reuse Matching -/
 
 /-- Check if a reuse token is compatible with an allocation request -/
 private def isCompatible (token : ReuseToken) (allocSizeClass : SizeClass)

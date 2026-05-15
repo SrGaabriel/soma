@@ -41,24 +41,6 @@ inductive SymbolKind where
 
 namespace SymbolKind
 
-/-- Check if this is a value-level symbol (vs type-level) -/
-def isValue : SymbolKind → Bool
-  | .binding | .dataCon _ _ | .letBinding | .lambdaParam
-  | .patternVar | .patternAs | .composeBinding
-  | .typeClassMethod _ | .instanceMethod _ _
-  | .intrinsicBinding => true
-  | .type | .typeClass | .intrinsicType => false
-
-/-- Check if this is a type-level symbol -/
-def isType : SymbolKind → Bool
-  | .type | .typeClass | .intrinsicType => true
-  | _ => false
-
-/-- Check if this is an intrinsic -/
-def isIntrinsic : SymbolKind → Bool
-  | .intrinsicBinding | .intrinsicType => true
-  | _ => false
-
 end SymbolKind
 
 /-- A fully resolved symbol with complete provenance -/
@@ -93,33 +75,7 @@ instance : Hashable Symbol where
 /-- Display name for error messages -/
 def display (s : Symbol) : String := s.name
 
-/-- Fully qualified display name -/
-def qualifiedDisplay (s : Symbol) : String :=
-  if s.module.isEmpty then s.name
-  else s!"{s.module}.{s.name}"
-
 instance : ToString Symbol := ⟨Symbol.display⟩
-
-/-- Check if this is a value-level symbol -/
-def isValue (s : Symbol) : Bool := s.kind.isValue
-
-/-- Check if this is a type-level symbol -/
-def isType (s : Symbol) : Bool := s.kind.isType
-
-/-- Check if this is an intrinsic -/
-def isIntrinsic (s : Symbol) : Bool := s.kind.isIntrinsic
-
-/-- Check if this is a data constructor -/
-def isDataCon (s : Symbol) : Bool :=
-  match s.kind with
-  | .dataCon _ _ => true
-  | _ => false
-
-/-- Check if this is an instance method -/
-def isInstanceMethod (s : Symbol) : Bool :=
-  match s.kind with
-  | .instanceMethod _ _ => true
-  | _ => false
 
 end Symbol
 

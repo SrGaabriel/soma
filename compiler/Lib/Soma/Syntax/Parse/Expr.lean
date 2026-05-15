@@ -76,14 +76,6 @@ def checkDot : ParserM Bool := do
 def tryConsumeDot : ParserM (Option GreenNode) := do
   if (← checkDot) then return some (← consumeAny) else return none
 
-/-- Check if current token is a quantity annotation -/
-def checkQuantity : ParserM Bool := do
-  let tok ← current
-  if tok.kind == some .omega then return true
-  if tok.kind == some .number then
-    return tok.text == "0" || tok.text == "1"
-  return false
-
 /-- Parse a quantity annotation -/
 def parseQuantity : ParserM (Option GreenNode) := do
   let tok ← current
@@ -1367,10 +1359,6 @@ partial def parseTypeSignature : ParserM (Option GreenNode) := do
   | none => return none
 
 end
-
-def parseOptionalSignature : ParserM (Option GreenNode) := do
-  if (← check .doubleColon) then parseTypeSignature
-  else return none
 
 def parseType : ParserM (Option GreenNode) := parseExpr
 

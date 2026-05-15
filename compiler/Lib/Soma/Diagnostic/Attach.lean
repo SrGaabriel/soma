@@ -32,32 +32,6 @@ def typeMismatch (expected actual : String) : Psychopomp.Attachment :=
       ("actual",   jstr actual)
     ]) }
 
-def goal (hypotheses : List (String × String)) (target : String)
-    (tag : Option String := none) : Psychopomp.Attachment :=
-  { tag := "goal"
-    render := fun sev _ cfg =>
-      let titleSuffix := match tag with
-        | some t => s!" ({t})"
-        | none => ""
-      let title := styledTitle s!"goal{titleSuffix}:" cfg
-      let hyps := hypotheses.map fun (n, t) =>
-        if cfg.colorsEnabled then
-          s!"  {Psychopomp.Render.Ansi.bold}{n}{Psychopomp.Render.Ansi.reset} : {t}"
-        else s!"  {n} : {t}"
-      let turnstile :=
-        if cfg.colorsEnabled then
-          s!"  {Psychopomp.Render.styleAnsi .severity sev}⊢{Psychopomp.Render.Ansi.reset} {target}"
-        else s!"  ⊢ {target}"
-      { title, body := hyps ++ [turnstile] }
-    payload :=
-      let hypsJson := hypotheses.map fun (n, t) =>
-        jobj [("name", jstr n), ("type", jstr t)]
-      let base := [("hypotheses", jarr hypsJson), ("target", jstr target)]
-      let fields := match tag with
-        | some t => base ++ [("tag", jstr t)]
-        | none   => base
-      some (jobj fields) }
-
 structure UnifyStep where
   origin : String
   description : String
@@ -146,19 +120,6 @@ structure ProvenanceStep where
   label : String
   origin : String
 
-def expectedBecause (steps : List ProvenanceStep) : Psychopomp.Attachment :=
-  { tag := "expected-because"
-    render := fun _ _ cfg =>
-      if steps.isEmpty then
-        { title := styledTitle "expected because:" cfg, body := [] }
-      else
-        let bodyLines := steps.map fun s =>
-          if s.origin.isEmpty then s!"  • {s.label}"
-          else s!"  • {s.label} from {s.origin}"
-        { title := styledTitle "expected because:" cfg, body := bodyLines }
-    payload := some (jarr (steps.map fun s =>
-      jobj [("label", jstr s.label), ("origin", jstr s.origin)])) }
-
 def universeMismatch (lhs rhs : String) : Psychopomp.Attachment :=
   { tag := "universe-mismatch"
     render := fun _ _ cfg =>
@@ -242,16 +203,5 @@ def implicits (surfaceForm : String) (resolved : List InsertedImplicit)
 structure RefineCandidate where
   name : String
   type : String
-
-def refineSuggestions (candidates : List RefineCandidate) : Psychopomp.Attachment :=
-  { tag := "refine-suggestions"
-    render := fun _ _ cfg =>
-      if candidates.isEmpty then
-        { title := styledTitle "refine suggestions:" cfg, body := [] }
-      else
-        let bodyLines := candidates.map fun c => s!"  • {c.name} : {c.type}"
-        { title := styledTitle "refine suggestions:" cfg, body := bodyLines }
-    payload := some (jarr (candidates.map fun c =>
-      jobj [("name", jstr c.name), ("type", jstr c.type)])) }
 
 end Soma.Attach

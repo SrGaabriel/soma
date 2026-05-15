@@ -166,13 +166,6 @@ def collectAsBindings (p : SimplePattern) (col : Nat)
     (inner', #[(binding, name, col)] ++ bindings)
   | other => (other, #[])
 
-/-! ## Matrix Specialization
-
-    Specialization is the key operation in Maranget's algorithm.
-    Given a column and a constructor tag, we produce a new matrix
-    containing only rows that could match that constructor.
--/
-
 /-- Specialize a single row for a constructor match at column `col`.
 
     If the row has a matching constructor pattern:
@@ -286,13 +279,6 @@ def PatternMatrix.specializeLit (m : PatternMatrix) (col : Nat) (lit : Soma.Core
   let newRows := m.rows.filterMap fun row => specializeRowLit row col lit
   ⟨newRows, m.numColumns - 1⟩
 
-/-! ## Default Matrix
-
-    The default matrix contains rows that would match if the scrutinee
-    has a constructor tag not explicitly matched by any pattern.
-    This is used for wildcard/variable patterns and incomplete matches.
--/
-
 /-- Compute the default row for column `col`.
 
     If the pattern is a wildcard/variable, the row is included with
@@ -333,8 +319,6 @@ def defaultRow (row : Row) (col : Nat) : Option Row :=
 def PatternMatrix.default (m : PatternMatrix) (col : Nat) : PatternMatrix :=
   let newRows := m.rows.filterMap fun row => defaultRow row col
   ⟨newRows, m.numColumns - 1⟩
-
-/-! ## Building the Matrix from Core IR -/
 
 /-- Build a pattern matrix from Core case arms. -/
 def buildMatrixFromArms (ctx : SimplifyCtx) (arms : Array Soma.Core.Arm)

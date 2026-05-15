@@ -109,19 +109,6 @@ def withResolvedInstanceBinding (dictName : String) (dictUnique : Soma.Unique)
       let env' ← env.addInstanceWithIdForced instInfo
       TCM.withInstanceEnv env' action
 
-/-- Bind an array of local instance dictionaries -/
-def withLocalInstanceBindings
-    (bindings : Array (Soma.Unique × String × Value))
-    (span : Span := Span.uninhabited) (action : TCM α) : TCM α := do
-  let rec go (idx : Nat) : TCM α := do
-    if idx >= bindings.size then
-      action
-    else
-      let (dictUnique, dictName, dictTy) := bindings[idx]!
-      withLocalInstanceBinding dictName dictUnique dictTy .omega span (go (idx + 1))
-  termination_by bindings.size - idx
-  go 0
-
 /-- What kind of metavariable the elaborator is creating -/
 inductive MetaKind where
   | user

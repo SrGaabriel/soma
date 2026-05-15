@@ -4,8 +4,6 @@ namespace Somac.Alloy.Pretty
 
 open Somac.Alloy
 
-/-! ## Configuration -/
-
 /-- Pretty printing configuration -/
 structure Config where
   /-- Indentation width -/
@@ -19,8 +17,6 @@ structure Config where
   deriving Repr, Inhabited
 
 def Config.default : Config := {}
-
-/-! ## Color Helpers -/
 
 def colorKeyword (cfg : Config) (s : String) : String :=
   if cfg.useColors then s!"\x1b[1;34m{s}\x1b[0m" else s
@@ -39,8 +35,6 @@ def colorLabel (cfg : Config) (s : String) : String :=
 
 def colorComment (cfg : Config) (s : String) : String :=
   if cfg.useColors then s!"\x1b[90m{s}\x1b[0m" else s
-
-/-! ## Type Formatting -/
 
 partial def ppTy (cfg : Config) : Ty n → String
   | .prim p => colorType cfg (ToString.toString p)
@@ -63,8 +57,6 @@ partial def ppTy (cfg : Config) : Ty n → String
     let argsStr := String.intercalate ", " (args.toList.map (ppTy cfg))
     s!"{colorKeyword cfg "closure"}({argsStr}) -> {ppTy cfg ret}"
   | .var i => colorType cfg s!"α{i.val}"
-
-/-! ## Value Formatting -/
 
 def ppLocalId (cfg : Config) (id : LocalId) : String :=
   colorLocal cfg s!"%{id.id}"
@@ -100,8 +92,6 @@ def ppOperand (cfg : Config) : Operand → String
   | .const c => ppConst cfg c
   | .global id => ppGlobalId cfg id
   | .func id => ppFuncId cfg id
-
-/-! ## Instruction Formatting -/
 
 def ppBinOp (cfg : Config) : BinOp → String
   | .add => colorKeyword cfg "add"
@@ -242,8 +232,6 @@ def ppInst (cfg : Config) : Inst n → String
     let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
     s!"{colorKeyword cfg "call.extern.poly"} {ppTy cfg retTy} \"{name}\"<{tyArgsStr}>({as})"
 
-/-! ## Terminator Formatting -/
-
 def ppTerminator (cfg : Config) : Terminator → String
   | .jump target =>
     s!"{colorKeyword cfg "jump"} {ppBlockId cfg target}"
@@ -260,13 +248,9 @@ def ppTerminator (cfg : Config) : Terminator → String
   | .unreachable =>
     colorKeyword cfg "unreachable"
 
-/-! ## Statement Formatting -/
-
 def ppStmt (cfg : Config) : Stmt n → String
   | ⟨some result, inst⟩ => s!"{ppLocalId cfg result} = {ppInst cfg inst}"
   | ⟨none, inst⟩ => ppInst cfg inst
-
-/-! ## Block Formatting -/
 
 def ppBlock (cfg : Config) (b : Block n) : String :=
   let labelStr := match b.label with
@@ -291,8 +275,6 @@ def ppBlock (cfg : Config) (b : Block n) : String :=
   let termStr := s!"\n{indent}{ppTerminator cfg b.terminator}"
 
   s!"{header}{stmtsStr}{termStr}"
-
-/-! ## Function Formatting -/
 
 def ppSignature (cfg : Config) (sig : Signature n) : String :=
   let paramsStr := String.intercalate ", " (sig.params.toList.map fun p =>
@@ -320,8 +302,6 @@ def ppFunc (cfg : Config) (f : Func n) : String :=
     let blocksStr := String.intercalate "\n\n" (cfgBody.allBlocks.toList.map (ppBlock cfg))
     s!"{attrsStr}{sigStr} \{\n{blocksStr}\n}"
 
-/-! ## Global Formatting -/
-
 def ppGlobal (cfg : Config) (g : Global) : String :=
   let mutStr := if g.mutable then colorKeyword cfg "var" else colorKeyword cfg "const"
   let initStr := match g.init with
@@ -329,12 +309,8 @@ def ppGlobal (cfg : Config) (g : Global) : String :=
     | none => ""
   s!"{mutStr} {ppGlobalId cfg g.id} @{g.name}: {ppTy cfg g.ty}{initStr}"
 
-/-! ## Type Definition Formatting -/
-
 def ppTypeDef (cfg : Config) (td : TypeDef) : String :=
   s!"{colorKeyword cfg "type"} @{td.name} = {ppTy cfg td.ty}"
-
-/-! ## Module Formatting -/
 
 def ppSomeFunc (cfg : Config) (sf : SomeFunc) : String :=
   let ⟨_, f⟩ := sf
@@ -361,8 +337,6 @@ def ppModule (cfg : Config := .default) (m : Module) : String :=
     | none => ""
 
   s!"{header}{typesStr}{globalsStr}{funcsSection}{mainStr}"
-
-/-! ## Public API -/
 
 /-- Pretty print a module with default config -/
 def pp (m : Module) : String := ppModule .default m

@@ -66,25 +66,4 @@ partial def zonkValueLevels (v : Value) : TCM Value := do
   | .vRowSort | .vLabelSort =>
     return v
 
-/-- Create a fresh Type with a fresh level variable -/
-def freshType (name : String := "u") : TCM Value := do
-  let l ← TCM.freshLevel name
-  return .vType l
-
-/-- Assert that a value is a Type and return its level -/
-def assertType (v : Value) : TCM Level := do
-  let v' ← force v
-  match v' with
-  | .vType l => return l
-  | .vNeutral (.vType l) _ => return l
-  | _ =>
-    let span ← TCM.getSpan
-    TCM.throw (.expectedType v' span none)
-
-/-- Create the type of a Pi type given domain and codomain levels -/
-def piTypeLevel (domLevel codLevel : Level) : Level :=
-  match codLevel with
-  | .prop => .prop
-  | _ => Level.mkMax domLevel codLevel
-
 end Soma.Dependent

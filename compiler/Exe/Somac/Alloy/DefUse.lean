@@ -24,34 +24,6 @@ structure DefUseInfo where
   liveOut : Std.HashMap Nat (Std.HashSet Nat)
   deriving Inhabited
 
-namespace DefUseInfo
-
-/-- Check if a local has any uses -/
-def hasUses (info : DefUseInfo) (lid : Nat) : Bool :=
-  match info.uses.get? lid with
-  | some arr => !arr.isEmpty
-  | none => false
-
-/-- Get the number of uses of a local -/
-def useCount (info : DefUseInfo) (lid : Nat) : Nat :=
-  match info.uses.get? lid with
-  | some arr => arr.size
-  | none => 0
-
-/-- Check if a local is live at a block exit -/
-def isLiveAtBlockExit (info : DefUseInfo) (blockId : Nat) (lid : Nat) : Bool :=
-  match info.liveOut.get? blockId with
-  | some s => s.contains lid
-  | none => false
-
-/-- Check if a local is live at a block entry -/
-def isLiveAtBlockEntry (info : DefUseInfo) (blockId : Nat) (lid : Nat) : Bool :=
-  match info.liveIn.get? blockId with
-  | some s => s.contains lid
-  | none => false
-
-end DefUseInfo
-
 /-- Compute DefUseInfo for a closed function -/
 def analyze (f : ClosedFunc) : DefUseInfo := Id.run do
   let some cfg := f.body |

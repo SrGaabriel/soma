@@ -78,7 +78,6 @@ partial def collectExprVars : Expr → List String
   | .ann e _ => collectExprVars e
   | _ => []
 
-
 /-- Convert an Expr to its structural shape for analysis -/
 partial def analyzeExprShape : Expr → TermShape
   | .fvar id _ => .var id.original
@@ -96,7 +95,6 @@ partial def analyzeExprShape : Expr → TermShape
       | none => .unknown
     else
       .app (analyzeExprShape head) (args.map analyzeExprShape |>.toArray)
-
 
 /-- The structural shape of a pattern -/
 inductive PatternShape where
@@ -170,24 +168,6 @@ partial def extractPatternBindings (t : Expr) (paramIdx : Nat) (paramName : Stri
     -- Literals, wildcards, etc. don't introduce bindings
     #[]
 
-/-- Analyze a case arm and extract all bindings introduced by the pattern. -/
-def analyzePatternFromArm (patternName : String) (scrutineeParam : Option (Nat × String))
-    (armBody : Expr) (existingParams : Array String) : Array BindingInfo :=
-  match scrutineeParam with
-  | none => #[]  -- Scrutinee isn't a parameter, can't track size
-  | some (paramIdx, paramName) =>
-    -- Collect variables used in the arm body that aren't existing parameters
-    let usedVars := collectExprVars armBody
-    let newVars := usedVars.filter fun v => !existingParams.contains v
-    -- Each new variable is a pattern binding, mark as smaller
-    newVars.toArray.map fun name => {
-      name := name
-      paramIdx := paramIdx
-      paramName := paramName
-      path := .ctorArg .root patternName 0
-      depth := 1  -- Conservative: all pattern bindings are at least depth 1
-    }
-
 /-- Extract bindings from a pattern with accurate depth tracking -/
 partial def extractPatternBindingsAccurate (pat : Pattern) (paramIdx : Nat) (paramName : String)
     (path : StructurePath := .root) : Array BindingInfo :=
@@ -216,30 +196,5 @@ partial def extractPatternBindingsAccurate (pat : Pattern) (paramIdx : Nat) (par
     fields.foldl (init := #[]) fun acc (fieldName, fieldPat) =>
       let fieldPath := StructurePath.field path fieldName
       acc ++ extractPatternBindingsAccurate fieldPat paramIdx paramName fieldPath
-
-/-- Analyze a case arm pattern (as an Expr) and extract bindings with accurate depths -/
-def analyzePatternFromArmAccurate (patternExpr : Expr) (scrutineeParam : Option (Nat × String))
-    : Array BindingInfo :=
-  match scrutineeParam with
-  | none => #[]
-  | some (paramIdx, paramName) =>
-    let pattern := exprToPattern patternExpr
-    extractPatternBindingsAccurate pattern paramIdx paramName
-
-/-- Enhanced pattern analysis that handles nested constructors properly. -/
-def analyzeNestedPattern (scrutinee : Expr) (patternCtor : String)
-    (patternArgs : List Expr) (params : Array String) : Array BindingInfo :=
-  match exprName? scrutinee with
-  | some name =>
-    match params.findIdx? (· == name) with
-    | some paramIdx =>
-      let (bindings, _) := patternArgs.foldl (init := (#[], 0)) fun (acc, idx) arg =>
-        let argPath := StructurePath.ctorArg .root patternCtor idx
-        let pat := exprToPattern arg
-        let argBindings := extractPatternBindingsAccurate pat paramIdx name argPath
-        (acc ++ argBindings, idx + 1)
-      bindings
-    | none => #[]
-  | none => #[]
 
 end Soma.Dependent.Totality

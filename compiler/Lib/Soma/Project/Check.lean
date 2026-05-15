@@ -99,25 +99,6 @@ def parseWithCtx (ctx : Soma.DiagContext) (filePath : String) (content : String)
 def parse (filePath : String) (content : String) : ParseResult :=
   (parseWithCtx Soma.DiagContext.empty filePath content).2
 
-/-- Incremental reparse against an existing `DiagContext` -/
-def reparseWithCtx (ctx : Soma.DiagContext) (oldTree : ParsedTree)
-    (filePath : String) (content : String)
-    : Soma.DiagContext × ParseResult × HashSet NodeId :=
-  let sourceFile := SourceFile.create (fileIdFromPath filePath) filePath content
-  let (ctx', diag) := ctx.insert sourceFile
-  let (tree, diags) := reparseToTree oldTree sourceFile diag
-  let oldIds := oldTree.red.idToIdx
-  let newIds := tree.red.idToIdx
-  let changedIds := newIds.fold (init := {}) fun acc nodeId _ =>
-    if oldIds.contains nodeId then acc else acc.insert nodeId
-  (ctx', { sourceFile, tree, diagnostics := diags, diagCtx := ctx' }, changedIds)
-
-/-- Single-file reparse -/
-def reparse (oldTree : ParsedTree) (filePath : String) (content : String)
-    : ParseResult × HashSet NodeId :=
-  let (_, pr, changed) := reparseWithCtx Soma.DiagContext.empty oldTree filePath content
-  (pr, changed)
-
 /-- Lower CST to AST -/
 def lower (tree : ParsedTree) (diag : Soma.DiagBuilder) (moduleName : String)
     : LowerResult :=
@@ -132,14 +113,6 @@ def elaborate (ast : Syntax.Module) (diag : Soma.DiagBuilder) : ElaborationResul
 def elaborateWithExternals (ast : Syntax.Module) (diag : Soma.DiagBuilder)
     : ElaborationResult :=
   lowerModuleFromSyntax ast diag
-
-/-- Incremental elaboration -/
-def elaborateIncremental (ast : Syntax.Module) (diag : Soma.DiagBuilder)
-    (changedNames : Array String) (_oldResult : ElaborationResult)
-    : ElaborationResult :=
-  -- We lower directly from Syntax in one pass.
-  let _ := changedNames
-  elaborate ast diag
 
 /-- Errors that can occur during project checking -/
 inductive CheckError where
@@ -367,8 +340,6 @@ def mergeInstanceEnv (e1 e2 : InstanceEnv) : InstanceEnv :=
     instances := instances
     nextInstanceId := max e1.nextInstanceId e2.nextInstanceId
     moduleName := e1.moduleName }
-
-/-! ## Shared Type Checking Core
 
 These functions provide the core type checking logic that can be shared between
 the CLI (Check.lean) and LSP (Analysis.lean). They handle building globals,
@@ -1294,102 +1265,6 @@ def checkModule
 
   -- Always produce a CheckedModule, even with errors
   -- This enables IDE features to work with partial information
-  let checkedModule : CheckedModule := {
-    name := modName
-    resolvedAst := info.ast
-    untypedModule := elabRes.module
-    globals := tcResult.globals
-    instanceEnv := tcResult.instanceEnv
-    abbrevEnv := tcResult.abbrevEnv
-    instanceMap := tcResult.instanceMap
-    publicSymbols := publicSymbols
-    publicInstances := publicInstances
-    sourceFile := info.sourceFile
-    incrementalState := tcResult.incrementalState
-    typedFunctions := tcResult.typedFunctions
-    usages := tcResult.usages
-    metas := tcResult.metas
-    uniqueNextId := tcResult.uniqueNextId
-    localTypes := tcResult.localTypes
-  }
-
-  (diagCtx, elabRes.diagnostics ++ importDiags ++ allDiags ++ unusedImportDiags, some checkedModule, supply'')
-
-/-- Check a single module incrementally -/
-def checkModuleIncremental
-    (diagCtx : DiagContext)
-    (info : ModuleInfo)
-    (prevModule : CheckedModule)
-    (checkedDeps : Std.HashMap String CheckedModule)
-    (externalGlobals : Globals)
-    (externalInstanceEnv : InstanceEnv)
-    (externalAbbrevEnv : AbbrevEnv)
-    (externalSymbols : SymbolEnv)
-    (packageName : String)
-    (supply : UniqueSupply)
-    (preludeSymbols : Array String := #[])
-    : DiagContext × Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
-  let modName := info.name.toString
-  let diag := diagBuilderFor diagCtx info
-
-  -- Collect globals from checked dependencies
-  let mergedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
-    mergeGlobals acc dep.globals
-
-  let (withImports, importDiags) := processImports info.ast diag mergedGlobals
-  let seedGlobals := withImports.injectPrelude ["stdlib", "prelude"] preludeSymbols
-
-  let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
-    mergeInstanceEnv acc dep.instanceEnv
-
-  let seedAbbrevEnv := checkedDeps.fold (init := externalAbbrevEnv) fun acc _ dep =>
-    AbbrevEnv.merge acc dep.abbrevEnv
-
-  let _seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
-    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
-
-  -- Lower AST to Core untyped module
-  let elabRes := elaborateWithExternals info.ast diag
-  if elabRes.diagnostics.hasErrors then
-    return (diagCtx, elabRes.diagnostics ++ importDiags, none, supply)
-
-  -- Use the shared type checking pipeline with previous state for incremental checking
-  let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState) (some elabRes.uniqueSupply)
-
-  -- If nothing changed (empty errors and same state), we could reuse previous result
-  -- But for correctness, we rebuild anyway since the lowered module might have changed
-
-  let pp : Soma.Core.PpContext :=
-    (Soma.Core.PpContext.ofMetas tcResult.metas).withEqInductive
-      ((tcResult.globals.wiredIn.getUnique? .typeEq).map (·.name.id))
-  let (diagCtx, allDiags) :=
-    Soma.Dependent.TCErrors.toDiagnosticsDecorated diagCtx pp tcResult.errors
-
-  let unusedImportDiags := if allDiags.isEmpty then
-    detectUnusedImports info.ast diag tcResult.globals tcResult.allUsedGlobals
-  else #[]
-
-  -- Extract public symbols and instances
-  let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
-    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
-
-  -- Collect pub use items as explicit exports
-  let pubUseNames := info.ast.decls.foldl (init := #[]) fun acc decl =>
-    match decl with
-    | .use true _ items _ => acc ++ items.map (·.name)
-    | _ => acc
-  let explicitExports : Option (Array String) :=
-    if pubUseNames.isEmpty then none else some pubUseNames
-
-  let (publicSymbols, supply') := extractPublicSymbols
-    elabRes.module tcResult.globals packageName modName {} supply explicitExports depSymbols
-
-  let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
-    mergeInstanceEnvs acc dep.publicInstances
-
-  let (publicInstances, supply'') := extractPublicInstances
-    elabRes.module tcResult.instanceMap packageName modName depInstances supply'
-
   let checkedModule : CheckedModule := {
     name := modName
     resolvedAst := info.ast

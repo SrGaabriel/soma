@@ -28,13 +28,6 @@ namespace ElabEnv
 
 def empty : ElabEnv := { tyVars := [], level := 0, overrides := [] }
 
-/-- Extend the environment with a new type variable -/
-def extend (env : ElabEnv) (name : String) (kind : Value) : ElabEnv :=
-  { env with
-    tyVars := (name, ⟨env.level⟩, kind) :: env.tyVars
-  , level := env.level + 1
-  }
-
 /-- Add a value override for a type variable name -/
 def addOverride (env : ElabEnv) (name : String) (val : Value) : ElabEnv :=
   { env with overrides := (name, val) :: env.overrides }

@@ -75,12 +75,6 @@ def describe : Constraint → String
   | .resolveInstance _ classId _ _ => s!"resolve instance for class `{classId.original}`"
   | .deferredInstance _ domTy _ => s!"deferred instance constraint on `{domTy}`"
 
-/-- Is this constraint an instance-resolution obligation? -/
-def isInstanceConstraint : Constraint → Bool
-  | .resolveInstance _ _ _ _ => true
-  | .deferredInstance _ _ _ => true
-  | _ => false
-
 /-- Every metavariable whose progress could affect this constraint -/
 def referencedMetas : Constraint → Array MetaId
   | .unify v1 v2 _ =>
@@ -174,9 +168,6 @@ instance : Inhabited GlobalInfo where
 
 namespace GlobalInfo
 
-def qualifiedName (info : GlobalInfo) : Soma.Core.QualifiedName :=
-  info.name
-
 end GlobalInfo
 
 /-- Kind of inductive-like type declaration tracked in metadata. -/
@@ -225,14 +216,6 @@ def upsertCtor (m : InductiveMeta) (ctor : ConstructorMeta) : InductiveMeta :=
   match idx? with
   | some idx => { m with ctors := m.ctors.set! idx ctor }
   | none => { m with ctors := m.ctors.push ctor }
-
-/-- Quantity of the field at source index `i` -/
-def fieldQuantity (m : InductiveMeta) (i : Nat) : Soma.Core.Quantity :=
-  m.fieldQuantities[i]?.getD .omega
-
-/-- Whether the field at source index `i` is erased up to QTT -/
-def isFieldErased (m : InductiveMeta) (i : Nat) : Bool :=
-  (m.fieldQuantity i).isErased
 
 end InductiveMeta
 
@@ -455,31 +438,6 @@ def register (w : WiredIn) (role : WiredRole) (info : GlobalInfo) : WiredIn :=
   else
     { w with roles := w.roles.insert role (existing.push info) }
 
-/-- Scan attributes for @[wired_in "role"] and register if found (todo: register lazily) -/
-def tryRegisterFromAttrs (w : WiredIn) (attrs : Array Soma.Syntax.Attribute) (info : GlobalInfo) : WiredIn :=
-  attrs.foldl (init := w) fun acc attr =>
-    if attr.name.name == "wired_in" then
-      if h : 0 < attr.args.size then
-        match attr.args[0] with
-        | .lit (.string role _) =>
-          match WiredRole.fromString? role with
-          | some r => acc.register r info
-          | none => acc
-        | _ => acc
-      else acc
-    else acc
-
-def pair (w : WiredIn) : Option GlobalInfo := w.getUnique? .pair
-def cons (w : WiredIn) : Option GlobalInfo := w.getUnique? .cons
-def nil  (w : WiredIn) : Option GlobalInfo := w.getUnique? .nil
-
-/-- Find the wired role assigned to a particular global name -/
-def roleOf? (w : WiredIn) (qn : Soma.Core.QualifiedName) : Option WiredRole :=
-  w.roles.fold (init := none) fun found role infos =>
-    match found with
-    | some _ => found
-    | none => if infos.any (fun info => info.name == qn) then some role else none
-
 end WiredIn
 
 /-- Recursive namespace tree for name resolution -/
@@ -625,16 +583,6 @@ def injectPrelude (g : Globals) (preludePath : List String) (symbols : Array Str
       | some qn => g'.registerImport name preludePath qn
       | none => g'
 
-/-- Register intrinsic metadata for a qualified name -/
-def registerIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
-    (intrinsic : Soma.Core.Intrinsic) : Globals :=
-  { g with intrinsics := g.intrinsics.insert name intrinsic }
-
-/-- Look up intrinsic metadata by qualified name -/
-def lookupIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
-    : Option Soma.Core.Intrinsic :=
-  g.intrinsics.get? name
-
 /-- Register or refresh top-level inductive metadata for a type name -/
 def registerInductive (g : Globals) (qn : Soma.Core.QualifiedName)
     (kind : InductiveKind) (typeVarNames : Array String := #[])
@@ -778,9 +726,6 @@ instance : Inhabited ClassInfo where
 
 namespace ClassInfo
 
-/-- Display name for error messages -/
-def displayName (c : ClassInfo) : String := c.classId.original
-
 end ClassInfo
 
 /-- Information about a registered instance -/
@@ -815,13 +760,6 @@ instance : Inhabited InstanceInfo where
   }
 
 namespace InstanceInfo
-
-/-- Check if this instance has no constraints (is a ground instance) -/
-def isGround (i : InstanceInfo) : Bool :=
-  i.constraints.isEmpty
-
-/-- Display name for error messages -/
-def displayName (i : InstanceInfo) : String := i.instanceId.original
 
 end InstanceInfo
 
@@ -1080,6 +1018,14 @@ def addInstance (env : InstanceEnv) (classId : Unique) (args : Array Value)
     nextInstanceId := env.nextInstanceId + 1
   }
 
+/-- Check if a class exists -/
+def hasClass (env : InstanceEnv) (classId : Unique) : Bool :=
+  env.classes.contains classId
+
+/-- Get total number of instances -/
+def instanceCount (env : InstanceEnv) : Nat :=
+  env.instances.fold (fun acc _ insts => acc + insts.size) 0
+
 /-- Look up a class by unique -/
 def getClass (env : InstanceEnv) (classId : Unique) : Option ClassInfo :=
   env.classes.get? classId
@@ -1096,14 +1042,6 @@ def getCandidateInstances (env : InstanceEnv) (classId : Unique)
   | some tree =>
     let keys := args.toList.map DiscrKey.ofValue
     tree.query keys
-
-/-- Check if a class exists -/
-def hasClass (env : InstanceEnv) (classId : Unique) : Bool :=
-  env.classes.contains classId
-
-/-- Get total number of instances -/
-def instanceCount (env : InstanceEnv) : Nat :=
-  env.instances.fold (fun acc _ insts => acc + insts.size) 0
 
 end InstanceEnv
 
@@ -1139,12 +1077,6 @@ instance : Inhabited AbbrevInfo where
   }
 
 namespace AbbrevInfo
-
-/-- Display name for error messages -/
-def displayName (a : AbbrevInfo) : String := a.abbrevId.original
-
-/-- Is this a parameterized abbreviation? -/
-def isParameterized (a : AbbrevInfo) : Bool := a.arity > 0
 
 end AbbrevInfo
 
@@ -1266,22 +1198,6 @@ def postponeTracked (s : TCState) (c : Constraint)
 def postpone (s : TCState) (c : Constraint) : TCState :=
   (s.postponeTracked c c.referencedMetas c.referencedLevelVars).2
 
-/-- Add constraint IDs to the worklist (to be retried after a meta is solved) -/
-def wakeConstraints (s : TCState) (cids : Array ConstraintId) : TCState :=
-  { s with worklist := s.worklist ++ cids }
-
-/-- Pop a constraint ID from the worklist -/
-def popWorklist (s : TCState) : Option ConstraintId × TCState :=
-  if s.worklist.isEmpty then
-    (none, s)
-  else
-    let cid := s.worklist[0]!
-    (some cid, { s with worklist := s.worklist.extract 1 s.worklist.size })
-
-/-- Get a tracked constraint by ID -/
-def getConstraint (s : TCState) (cid : ConstraintId) : Option TrackedConstraint :=
-  s.postponed.find? (·.constraintId == cid)
-
 /-- Remove a constraint by ID (after it's been solved) -/
 def removeConstraint (s : TCState) (cid : ConstraintId) : TCState :=
   let postponed' := s.postponed.filter (·.constraintId != cid)
@@ -1291,15 +1207,6 @@ def removeConstraint (s : TCState) (cid : ConstraintId) : TCState :=
 /-- Add an error -/
 def addError (s : TCState) (e : TCError) : TCState :=
   { s with errors := s.errors.push e }
-
-/-- Add a warning -/
-def addWarning (s : TCState) (w : TCWarning) : TCState :=
-  { s with warnings := s.warnings.push w }
-
-/-- Generate a fresh name -/
-def freshName (s : TCState) (base : String) : String × TCState :=
-  let name := s!"{base}_{s.freshCounter}"
-  (name, { s with freshCounter := s.freshCounter + 1 })
 
 /-- Generate a fresh unique identifier -/
 def freshUnique (s : TCState) (original : String) : Unique × TCState :=
@@ -1339,36 +1246,9 @@ def getPendingInstances (s : TCState) : Array PendingInstance :=
       some { metaId := metaId, classId := classId, args := args, span := span }
     | _ => none
 
-/-- Remove all pending instance constraints from the unified queue -/
-def clearPendingInstances (s : TCState) : TCState :=
-  let (keep, drop) := s.postponed.partition fun tc =>
-    match tc.constraint with
-    | .resolveInstance _ _ _ _ => false
-    | _ => true
-  let droppedCids := drop.map (·.constraintId)
-  let metas' := droppedCids.foldl (fun m cid => m.removeConstraint cid) s.metas
-  { s with postponed := keep, metas := metas' }
-
 /-- Enqueue a deferred instance meta on the unified queue -/
 def addDeferredInstanceMeta (s : TCState) (metaId : MetaId) (domTy : Value) (span : Span) : TCState :=
   s.postpone (.deferredInstance metaId domTy span)
-
-/-- Get all deferred instance metas from the unified queue -/
-def getDeferredInstanceMetas (s : TCState) : Array (MetaId × Value × Span) :=
-  s.postponed.filterMap fun tc =>
-    match tc.constraint with
-    | .deferredInstance m dom span => some (m, dom, span)
-    | _ => none
-
-/-- Remove all deferred instance constraints from the unified queue -/
-def clearDeferredInstanceMetas (s : TCState) : TCState :=
-  let (keep, drop) := s.postponed.partition fun tc =>
-    match tc.constraint with
-    | .deferredInstance _ _ _ => false
-    | _ => true
-  let droppedCids := drop.map (·.constraintId)
-  let metas' := droppedCids.foldl (fun m cid => m.removeConstraint cid) s.metas
-  { s with postponed := keep, metas := metas' }
 
 end TCState
 
@@ -1418,10 +1298,6 @@ namespace TCContext
 
 def empty : TCContext := {}
 
-/-- Create a context with debug mode enabled -/
-def withDebug (ctx : TCContext) : TCContext :=
-  { ctx with debug := true }
-
 /-- Increase debug indentation -/
 def indent (ctx : TCContext) : TCContext :=
   { ctx with debugIndent := ctx.debugIndent + 1 }
@@ -1444,16 +1320,6 @@ def lookupLevel (ctx : TCContext) (lvl : DeBruijnLvl) : Option CtxEntry :=
   -- List is newest first, so we need to reverse index
   let idx := ctx.size - lvl.lvl - 1
   ctx.locals[idx]?
-
-/-- Look up a global by resolving through the namespace tree, then fetching from defs -/
-def lookupGlobal (ctx : TCContext) (path : Array String) (name : String) : Option GlobalInfo :=
-  match ctx.globals.resolve ctx.currentNamespace path name with
-  | some qn => ctx.globals.getDef qn
-  | none => none
-
-/-- Look up a global directly by QualifiedName -/
-def lookupGlobalByQN (ctx : TCContext) (qn : Soma.Core.QualifiedName) : Option GlobalInfo :=
-  ctx.globals.getDef qn
 
 /-- Look up a type abbreviation by QualifiedName -/
 def lookupAbbrev (ctx : TCContext) (qn : Soma.Core.QualifiedName) : Option AbbrevInfo :=
@@ -1502,11 +1368,6 @@ def run (m : TCM α) (ctx : TCContext := TCContext.empty)
     (state : TCState := TCState.empty) : Except TCError (α × TCState) :=
   m ctx state
 
-/-- Run and extract just the result -/
-def run' (m : TCM α) (ctx : TCContext := TCContext.empty)
-    (state : TCState := TCState.empty) : Except TCError α :=
-  (m.run ctx state).map (·.1)
-
 /-- Get the current context -/
 def getCtx : TCM TCContext := read
 
@@ -1515,6 +1376,10 @@ def getState : TCM TCState := get
 
 /-- Modify the state -/
 def modifyState (f : TCState → TCState) : TCM Unit := modify f
+
+/-- Postpone a constraint for later solving (simple version) -/
+def postpone (c : Constraint) : TCM Unit := do
+  modifyState (·.postpone c)
 
 /-- Get the current span -/
 def getSpan : TCM Span := do
@@ -1575,7 +1440,6 @@ def getImplicits : TCM (Option (String × Array (Soma.Core.MetaId × Soma.Core.V
   let ctx ← getCtx
   return ctx.currentImplicits
 
-
 /-- Run with an extended context -/
 def withBinding (name : String) (bindingId : Unique) (ty : Value)
     (qty : Quantity) (binder : BinderInfo) (span : Span) (m : TCM α) : TCM α :=
@@ -1627,11 +1491,6 @@ def lookupGlobal (path : Array String) (name : String) : TCM (Option GlobalInfo)
     | none => return none
   | none => return none
 
-/-- Look up a global without recording a dependency -/
-def lookupGlobalNoDep (path : Array String) (name : String) : TCM (Option GlobalInfo) := do
-  let ctx ← getCtx
-  return ctx.lookupGlobal path name
-
 /-- Look up a global directly by QualifiedName -/
 def lookupGlobalByQN (qn : Soma.Core.QualifiedName) : TCM (Option GlobalInfo) := do
   let ctx ← getCtx
@@ -1658,12 +1517,6 @@ def suggestSimilarNames (target : String) (limit : Nat := 3) : TCM (Array String
   let globals ← globalDeclarationNames
   return Soma.Dependent.Suggest.suggestSimilar target globals limit
 
-/-- Suggest type-level names similar to `target` -/
-def suggestSimilarTypeNames (target : String) (limit : Nat := 3) : TCM (Array String) := do
-  let globals ← globalDeclarationNames
-  return Soma.Dependent.Suggest.suggestSimilar target globals limit
-
-
 /-- Look up all declarations registered under a wired-in role -/
 def lookupWiredInAll (role : WiredRole) : TCM (Array GlobalInfo) := do
   let ctx ← getCtx
@@ -1673,23 +1526,6 @@ def lookupWiredInAll (role : WiredRole) : TCM (Array GlobalInfo) := do
 def lookupWiredIn (role : WiredRole) : TCM (Option GlobalInfo) := do
   let ctx ← getCtx
   return ctx.globals.wiredIn.getUnique? role
-
-/-- Look up a wired-in role by textual role name -/
-def lookupWiredInByName (role : String) : TCM (Option GlobalInfo) := do
-  match WiredRole.fromString? role with
-  | some r => lookupWiredIn r
-  | none => pure none
-
-/-- Resolve the wired role associated with a global declaration name -/
-def lookupWiredRoleOfGlobal (qn : Soma.Core.QualifiedName) : TCM (Option WiredRole) := do
-  let ctx ← getCtx
-  return ctx.globals.wiredIn.roleOf? qn
-
-/-- Resolve primitive representation for a wired global type declaration when applicable -/
-def lookupWiredPrimitiveOfGlobal (qn : Soma.Core.QualifiedName) : TCM (Option Soma.Core.PrimType) := do
-  match ← lookupWiredRoleOfGlobal qn with
-  | some role => pure (WiredRole.primType? role)
-  | none => pure none
 
 /-- Resolve primitive representation for a wired type unique when applicable -/
 def lookupWiredPrimitiveOfTypeUnique (u : Soma.Unique) : TCM (Option Soma.Core.PrimType) := do
@@ -1747,38 +1583,9 @@ def lookupAbbrev (qn : Soma.Core.QualifiedName) : TCM (Option AbbrevInfo) := do
   let ctx ← getCtx
   return ctx.lookupAbbrev qn
 
-/-- Get all recorded global dependencies -/
-def getGlobalDeps : TCM (Std.HashSet Soma.Core.QualifiedName) := do
-  let state ← getState
-  return state.globalDeps
-
-/-- Clear recorded global dependencies (call at start of checking a new definition) -/
-def clearGlobalDeps : TCM Unit := do
-  modifyState fun s => { s with globalDeps := {} }
-
-/-- Run an action and collect its global dependencies -/
-def withDependencyTracking (action : TCM α) : TCM (α × Std.HashSet Soma.Core.QualifiedName) := do
-  clearGlobalDeps
-  let result ← action
-  let deps ← getGlobalDeps
-  return (result, deps)
-
 /-- Run with updated globals -/
 def withGlobals (globals : Globals) (m : TCM α) : TCM α :=
   withReader (fun ctx => { ctx with globals := globals }) m
-
-/-- Run with updated abbreviations -/
-def withAbbrevEnv (abbrevEnv : AbbrevEnv) (m : TCM α) : TCM α :=
-  withReader (fun ctx => { ctx with abbrevEnv := abbrevEnv }) m
-
-/-- Run with both globals and abbreviations -/
-def withGlobalsAndAbbrevs (globals : Globals) (abbrevEnv : AbbrevEnv)
-    (m : TCM α) : TCM α :=
-  withReader (fun ctx => { ctx with globals := globals, abbrevEnv := abbrevEnv }) m
-
-/-- Run inside a child namespace -/
-def withNamespace (name : String) (m : TCM α) : TCM α :=
-  withReader (fun ctx => { ctx with currentNamespace := ctx.currentNamespace.push name }) m
 
 /-- Get the current namespace path -/
 def getCurrentNamespace : TCM (Array String) := do
@@ -1795,16 +1602,6 @@ def currentLevel : TCM DeBruijnLvl := do
   let ctx ← getCtx
   return ctx.level
 
-/-- Get the NbE environment -/
-def getEnv : TCM Env := do
-  let ctx ← getCtx
-  return ctx.env
-
-/-- Get all local bindings as a list for metavariable context -/
-def getLocals : TCM (List CtxEntry) := do
-  let ctx ← getCtx
-  return ctx.locals
-
 -- todo: remove
 /-- Throw a type checking error -/
 def throw (e : TCError) : TCM α :=
@@ -1813,20 +1610,6 @@ def throw (e : TCError) : TCM α :=
 /-- Add an error but continue (for error recovery) -/
 def addError (e : TCError) : TCM Unit := do
   modifyState (·.addError e)
-
-/-- Add a warning -/
-def addWarning (w : TCWarning) : TCM Unit := do
-  modifyState (·.addWarning w)
-
-/-- Check if there are errors -/
-def hasErrors : TCM Bool := do
-  let state ← getState
-  return !state.errors.isEmpty
-
-/-- Get all errors -/
-def getErrors : TCM (Array TCError) := do
-  let state ← getState
-  return state.errors
 
 /-- Create a fresh metavariable of the given type -/
 def freshMeta (ty : Value) (piLevel : Option Nat := none)
@@ -1838,10 +1621,6 @@ def freshMeta (ty : Value) (piLevel : Option Nat := none)
     (piLevel := piLevel) (origin := origin) (displayHint := displayHint)
   set state'
   return id
-
-def getMetaCount : TCM Nat := do
-  let state ← getState
-  return state.metas.nextId
 
 /-- Create a fresh metavariable and return it as a Value -/
 def freshMetaVal (ty : Value) (origin : Soma.Core.MetaOrigin := .user)
@@ -1902,10 +1681,6 @@ def solveMeta (id : MetaId) (v : Value) (callerTag : String := "?") : TCM Unit :
     throw (.unificationFailed (.occursCheck id v Path.empty none) .general span #[] #[id])
   modifyState (·.solveMeta id v)
 
-/-- Clear a metavariable's solution, making it unsolved again -/
-def unsolvedMeta (id : MetaId) : TCM Unit := do
-  modifyState fun s => { s with metas := s.metas.unsolve id }
-
 /-- Update metavariable solution for path compression -/
 def updateMetaSolution (id : MetaId) (v : Value) : TCM Unit := do
   modifyState (·.solveMeta id v)
@@ -1932,11 +1707,6 @@ def freshLevel (name : String := "") : TCM Level := do
   let id ← freshLevelVar name
   return .var id
 
-/-- Look up the current solution for a level variable -/
-def lookupLevelVar (id : LevelVarId) : TCM (Option Level) := do
-  let state ← getState
-  return state.levelSolutions.get? id.id
-
 /-- Install a solution for a level variable -/
 def solveLevelVar (id : LevelVarId) (l : Level) : TCM Unit := do
   modifyState fun s => { s with levelSolutions := s.levelSolutions.insert id.id l }
@@ -1957,95 +1727,10 @@ where
     | .max l1 l2 => Level.mkMax (go sols l1) (go sols l2)
     | .succ l' => Level.mkSucc (go sols l')
 
-/-- Postpone a constraint for later solving (simple version) -/
-def postpone (c : Constraint) : TCM Unit := do
-  modifyState (·.postpone c)
-
-/-- Postpone a constraint with full dependency tracking -/
-def postponeTracked (c : Constraint) (metas : Array MetaId)
-    (levelVars : Array LevelVarId := #[])
-    (origin : ConstraintOrigin := .unknown)
-    (parents : Array ConstraintId := #[])
-    : TCM ConstraintId := do
-  let state ← getState
-  let (cid, state') := state.postponeTracked c metas levelVars origin parents
-  set state'
-  return cid
-
-/-- Postpone a constraint with origin derived from current context -/
-def postponeWithOrigin (c : Constraint) (metas : Array MetaId)
-    (origin : ConstraintOrigin) : TCM ConstraintId := do
-  postponeTracked c metas #[] origin #[]
-
-/-- Get the constraint chain leading to a constraint (for error reporting) -/
-def getConstraintChain (cid : ConstraintId) : TCM (Array ConstraintInfo) := do
-  let state ← getState
-  let mut chain : Array ConstraintInfo := #[]
-  let mut visited : Std.HashSet Nat := {}
-  let mut queue : Array ConstraintId := #[cid]
-
-  while h : queue.size > 0 do
-    let current := queue[0]'h
-    queue := queue.extract 1 queue.size
-
-    if visited.contains current.id then
-      continue
-    visited := visited.insert current.id
-
-    match state.getConstraint current with
-    | some tc =>
-      chain := chain.push tc.toInfo
-      for parent in tc.parentConstraints do
-        if !visited.contains parent.id then
-          queue := queue.push parent
-    | none => pure ()
-
-  return chain
-
-/-- Build constraint info for all constraints involving a metavariable -/
-def getMetaConstraintInfo (mid : MetaId) : TCM (Array MetaConstraintInfo) := do
-  let state ← getState
-  let mut infos : Array MetaConstraintInfo := #[]
-
-  for tc in state.postponed do
-    if tc.metas.contains mid then
-      -- Check if this constraint is blocked
-      let isBlocked ← do
-        let mut blocked := false
-        for m in tc.metas do
-          let solved ← isMetaSolved m
-          if !solved && m != mid then
-            blocked := true
-            break
-        pure blocked
-
-      infos := infos.push {
-        description := tc.constraint.describe
-        origin := tc.origin
-        isBlocked := isBlocked
-      }
-
-  return infos
-
 /-- Get all postponed constraints (returns TrackedConstraints) -/
 def getPostponedTracked : TCM (Array TrackedConstraint) := do
   let state ← getState
   return state.postponed
-
-/-- Get all postponed constraints stripped of their tracking metadata -/
-def getPostponed : TCM (Array Constraint) := do
-  let state ← getState
-  return state.postponed.map (·.constraint)
-
-/-- Clear postponed constraints -/
-def clearPostponed : TCM Unit := do
-  modifyState fun s => { s with postponed := #[], worklist := #[] }
-
-/-- Wake up constraints that depend on a solved metavariable -/
-def wakeConstraintsFor (mid : MetaId) : TCM Unit := do
-  let state ← getState
-  let affectedCids := state.metas.getAffectedConstraints mid
-  modifyState (·.wakeConstraints affectedCids)
 
 /-- Mark the current operation as stuck on the given dependency set -/
 def markStuck (metas : Array MetaId) (levelVars : Array LevelVarId) : TCM Unit :=
@@ -2096,34 +1781,6 @@ def withPatternRefinements (m : TCM α) : TCM (α × Std.HashMap Nat Value) := d
     modifyState fun s => { s with patternRefinementsBuffer? := savedBuffer }
     throw e
 
-/-- Pop a constraint from the worklist -/
-def popWorklist : TCM (Option ConstraintId) := do
-  let state ← getState
-  let (cid?, state') := state.popWorklist
-  set state'
-  return cid?
-
-/-- Get a constraint by ID -/
-def getConstraintById (cid : ConstraintId) : TCM (Option TrackedConstraint) := do
-  let state ← getState
-  return state.getConstraint cid
-
-/-- Remove a solved constraint -/
-def removeConstraint (cid : ConstraintId) : TCM Unit := do
-  modifyState (·.removeConstraint cid)
-
-/-- Get constraint complexity (number of unsolved metas) -/
-def constraintComplexity (cid : ConstraintId) : TCM Nat := do
-  let state ← getState
-  return state.metas.constraintComplexity cid
-
-/-- Generate a fresh name -/
-def freshName (base : String := "x") : TCM String := do
-  let state ← getState
-  let (name, state') := state.freshName base
-  set state'
-  return name
-
 /-- Generate a fresh unique identifier -/
 def freshUnique (original : String) : TCM Unique := do
   let state ← getState
@@ -2154,47 +1811,9 @@ def countToQuantity (n : Nat) : Quantity :=
   | 1 => .one
   | _ => .omega
 
-/-- Check that a variable's usage is compatible with its declared quantity -/
-def checkUsage (bindingId : Unique) (declared : Quantity) (span : Span) : TCM Unit := do
-  let count ← getUsage bindingId
-  let actual := countToQuantity count
-  -- Check: actual ≤ declared (in the quantity semiring ordering)
-  if !actual.le declared then
-    throw (.quantityMismatch declared actual bindingId.original span)
-
-/-- Check all linear variables in scope are used exactly once -/
-def checkLinearVarsUsed : TCM Unit := do
-  let ctx ← getCtx
-  for entry in ctx.locals do
-    if entry.qty == .one then
-      let count ← getUsage entry.bindingId
-      if count == 0 then
-        throw (.linearNotUsed entry.name entry.span)
-      else if count != 1 then
-        -- Used more than once
-        let actual := countToQuantity count
-        addError (.quantityMismatch .one actual entry.name entry.span)
-
-/-- Run an action with quantity multiplier set (for checking under binders) -/
-def withQtyMultiplier (qty : Quantity) (m : TCM α) : TCM α :=
-  withReader (fun ctx => { ctx with qtyMultiplier := ctx.qtyMultiplier.mul qty }) m
-
 /-- Run an action in erased context (quantity 0) -/
 def inErasedContext (m : TCM α) : TCM α :=
   withReader (fun ctx => { ctx with inErased := true, qtyMultiplier := .zero }) m
-
-/-- Run an action with fresh usage tracking, returning the usage counts -/
-def withFreshUsages (m : TCM α) : TCM (α × Std.HashMap Unique Nat) := do
-  let state ← getState
-  let savedUsages := state.saveUsages
-  modifyState (·.clearUsages)
-  let result ← m
-  let state' ← getState
-  let newUsages := state'.usages
-  modifyState (·.restoreUsages savedUsages)
-  return (result, newUsages)
-
-/-! ## Evaluation -/
 
 /-- Evaluate a Core.Expr to a Value using the current environment. -/
 def evalExpr (e : Soma.Core.Expr) : TCM Value := do
@@ -2218,32 +1837,6 @@ def evalExprInEnv (env : Env) (e : Soma.Core.Expr) : TCM Value := do
   }
   return Soma.Core.evalCoreExpr evalCtx e
 
-/-- Create a Pi type value -/
-def mkPi (qty : Quantity) (binder : BinderInfo) (name : String) (domain : Value)
-    (codomain : Closure) : Value :=
-  .vPi qty binder name domain codomain
-
-/-- Create a simple (non-dependent) function type -/
-def mkArrow (domain codomain : Value) : TCM Value := do
-  -- For non-dependent function types, use HOAS-style closure
-  -- The codomain doesn't depend on the argument, so just store it directly
-  return .vPi .omega .explicit "_" domain (Closure.const "_" codomain)
-
-/-- Check if we're currently in erased context -/
-def isInErasedContext : TCM Bool := do
-  let ctx ← getCtx
-  return ctx.inErased
-
-/-- Check if debug mode is enabled -/
-def isDebug : TCM Bool := do
-  let ctx ← getCtx
-  return ctx.debug
-
-/-- Get the current indentation string -/
-def debugIndentStr : TCM String := do
-  let ctx ← getCtx
-  return String.ofList (List.replicate (ctx.debugIndent * 2) ' ')
-
 /-- Print a debug message if debug mode is enabled -/
 def debug (msg : String) : TCM Unit := do
   let ctx ← getCtx
@@ -2266,10 +1859,6 @@ def debugEnter (kind : String) (info : String := "") : TCM Unit := do
 /-- Debug trace leaving a function with result -/
 def debugLeave (kind : String) (result : String) : TCM Unit := do
   debug s!"└─ {kind} => {result}"
-
-/-- Debug trace for intermediate steps -/
-def debugStep (msg : String) : TCM Unit := do
-  debug s!"│  {msg}"
 
 /-- Get the instance environment -/
 def getInstanceEnv : TCM InstanceEnv := do
@@ -2296,63 +1885,20 @@ def getPendingInstances : TCM (Array PendingInstance) := do
   let state ← getState
   return state.getPendingInstances
 
-/-- Clear pending instance constraints -/
-def clearPendingInstances : TCM Unit := do
-  modifyState (·.clearPendingInstances)
-
 /-- Add a deferred instance meta -/
 def addDeferredInstanceMeta (metaId : MetaId) (domTy : Value) (span : Span) : TCM Unit := do
   modifyState (·.addDeferredInstanceMeta metaId domTy span)
-
-/-- Get deferred instance metas -/
-def getDeferredInstanceMetas : TCM (Array (MetaId × Value × Span)) := do
-  let state ← getState
-  return state.getDeferredInstanceMetas
-
-/-- Clear deferred instance metas -/
-def clearDeferredInstanceMetas : TCM Unit := do
-  modifyState (·.clearDeferredInstanceMetas)
 
 /-- Look up a class by unique -/
 def lookupClass (classId : Unique) : TCM (Option ClassInfo) := do
   let env ← getInstanceEnv
   return env.getClass classId
 
-/-- Get all instances for a class -/
-def getClassInstances (classId : Unique) : TCM (Array InstanceInfo) := do
-  let env ← getInstanceEnv
-  return env.getInstances classId
-
 /-- Narrowed candidate instances via the discrimination tree -/
 def getCandidateInstances (classId : Unique) (args : Array Value)
     : TCM (Array InstanceInfo) := do
   let env ← getInstanceEnv
   return env.getCandidateInstances classId args
-
-/-- Check if a class exists -/
-def hasClass (classId : Unique) : TCM Bool := do
-  let env ← getInstanceEnv
-  return env.hasClass classId
-
-/-- Create a fresh metavariable for an instance argument -/
-def freshInstanceMeta (classId : Unique) (args : Array Value) (span : Span) : TCM Value := do
-  -- Create a placeholder type for the instance
-  -- todo: make this the actual class record type
-  let instTy := Value.vType .zero
-  let metaId ← freshMeta instTy
-  -- Register this as a pending instance to resolve
-  addPendingInstance classId args metaId span
-  return .vNeutral instTy (.nMeta metaId)
-
-
-/-- Run an action, rolling back state if it throws an error -/
-def withRollbackOnFailure (action : TCM α) : TCM α := do
-  let stateBefore ← getState
-  try
-    action
-  catch e =>
-    set stateBefore
-    throw e
 
 /-- Try an action, rolling back state if it fails -/
 def tryWithRollback (action : TCM α) : TCM (Option α) := do
@@ -2363,33 +1909,6 @@ def tryWithRollback (action : TCM α) : TCM (Option α) := do
   catch _ =>
     set stateBefore
     return none
-
-/-- Run an action speculatively: if it succeeds, keep the state changes,
-    If it fails, rollback state and return the given default value -/
-def speculatively (action : TCM α) (default : α) : TCM α := do
-  let stateBefore ← getState
-  try
-    action
-  catch _ =>
-    set stateBefore
-    return default
-
-/-- Try multiple alternatives in order, with state rollback between attempts -/
-def tryAlternatives (actions : List (TCM α)) : TCM α := do
-  let stateBefore ← getState
-  let mut lastError : Option TCError := none
-  for action in actions do
-    try
-      let result ← action
-      return result
-    catch e =>
-      set stateBefore
-      lastError := some e
-  match lastError with
-  | some e => throw e
-  | none => throw (.compilerBug "tryAlternatives: empty action list" Span.uninhabited)
-
-/-! ## Error Recovery Infrastructure
 
 These utilities support infallible type checking by:
 1. Collecting errors without stopping execution
@@ -2411,14 +1930,6 @@ namespace RecoverResult
 def value : RecoverResult α → α
   | .ok v => v
   | .recovered v _ => v
-
-def isOk : RecoverResult α → Bool
-  | .ok _ => true
-  | .recovered _ _ => false
-
-def error? : RecoverResult α → Option TCError
-  | .ok _ => none
-  | .recovered _ e => some e
 
 end RecoverResult
 
@@ -2459,86 +1970,6 @@ def errorPlaceholder (ty : Value) (_span : Span) : TCM Value := do
 /-- Create a Type placeholder for when we can't infer a type -/
 def typePlaceholder (span : Span) : TCM Value := do
   errorPlaceholder (.vType .zero) span
-
-/-- Run an action with bounded recursion depth.
-    Returns default if depth is exceeded. -/
-def withFuel [Inhabited α] (fuel : Nat) (action : Nat → TCM α) (span : Span) : TCM α := do
-  if fuel == 0 then
-    addError (.compilerBug "recursion limit exceeded" span)
-    return default
-  else
-    action (fuel - 1)
-
-/-- Default recursion fuel for deep operations -/
-def defaultFuel : Nat := 1000
-
-/-- Run a potentially deep recursive action with default fuel -/
-def bounded [Inhabited α] (action : Nat → TCM α) (span : Span) : TCM α :=
-  withFuel defaultFuel action span
-
-/-- Collect results from multiple actions, continuing even if some fail.
-    Returns all successful results and records all errors. -/
-def collectResults (actions : Array (TCM α)) (default : α) : TCM (Array α) := do
-  let mut results := #[]
-  for action in actions do
-    let result ← recover action default
-    results := results.push result.value
-  return results
-
-/-- Map over an array with error recovery for each element -/
-def mapRecover (arr : Array α) (f : α → TCM β) (default : β) : TCM (Array β) := do
-  let mut results := #[]
-  for x in arr do
-    let result ← recover (f x) default
-    results := results.push result.value
-  return results
-
-/-- Fold over an array with error recovery, continuing on failures -/
-def foldRecover (arr : Array α) (init : β) (f : β → α → TCM β) : TCM β := do
-  let mut acc := init
-  for x in arr do
-    match ← recover (f acc x) acc with
-    | .ok newAcc => acc := newAcc
-    | .recovered _ _ => pure ()  -- Keep old accumulator on failure
-  return acc
-
-/-- Check if we're in error recovery mode (have accumulated errors) -/
-def inRecoveryMode : TCM Bool := do
-  let state ← getState
-  return !state.errors.isEmpty
-
-/-- Get all accumulated errors so far -/
-def getAccumulatedErrors : TCM (Array TCError) := do
-  let state ← getState
-  return state.errors
-
-/-- Clear accumulated errors (use with caution, mainly for testing) -/
-def clearAccumulatedErrors : TCM Unit := do
-  modifyState fun s => { s with errors := #[] }
-
-/-- Run an action in a "sandbox" - errors are collected but not propagated to parent.
-    Returns (result, errors collected during action). -/
-def sandbox (action : TCM α) (default : α) : TCM (α × Array TCError) := do
-  let errorsBefore ← getAccumulatedErrors
-  clearAccumulatedErrors
-  let result ← recoverWith action default
-  let newErrors ← getAccumulatedErrors
-  modifyState fun s => { s with errors := errorsBefore }
-  return (result, newErrors)
-
-/-- Require that an action succeeds, but if it fails, add error and return default.
-    Unlike `recover`, this is for "soft" requirements that shouldn't stop checking. -/
-def softRequire (action : TCM α) (default : α) (errorMsg : String) (span : Span) : TCM α := do
-  match ← tryWithRollback action with
-  | some result => return result
-  | none =>
-    addError (.compilerBug errorMsg span)
-    return default
-
-/-- Assert a condition, adding an error if false but continuing execution -/
-def softAssert (cond : Bool) (errorMsg : String) (span : Span) : TCM Unit := do
-  if !cond then
-    addError (.compilerBug errorMsg span)
 
 /-- Run an action that might throw, converting throws to accumulated errors.
     Always returns a value (the default on failure). This is the primary

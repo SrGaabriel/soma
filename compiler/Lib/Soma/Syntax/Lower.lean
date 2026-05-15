@@ -56,11 +56,6 @@ def lowerBug (msg : String) (span : Span) : LowerM Unit := do
       helps :=
         ["please report at https://github.com/SrGaabriel/soma/issues with the failing input"] }
 
-/-- Get a default span from context -/
-def defaultSpan : LowerM Span := do
-  let ctx ← read
-  pure (Span.point (SourceLoc.fromOffset ctx.source 0))
-
 /-- Unwrap a triviaToken node to get the actual token (last child) or it as-is. -/
 def unwrapTrivia (green : GreenNode) : GreenNode :=
   if green.syntaxKind? == some .triviaToken then
@@ -139,10 +134,6 @@ def isSemanticNode (green : GreenNode) : Bool :=
     | _ => false  -- punctuation, keywords, and operators are not semantic nodes
   else true  -- regular syntax nodes are semantic
 
-/-- Filter children to get only semantic nodes (syntax nodes, not tokens/punctuation) -/
-def syntaxGreenChildren (green : GreenNode) : Array GreenNode :=
-  green.children.filter isSemanticNode
-
 /-- Get children of a specific kind -/
 def childrenOfGreenKind (green : GreenNode) (kind : SyntaxKind) : Array GreenNode :=
   green.children.filter fun c => c.syntaxKind? == some kind
@@ -160,10 +151,6 @@ def childrenWithOffsets (green : GreenNode) (baseOffset : Nat) : Array (GreenNod
       result := result.push (child, offset)
     offset := offset + child.width
   return result
-
-/-- Filter children to find tokens of a specific kind (unwrapping trivia) -/
-def tokensOfKind (green : GreenNode) (kind : TokenKind) : Array GreenNode :=
-  green.children.filter fun c => isTokenKind c kind
 
 /-- Lower a CST qualified name to a split (path, name) pair -/
 def lowerQualifiedName (green : GreenNode) (offset : Nat) : LowerM (Array String × String) := do
@@ -2051,79 +2038,10 @@ def lower (tree : ParsedTree) (diag : Soma.DiagBuilder)
     { source := tree.red.source, redTree := tree.red, diag }
   (lowerModule tree.green 0 moduleName).run' ctx
 
-/-- Lower a green tree directly (for testing the trivia invariant) -/
-def lowerGreen (green : GreenNode) (source : SourceFile) (diag : Soma.DiagBuilder)
-    (moduleName : String := "Main") : Module × Diagnostics :=
-  let red := buildRedTree green source
-  let ctx : LowerContext := { source, redTree := red, diag }
-  (lowerModule green 0 moduleName).run' ctx
-
 /- todo: implement -/
 -- theorem lower_trivia_invariant (green : GreenNode) (source : SourceFile) (moduleName : String) :
 --     (lowerGreen (green.stripTrivia) source moduleName).1 =
 --     (lowerGreen green source moduleName).1 := by
 --   sorry
-
-/-- Lower a single declaration from a RedNode -/
-def lowerDeclFromRedNode (tree : ParsedTree) (diag : Soma.DiagBuilder) (node : RedNode)
-    : Option (Decl × Diagnostics) :=
-  match node.syntaxKind? with
-  | some kind =>
-    if kind.isDecl then
-      let ctx : LowerContext :=
-        { source := tree.red.source, redTree := tree.red, diag }
-      some ((lowerDecl node.green node.offset).run' ctx)
-    else
-      none
-  | none => none
-
-/-- Lower specific declarations by their NodeIds -/
-def lowerDeclarationsByIds (tree : ParsedTree) (diag : Soma.DiagBuilder)
-    (declIds : Array NodeId)
-    : Std.HashMap NodeId Decl × Diagnostics := Id.run do
-  let mut result : Std.HashMap NodeId Decl := {}
-  let mut allDiags : Diagnostics := #[]
-
-  for nodeId in declIds do
-    match tree.red.getById? nodeId with
-    | some node =>
-      match lowerDeclFromRedNode tree diag node with
-      | some (decl, diags) =>
-        result := result.insert nodeId decl
-        allDiags := allDiags ++ diags
-      | none => pure ()
-    | none => pure ()
-
-  return (result, allDiags)
-
-/-- Collect all top-level declaration NodeIds from a parsed tree -/
-def collectDeclNodeIds (tree : ParsedTree) : Array NodeId := Id.run do
-  let mut declIds : Array NodeId := #[]
-  -- The root should be a sourceFile node
-  match tree.red.root with
-  | some root =>
-    -- Iterate through top-level children (declarations)
-    let mut idx := root.selfIdx + 1
-    for child in root.green.children do
-      if h : idx < tree.red.nodes.size then
-        let childNode := tree.red.nodes[idx]
-        match childNode.syntaxKind? with
-        | some kind =>
-          if kind.isDecl then
-            declIds := declIds.push childNode.id
-        | none => pure ()
-        idx := idx + RedTree.countGreenNodes child
-    return declIds
-  | none => return #[]
-
-/-- Build a Module AST from a map of declaration ASTs (in source order) -/
-def buildModuleFromDeclMap (tree : ParsedTree) (declAsts : Std.HashMap NodeId Decl)
-    (moduleName : String) : Module := Id.run do
-  let declIds := collectDeclNodeIds tree
-  let decls := declIds.filterMap fun nodeId => declAsts.get? nodeId
-  let span := match tree.red.root with
-    | some root => root.span tree.red.source
-    | none => panic! "buildModuleFromDeclMap: ParsedTree has no root"
-  return { name := moduleName, decls := decls, span := span }
 
 end Soma.Syntax

@@ -11,11 +11,7 @@ structure DeBruijnLvl where
 
 namespace DeBruijnLvl
 
-def zero : DeBruijnLvl := ⟨0⟩
-
 def succ (l : DeBruijnLvl) : DeBruijnLvl := ⟨l.lvl + 1⟩
-
-def toNat (l : DeBruijnLvl) : Nat := l.lvl
 
 instance : ToString DeBruijnLvl where
   toString l := s!"@{l.lvl}"

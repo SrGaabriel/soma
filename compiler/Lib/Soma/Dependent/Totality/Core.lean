@@ -85,9 +85,6 @@ namespace BindingInfo
 /-- Is this binding strictly smaller than its source parameter? -/
 def isSmaller (b : BindingInfo) : Bool := b.depth > 0
 
-/-- Is this binding at the same level as its source parameter? -/
-def isSameLevel (b : BindingInfo) : Bool := b.depth == 0
-
 end BindingInfo
 
 /-- Result of comparing a recursive call argument to the original pattern -/
@@ -156,12 +153,6 @@ def addBinding (ctx : TerminationContext) (info : BindingInfo) : TerminationCont
 def addBindings (ctx : TerminationContext) (infos : Array BindingInfo) : TerminationContext :=
   infos.foldl (fun c i => c.addBinding i) ctx
 
-/-- Check if a variable is known to be smaller than some parameter -/
-def isSmaller (ctx : TerminationContext) (name : String) : Bool :=
-  match ctx.lookup name with
-  | some info => info.isSmaller
-  | none => false
-
 end TerminationContext
 
 /-- Information about a recursive call -/
@@ -195,12 +186,8 @@ namespace TermM
 def run (m : TermM α) (state : TermState := {}) : Except TCError (α × TermState) :=
   m state
 
-def run' (m : TermM α) (state : TermState := {}) : Except TCError α :=
-  (m.run state).map (·.1)
-
 def getState : TermM TermState := get
 def modifyState (f : TermState → TermState) : TermM Unit := modify f
-def throw (e : TCError) : TermM α := Except.error e
 
 def addError (e : TCError) : TermM Unit :=
   modifyState fun s => { s with errors := s.errors.push e }
@@ -220,9 +207,6 @@ def getContext : TermM TerminationContext := do
 def modifyContext (f : TerminationContext → TerminationContext) : TermM Unit :=
   modifyState fun s => { s with ctx := f s.ctx }
 
-def addBinding (info : BindingInfo) : TermM Unit :=
-  modifyContext (·.addBinding info)
-
 def addBindings (infos : Array BindingInfo) : TermM Unit :=
   modifyContext (·.addBindings infos)
 
@@ -236,16 +220,6 @@ def withBindings (bindings : Array BindingInfo) (action : TermM α) : TermM α :
   let result ← action
   modifyState fun s => { s with ctx := saved }
   return result
-
-/-- Look up a variable's smaller-than relation to a parameter. Returns the
-    `(paramIdx, paramName)` pair when the binding is strictly smaller. -/
-def isSmallerThan (varName : String) : TermM (Option (Nat × String)) := do
-  let ctx ← getContext
-  match ctx.lookup varName with
-  | some info => if info.isSmaller then return some (info.paramIdx, info.paramName) else return none
-  | none => return none
-
-def getSizeContext : TermM TerminationContext := getContext
 
 end TermM
 
@@ -263,11 +237,6 @@ def register (reg : TotalityRegistry) (name : String) (status : TotalityStatus) 
 
 def lookup (reg : TotalityRegistry) (name : String) : Option TotalityStatus :=
   reg.functions.get? name
-
-def isTotal (reg : TotalityRegistry) (name : String) : Bool :=
-  match reg.lookup name with
-  | some .isTotal => true
-  | _ => false
 
 end TotalityRegistry
 

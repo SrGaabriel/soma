@@ -23,8 +23,6 @@ def isOperatorChar (c : Char) : Bool :=
   c == '*' || c == '+' || c == '.' || c == '-' || c == '/' ||
   c == '<' || c == '=' || c == '>' || c == '?' || c == '|'
 
-/-! ## Lexer State -/
-
 structure LexerState where
   source : SourceFile
   pos : Nat  -- byte offset
@@ -70,8 +68,6 @@ def spanFrom (s : LexerState) (startOffset : Nat) : Span :=
   Span.fromOffsets s.source startOffset s.pos
 
 end LexerState
-
-/-! ## Lexer Monad -/
 
 abbrev LexerM := StateT LexerState (StateT Diagnostics Id)
 
@@ -122,27 +118,12 @@ partial def skipWhile (pred : Char → Bool) : LexerM Unit := do
     advance
     skipWhile pred
 
-def collectWhile (pred : Char → Bool) : LexerM String := do
-  let start ← getOffset
-  skipWhile pred
-  getText start (← getOffset)
-
-def lookingAt (str : String) : LexerM Bool := do
-  let state ← get
-  let mut pos := state.pos
-  for c in str.toList do
-    if pos ≥ state.source.content.utf8ByteSize then return false
-    if String.Pos.Raw.get state.source.content ⟨pos⟩ != c then return false
-    pos := (String.Pos.Raw.next state.source.content ⟨pos⟩).byteIdx
-  return true
-
 def skipN (n : Nat) : LexerM Unit := do
   for _ in [:n] do advance
 end LexerM
 
 -- Open LexerM for use in tokenization code below
 open LexerM
-
 
 /-- Raw token with offset info (before building green tree) -/
 structure RawToken where
@@ -311,8 +292,6 @@ def lexBlockComment (start : Nat) : LexerM (Option RawToken) := do
   -- Still return a token for the partial comment so spans are preserved
   return some (← makeToken .comment start)
 
-/-! ## Main Tokenizer -/
-
 partial def lexToken : LexerM (Option RawToken) := do
   if (← atEnd) then return none
 
@@ -399,8 +378,6 @@ partial def tokenize : LexerM (Array RawToken) := do
     | none => break
   return tokens
 
-/-! ## Layout Transformation -/
-
 structure LayoutState where
   indentStack : List Nat := [1]  -- 1-based column (matches columnAt)
   output : Array RawToken := #[]
@@ -411,11 +388,6 @@ def LayoutState.currentIndent (s : LayoutState) : Nat := s.indentStack.head!
 
 def LayoutState.pushIndent (s : LayoutState) (col : Nat) : LayoutState :=
   { s with indentStack := col :: s.indentStack }
-
-def LayoutState.popIndent (s : LayoutState) : LayoutState :=
-  match s.indentStack with
-  | [] | [_] => s
-  | _ :: rest => { s with indentStack := rest }
 
 def LayoutState.emit (s : LayoutState) (tok : RawToken) : LayoutState :=
   { s with

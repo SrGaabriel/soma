@@ -39,82 +39,12 @@ structure CallMatrix where
 
 namespace CallMatrix
 
-/-- Create an empty call matrix -/
-def empty (functions : Array String) (arity : Nat) : CallMatrix :=
-  { functions := functions, arity := arity, rows := #[] }
-
-/-- Add a call to the matrix -/
-def addCall (m : CallMatrix) (row : CallMatrixRow) : CallMatrix :=
-  { m with rows := m.rows.push row }
-
 /-- Convert a StructuralCmp to ArgChange -/
 def toArgChange : StructuralCmp → ArgChange
   | .smaller _ => .decrease
   | .equal => .equal
   | .larger => .increase
   | .unknown => .unknown
-
-/-- Check if a call matrix row represents a decreasing call (for some argument) -/
-def isDecreasing (row : CallMatrixRow) : Bool :=
-  -- Lexicographic: find first position that's not equal
-  let rec check (i : Nat) : Bool :=
-    if h : i < row.changes.size then
-      match row.changes[i] with
-      | .decrease => true -- Found decrease before any increase
-      | .equal => check (i + 1) -- Continue checking
-      | .increase => false -- Found increase before decrease
-      | .unknown => false -- Can't prove termination
-    else
-      false
-  check 0
-
-/-- Find a lexicographic ordering that proves termination for all calls -/
-def findLexOrder (m : CallMatrix) : Option (Array Nat) :=
-  if m.arity == 0 then some #[]
-  else if m.arity == 1 then
-    if m.rows.all fun row => row.changes[0]? == some .decrease then
-      some #[0]
-    else
-      none
-  else if m.arity == 2 then
-    let order1 := #[0, 1]
-    let order2 := #[1, 0]
-    if checkOrder m order1 then some order1
-    else if checkOrder m order2 then some order2
-    else none
-  else if m.arity == 3 then
-    let orders := #[#[0,1,2], #[0,2,1], #[1,0,2], #[1,2,0], #[2,0,1], #[2,1,0]]
-    orders.findSome? fun order =>
-      if checkOrder m order then some order else none
-  else
-    let order := Array.range m.arity
-    if checkOrder m order then some order else none
-where
-  /-- Check if a given ordering proves termination for all calls -/
-  checkOrder (m : CallMatrix) (order : Array Nat) : Bool :=
-    m.rows.all fun row =>
-      let rec checkLex (i : Nat) : Bool :=
-        if h : i < order.size then
-          let argIdx := order[i]
-          match row.changes[argIdx]? with
-          | some .decrease => true
-          | some .equal => checkLex (i + 1)
-          | _ => false
-        else
-          false
-      checkLex 0
-
-/-- Verify termination using the call matrix approach -/
-def verifyTermination (m : CallMatrix) : Option String :=
-  if m.rows.isEmpty then
-    some "no recursive calls"
-  else
-    match findLexOrder m with
-    | some order =>
-      let orderStr := order.toList.map toString |> String.intercalate ", "
-      some s!"lexicographic order [{orderStr}] proves termination"
-    | none =>
-      none
 
 end CallMatrix
 
@@ -238,13 +168,6 @@ structure TermMatrix where
   deriving Repr, Inhabited
 
 namespace TermMatrix
-
-/-- Create an identity-like matrix (all equal on diagonal) -/
-def identity (size arity : Nat) : TermMatrix :=
-  let entries := Array.range size |>.map fun i =>
-    Array.range size |>.map fun j =>
-      if i == j then .equal else .unknown
-  { size := size, arity := arity, entries := entries }
 
 /-- Get entry at (i, j) -/
 def get (m : TermMatrix) (i j : Nat) : ArgChange :=
@@ -509,25 +432,6 @@ where
 def collectCalls (caller : String) (targets : Array String) (t : Soma.Core.Expr)
     (ctx : TerminationContext) : Array CallMatrixRow :=
   collectCallsGo caller targets t ctx #[]
-
-/-- Build a call matrix for mutual recursion -/
-def buildCallMatrix (functions : Array FunctionInfo) (bodies : Array Soma.Core.Expr)
-    : CallMatrix :=
-  let names := functions.map (·.name.display)
-  let arity := if functions.isEmpty then 0
-               else functions[0]!.params.size
-  let initial := CallMatrix.empty names arity
-
-  let (result, _) := functions.foldl (init := (initial, 0)) fun (matrix, i) fnInfo =>
-    if h : i < bodies.size then
-      let body := bodies[i]
-      let ctx := TerminationContext.fromParams fnInfo.params
-      let calls := collectCalls fnInfo.name.display names body ctx
-      let matrix' := calls.foldl (fun m call => m.addCall call) matrix
-      (matrix', i + 1)
-    else
-      (matrix, i + 1)
-  result
 
 /-- Build a call graph from function info and bodies -/
 def buildCallGraph (functions : Array FunctionInfo) (bodies : Array Soma.Core.Expr) : CallGraph :=

@@ -151,14 +151,8 @@ def incSupCommutation (s : Stats) : Stats :=
 def incEraAbsorption (s : Stats) : Stats :=
   { s with totalSteps := s.totalSteps + 1, eraAbsorptions := s.eraAbsorptions + 1 }
 
-def incEta (s : Stats) : Stats :=
-  { s with totalSteps := s.totalSteps + 1, etaReductions := s.etaReductions + 1 }
-
 def updatePeakNodes (s : Stats) (n : Nat) : Stats :=
   { s with peakNodes := max s.peakNodes n }
-
-def updateStackDepth (s : Stats) (depth : Nat) : Stats :=
-  { s with maxStackDepth := max s.maxStackDepth depth }
 
 /-- Accumulate stats from two passes -/
 def merge (a b : Stats) : Stats :=
@@ -404,9 +398,6 @@ def setGraph (g : Graph) : ReduceM Unit :=
 /-- Modify the graph in place -/
 def modifyGraph (f : Graph → Graph) : ReduceM Unit :=
   modify fun s => { s with graph := f s.graph }
-
-/-- Get the statistics -/
-def getStats : ReduceM Stats := do return (← get).stats
 
 /-- Modify statistics -/
 def modifyStats (f : Stats → Stats) : ReduceM Unit :=

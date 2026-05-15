@@ -25,9 +25,6 @@ instance : ToString DefId where
 
 namespace DefId
 
-/-- Create a DefId for a local definition (same module) -/
-def local_ (name : String) (currentModule : String) : DefId := ⟨currentModule, name⟩
-
 end DefId
 
 /-- The kind of a definition, for more precise dependency tracking -/
@@ -171,24 +168,6 @@ def forModule (_moduleName : String) : IncrementalState := {}
 def isCached (s : IncrementalState) (def_ : DefId) : Bool :=
   s.cache.contains def_
 
-/-- Get cached info for a definition -/
-def getCache (s : IncrementalState) (def_ : DefId) : Option DefCache :=
-  s.cache.get? def_
-
-/-- Check if a definition needs re-checking -/
-def isDirty (s : IncrementalState) (def_ : DefId) : Bool :=
-  s.dirty.contains def_
-
-/-- Mark a definition as dirty -/
-def markDirty (s : IncrementalState) (def_ : DefId) : IncrementalState :=
-  { s with dirty := s.dirty.insert def_ }
-
-/-- Mark a definition and all its transitive dependents as dirty -/
-def markDirtyTransitive (s : IncrementalState) (def_ : DefId) : IncrementalState :=
-  let affected := s.depGraph.getTransitiveRdeps def_
-  let dirty' := affected.fold (init := s.dirty) fun acc d => acc.insert d
-  { s with dirty := dirty' }
-
 /-- Update the cache for a definition -/
 def updateCache (s : IncrementalState) (def_ : DefId) (cache : DefCache) : IncrementalState :=
   { s with
@@ -204,45 +183,6 @@ def clearDeps (s : IncrementalState) (def_ : DefId) : IncrementalState :=
   { s with
     depGraph := s.depGraph.remove def_
     externalDeps := s.externalDeps.erase def_ }
-
-/-- Add an external dependency (dependency on a symbol from another module) -/
-def addExternalDep (s : IncrementalState) (def_ : DefId) (extModule : String) (symbolName : String) : IncrementalState :=
-  let existing := s.externalDeps.getD def_ {}
-  { s with externalDeps := s.externalDeps.insert def_ (existing.insert (extModule, symbolName)) }
-
-/-- Get all external dependencies for a definition -/
-def getExternalDeps (s : IncrementalState) (def_ : DefId) : HashSet (String × String) :=
-  s.externalDeps.getD def_ {}
-
-/-- Get all definitions that depend on a specific external module -/
-def getDefsUsingModule (s : IncrementalState) (extModule : String) : Array DefId :=
-  s.externalDeps.fold (init := #[]) fun acc defId deps =>
-    if deps.any (fun (mod, _) => mod == extModule) then acc.push defId else acc
-
-/-- Get all definitions that depend on a specific symbol from an external module -/
-def getDefsUsingSymbol (s : IncrementalState) (extModule : String) (symbolName : String) : Array DefId :=
-  s.externalDeps.fold (init := #[]) fun acc defId deps =>
-    if deps.contains (extModule, symbolName) then acc.push defId else acc
-
-/-- Mark all definitions that use a specific external module as dirty -/
-def markDirtyByExternalModule (s : IncrementalState) (extModule : String) : IncrementalState :=
-  let affectedDefs := s.getDefsUsingModule extModule
-  affectedDefs.foldl (fun acc def_ => acc.markDirtyTransitive def_) s
-
-/-- Mark all definitions that use specific symbols from an external module as dirty -/
-def markDirtyByExternalSymbols (s : IncrementalState) (extModule : String) (symbols : Array String) : IncrementalState :=
-  symbols.foldl (fun acc sym =>
-    let affectedDefs := acc.getDefsUsingSymbol extModule sym
-    affectedDefs.foldl (fun acc' def_ => acc'.markDirtyTransitive def_) acc
-  ) s
-
-/-- Record that this module imports another module -/
-def addImportedModule (s : IncrementalState) (modName : String) : IncrementalState :=
-  { s with importedModules := s.importedModules.insert modName }
-
-/-- Get all imported modules -/
-def getImportedModules (s : IncrementalState) : HashSet String :=
-  s.importedModules
 
 /-- Get all dirty definitions in topological order (dependencies before dependents) -/
 def getDirtyInOrder (s : IncrementalState) : Array DefId := Id.run do
@@ -316,34 +256,6 @@ def invalidateChanged (s : IncrementalState) (currentHashes : HashMap DefId UInt
     cachedGlobals := s.cachedGlobals
     cachedInstanceEnv := s.cachedInstanceEnv }
 
-/-- Merge globals from cached definitions -/
-def rebuildGlobals (s : IncrementalState) : Globals := Id.run do
-  let mut globals := Globals.empty
-  for (def_, cache) in s.cache do
-    if cache.isComplete then
-      -- Use cached GlobalInfo if available, otherwise reconstruct
-      match cache.globalInfo with
-      | some info =>
-        globals := globals.register #[] def_.name info
-      | none =>
-        -- Fallback reconstruction (shouldn't happen if cache.isComplete is true)
-        let info : GlobalInfo := {
-          name := ⟨{ id := 0, module := def_.module, original := def_.name }⟩
-          type := cache.type
-          isConstructor := match cache.kind with
-            | .constructor _ => true
-            | _ => false
-          origin := match cache.kind with
-            | .function => .function
-            | .dataType => .typeDecl
-            | .constructor _ => .constructor
-            | .typeClass => .class_
-            | .instance_ _ => .generated
-            | .method _ => .traitMethod
-        }
-        globals := globals.register #[] def_.name info
-  return globals
-
 end IncrementalState
 
 /-- Context for tracking dependencies during type checking -/
@@ -360,27 +272,6 @@ structure DepTrackingCtx where
 abbrev DepTrackM := StateT DepTrackingCtx TCM
 
 namespace DepTrackM
-
-/-- Record a dependency on another definition -/
-def recordDep (def_ : DefId) : DepTrackM Unit := do
-  modify fun ctx => { ctx with deps := ctx.deps.insert def_ }
-
-/-- Record a dependency on a local definition -/
-def recordLocalDep (name : String) : DepTrackM Unit := do
-  let ctx ← get
-  recordDep (DefId.local_ name ctx.moduleName)
-
-/-- Get all recorded dependencies -/
-def getDeps : DepTrackM (HashSet DefId) := do
-  let ctx ← get
-  return ctx.deps
-
-/-- Run with dependency tracking, returning result and dependencies -/
-def runTracking (def_ : DefId) (moduleName : String) (action : DepTrackM α)
-    : TCM (α × HashSet DefId) := do
-  let ctx : DepTrackingCtx := { currentDef := def_, moduleName := moduleName, deps := {} }
-  let (result, ctx') ← action.run ctx
-  return (result, ctx'.deps)
 
 end DepTrackM
 

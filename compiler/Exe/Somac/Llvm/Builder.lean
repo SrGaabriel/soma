@@ -157,11 +157,6 @@ def getBlocks : FuncBuilder (Array LLVMBlock) := do
   let s ← get
   pure s.blocks
 
-/-- Get the current block label -/
-def getCurrentLabel : FuncBuilder (Option Label) := do
-  let s ← get
-  pure s.currentBlock
-
 end FuncBuilder
 
 /-- Monad for building a module -/
@@ -208,31 +203,6 @@ def addFunc (f : LLVMFunc) : ModuleBuilder Unit := do
     module := { s.module with funcs := s.module.funcs.push f }
     funcIndex := s.funcIndex.insert f.name idx
   }
-
-/-- Intern a string literal, returning the global name -/
-def internString (s : String) : ModuleBuilder String := do
-  let st ← get
-  match st.stringIndex.get? s with
-  | some name => pure name
-  | none =>
-    let idx := st.stringTable.size
-    let name := s!".str.{idx}"
-    -- Create global constant for the string
-    let strBytes := s.utf8ByteSize + 1 -- +1 for null terminator
-    let global : LLVMGlobal := {
-      name := name
-      ty := .array strBytes .i8
-      init := some (.string s)
-      linkage := .private_
-      isConstant := true
-      align := some 1
-    }
-    set { st with
-      stringTable := st.stringTable.push s
-      stringIndex := st.stringIndex.insert s name
-      module := { st.module with globals := st.module.globals.push global }
-    }
-    pure name
 
 /-- Get the built module -/
 def getModule : ModuleBuilder LLVMModule := do
@@ -364,14 +334,6 @@ def zext (fromTy toTy : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
 def sext (fromTy toTy : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
   emit (.sext fromTy toTy val)
 
-/-- Float truncate -/
-def fptrunc (fromTy toTy : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
-  emit (.fptrunc fromTy toTy val)
-
-/-- Float extend -/
-def fpext (fromTy toTy : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
-  emit (.fpext fromTy toTy val)
-
 /-- Float to unsigned int -/
 def fptoui (fromTy toTy : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
   emit (.fptoui fromTy toTy val)
@@ -403,11 +365,6 @@ def bitcast (fromTy toTy : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
 /-- Allocate stack space -/
 def alloca (ty : LLVMType) (align : Option Nat := none) : FuncBuilder LocalRef :=
   emit (.alloca ty none align)
-
-/-- Allocate array on stack -/
-def allocaArray (ty : LLVMType) (numElems : LLVMValue) (align : Option Nat := none)
-    : FuncBuilder LocalRef :=
-  emit (.alloca ty (some numElems) align)
 
 /-- Emit an `alloca` at the top of the function's entry block -/
 def entryAlloca (ty : LLVMType) (align : Option Nat := none) : FuncBuilder LocalRef := do
@@ -448,12 +405,6 @@ def gep (baseTy : LLVMType) (ptr : LLVMValue) (indices : Array (LLVMType × LLVM
 def gepi32 (baseTy : LLVMType) (ptr : LLVMValue) (indices : Array Int)
     (inbounds : Bool := true) : FuncBuilder LocalRef :=
   let idxVals := indices.map fun i => (.i32, LLVMValue.intConst i 32)
-  emit (.getelementptr inbounds baseTy ptr idxVals)
-
-/-- Get element pointer with i64 indices -/
-def gepi64 (baseTy : LLVMType) (ptr : LLVMValue) (indices : Array Int)
-    (inbounds : Bool := true) : FuncBuilder LocalRef :=
-  let idxVals := indices.map fun i => (.i64, LLVMValue.intConst i 64)
   emit (.getelementptr inbounds baseTy ptr idxVals)
 
 /-- Extract value from aggregate -/
@@ -510,11 +461,6 @@ def memset (dst val len : LLVMValue) (align : Nat := 1) (isVolatile : Bool := fa
     : FuncBuilder Unit :=
   emitVoid (.memset dst val len align isVolatile)
 
-/-- Memory move -/
-def memmove (dst src len : LLVMValue) (align : Nat := 1) (isVolatile : Bool := false)
-    : FuncBuilder Unit :=
-  emitVoid (.memmove dst src len align isVolatile)
-
 /-- Return a value -/
 def ret (ty : LLVMType) (val : LLVMValue) : FuncBuilder Unit :=
   terminate (.ret ty (some val))
@@ -542,17 +488,11 @@ def unreachable : FuncBuilder Unit :=
 
 end FuncBuilder
 
-/-- Convert a LocalRef to an LLVMValue -/
-def localVal (ref : LocalRef) : LLVMValue := .local ref
-
 /-- Create an integer constant value -/
 def intVal (val : Int) (bits : Nat := 64) : LLVMValue := .const (.int val bits)
 
 /-- Create an i32 constant -/
 def i32Val (val : Int) : LLVMValue := .const (.int val 32)
-
-/-- Create an i64 constant -/
-def i64Val (val : Int) : LLVMValue := .const (.int val 64)
 
 /-- Create a boolean constant -/
 def boolVal (val : Bool) : LLVMValue := .const (.bool val)
@@ -562,16 +502,6 @@ def nullVal : LLVMValue := .const .null
 
 /-- Create a global reference -/
 def globalVal (name : String) : LLVMValue := .global ⟨name⟩
-
-/-- Create a function reference -/
-def funcVal (name : String) : LLVMValue := .global ⟨name⟩
-
-/-- Build a function -/
-def buildFunc (name : String) (retTy : LLVMType) (params : Array LLVMParam)
-    (attrs : LLVMFuncAttrs := {})
-    (builder : FuncBuilder Unit) : LLVMFunc :=
-  let ((), state) := Id.run (StateT.run builder {})
-  { name, retTy, params, attrs, blocks := state.blocks, isDeclaration := false }
 
 /-- Build a function with entry block -/
 def buildFuncWithEntry (name : String) (retTy : LLVMType) (params : Array LLVMParam)

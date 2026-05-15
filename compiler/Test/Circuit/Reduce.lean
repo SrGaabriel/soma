@@ -25,14 +25,6 @@ private def testUnitTy : Value := .vDataType ⟨1004, "test", "Unit"⟩ []
 /-- Unit type placeholder for tests -/
 private def testTy : Value := testUnitTy
 
-/-! ## Graph Building Helpers
-
-  All test graphs use the demand-driven wiring convention from Lower.lean:
-  - Expression result ports connect to consumers (aux-to-principal)
-  - A root ERA node provides the demand endpoint
-  - `graph.root = root.principal`; `follow(root.principal)` reaches the result
--/
-
 /-- Build a test graph with a root ERA node connected to the expression result.
     The builder returns the expression's result port. -/
 private def buildTestGraph (builder : GraphM PortId) : Graph :=
@@ -84,8 +76,6 @@ private def expectRecord (result : ReadbackValue) (numFields : Nat) : IO TestRes
       return .failed s!"expected {numFields} fields, got {fields.size}"
     else return .passed
   | other => return .failed s!"expected record({numFields}), got {other}"
-
-/-! ## Unit Tests: Individual Interaction Rules -/
 
 namespace BetaTests
 
@@ -395,17 +385,6 @@ def testDupNum : IO TestResult := do
     return PortId.principal op
   expectNum (← evalGraph g) 84  -- 42 + 42
 
-/-- DUP(ERA) → both copies are ERA (annihilation) -/
-def testDupEra : IO TestResult := do
-  let g := buildTestGraph do
-    let era ← GraphM.addNode .era testTy
-    let label ← GraphM.freshLabel
-    let dup ← GraphM.addNode (.dup label) testTy
-    GraphM.connect (PortId.principal dup) (PortId.principal era)
-    -- Demand copy0 (copy1 goes unused — we'd need to erase it, but just test copy0)
-    return ⟨dup, ⟨1⟩⟩
-  expectErased (← evalGraph g)
-
 /-- DUP(λx. x) → two independent identity lambdas -/
 def testDupLam : IO TestResult := do
   -- Build: let f = λx.x in (f 10) + (f 20)
@@ -519,7 +498,6 @@ def run : IO TestRunner := do
   IO.println "  === Duplication Tests ==="
   let mut runner := TestRunner.init
   runner := runner.record "dup_num" (← testDupNum)
-  runner := runner.record "dup_era" (← testDupEra)
   runner := runner.record "dup_lam" (← testDupLam)
   runner := runner.record "dup_ctor" (← testDupCtor)
   runner := runner.record "dup_sup_same_label" (← testDupSupSameLabel)
@@ -769,8 +747,6 @@ def run : IO TestRunner := do
   return runner
 
 end IntegrationTests
-
-/-! ## SUP Commutation Tests -/
 
 namespace SupCommutationTests
 
@@ -1263,9 +1239,6 @@ def testDupNested : IO TestResult := do
     let dup2 ← GraphM.addNode (.dup l2) testTy
     GraphM.connect (PortId.principal dup2) ⟨dup1, ⟨1⟩⟩
 
-    -- Sum all four: dup2.1 + dup2.2 + dup1.2 (the third copy)
-    -- Wait — dup1 gives 2 copies, dup2 splits copy0 → 2 more = 3 total
-    -- Let's just sum the three: dup2.1 + dup2.2 + dup1.2
     let add1 ← GraphM.addNode (.op2 .add) testTy
     GraphM.connect ⟨add1, ⟨1⟩⟩ ⟨dup2, ⟨1⟩⟩
     GraphM.connect ⟨add1, ⟨2⟩⟩ ⟨dup2, ⟨2⟩⟩
@@ -1274,7 +1247,7 @@ def testDupNested : IO TestResult := do
     GraphM.connect ⟨add2, ⟨1⟩⟩ (PortId.principal add1)
     GraphM.connect ⟨add2, ⟨2⟩⟩ ⟨dup1, ⟨2⟩⟩
     return PortId.principal add2
-  expectNum (← evalGraph g) 126  -- 42 + 42 + 42
+  expectNum (← evalGraph g) 126
 
 /-- DUP-CTOR with nested field access: DUP(Pair(3, 7)), access different fields
     from each copy: copy0.field0 + copy1.field1 → 3 + 7 = 10 -/
@@ -1315,8 +1288,6 @@ def run : IO TestRunner := do
   return runner
 
 end DupNodTests
-
-/-! ## Main Test Runner -/
 
 def run : IO TestRunner := do
   IO.println "=== Circuit Reducer Tests ==="

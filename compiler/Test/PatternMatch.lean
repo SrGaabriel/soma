@@ -24,8 +24,6 @@ private def testTy : Value := testUnitTy
 /-- Empty constructor type registry for tests -/
 private def emptyRegistry : ConstructorTypeRegistry := {}
 
-/-! ## SimplePattern Tests -/
-
 namespace PatternTests
 
 /-- Test: Wildcard pattern properties -/
@@ -134,8 +132,6 @@ def run : IO TestRunner := do
   return runner
 
 end PatternTests
-
-/-! ## Matrix Tests -/
 
 namespace MatrixTests
 
@@ -270,8 +266,6 @@ def run : IO TestRunner := do
 
 end MatrixTests
 
-/-! ## Decision Tree Tests -/
-
 namespace DecisionTests
 
 /-- Test: Occurrence creation and manipulation -/
@@ -382,8 +376,6 @@ def run : IO TestRunner := do
   return runner
 
 end DecisionTests
-
-/-! ## Compilation Tests -/
 
 namespace CompileTests
 
@@ -506,8 +498,6 @@ def run : IO TestRunner := do
   return runner
 
 end CompileTests
-
-/-! ## Lowering Tests -/
 
 namespace LowerTests
 
@@ -667,8 +657,6 @@ def run : IO TestRunner := do
 
 end LowerTests
 
-/-! ## Integration Tests -/
-
 namespace IntegrationTests
 
 /-- Test: Full pipeline -/
@@ -809,8 +797,6 @@ def run : IO TestRunner := do
   return runner
 
 end IntegrationTests
-
-/-! ## Main Test Runner -/
 
 def run : IO TestRunner := do
   IO.println "=== Pattern Match Compilation Tests ==="
