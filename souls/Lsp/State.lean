@@ -12,6 +12,7 @@ import Lsp.Loc
 
 namespace Lsp
 
+open Soma (Diagnostics DiagContext)
 open Soma.Syntax
 open Soma.Dependent (Globals InstanceEnv AbbrevEnv)
 open Soma.Dependent.Lower (Result)
@@ -175,6 +176,8 @@ structure CompiledModule where
   filePath : String
   /-- The parsed tree (green + red with stable NodeIds) -/
   parsedTree : ParsedTree
+  /-- Diagnostic context anchored to this module's source file -/
+  diagCtx : DiagContext
   /-- Abstract Syntax Tree (present if lowering succeeded) -/
   ast : Option Module := none
   /-- Symbol table built from CST -/

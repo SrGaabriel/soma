@@ -1007,4 +1007,9 @@ def parseToTree (source : SourceFile) (diag : Soma.DiagBuilder)
     : ParsedTree × Diagnostics :=
   parseToTreeWith Parse.parseSourceFile source diag
 
+/-- Reparse with an old tree, preserving NodeIds where possible -/
+def reparseToTree (oldTree : ParsedTree) (source : SourceFile) (diag : Soma.DiagBuilder)
+    : ParsedTree × Diagnostics :=
+  reparseToTreeWith Parse.parseSourceFile oldTree source diag
+
 end Soma.Syntax

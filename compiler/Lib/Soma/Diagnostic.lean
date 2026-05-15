@@ -29,6 +29,12 @@ namespace Diagnostics
 def hasErrors (ds : Diagnostics) : Bool :=
   ds.any fun d => d.severity.level == .error
 
+def errors (ds : Diagnostics) : Diagnostics :=
+  ds.filter fun d => d.severity.level == .error
+
+def errorCount (ds : Diagnostics) : Nat :=
+  (errors ds).size
+
 end Diagnostics
 
 inductive Phase where

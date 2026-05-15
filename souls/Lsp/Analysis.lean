@@ -13,6 +13,7 @@ namespace Lsp
 
 open Std
 
+open Soma (Diagnostic Diagnostics DiagBuilder DiagContext SubstrateRepo)
 open Soma.Syntax
 open Soma.Dependent (Globals InstanceEnv AbbrevEnv)
 open Soma.Dependent.Incremental (IncrementalState)
@@ -69,9 +70,10 @@ def analyzeSourceFresh (filePath : String) (content : String)
 
   -- Phase 1: Create source file
   let sourceFile := SourceFile.create fileId filePath content
+  let (initialCtx, diag) := DiagContext.empty.insert sourceFile
 
   -- Phase 2+3: Lex and parse (fresh parse)
-  let (parsedTree, frontendDiags) := parseToTree sourceFile
+  let (parsedTree, frontendDiags) := parseToTree sourceFile diag
 
   -- Phase 4: Build symbol table
   let symbols := buildSymbolTable moduleName filePath parsedTree.red
@@ -79,11 +81,11 @@ def analyzeSourceFresh (filePath : String) (content : String)
   let declNodeIds := buildDeclNodeIds cstDefs
 
   -- Phase 5: Lower CST to AST
-  let (ast, astLowerDiags) := lower parsedTree moduleName
+  let (ast, astLowerDiags) := lower parsedTree diag moduleName
 
   -- Build declAsts cache for future incremental updates
   let allDeclIds := collectDeclNodeIds parsedTree
-  let (declAsts, _) := lowerDeclarationsByIds parsedTree allDeclIds
+  let (declAsts, _) := lowerDeclarationsByIds parsedTree diag allDeclIds
 
   -- Phase 7: Use checkModule from the compiler pipeline for type checking
   let modName := Soma.Project.ModuleName.fromString moduleName
@@ -96,8 +98,8 @@ def analyzeSourceFresh (filePath : String) (content : String)
   }
   let packageName := modName.package
   let supply := Soma.UniqueSupply.initial moduleName
-  let (checkDiags, checkedModule?, _) :=
-    Soma.Project.Check.checkModule modInfo checkedDeps
+  let (finalCtx, checkDiags, checkedModule?, _) :=
+    Soma.Project.Check.checkModule initialCtx modInfo checkedDeps
       Globals.empty InstanceEnv.empty AbbrevEnv.empty
       {} packageName supply preludeSymbols
 
@@ -114,6 +116,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
     name := moduleName
     filePath := filePath
     parsedTree := parsedTree
+    diagCtx := finalCtx
     ast := some ast
     symbols := symbols
     diagnostics := allDiags
@@ -137,13 +140,11 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   let moduleName := moduleName?.getD (moduleNameFromPath filePath)
   let fileId := fileIdFromPath filePath
 
-  -- Phase 1: Create source file
   let sourceFile := SourceFile.create fileId filePath content
+  let (initialCtx, diag) := DiagContext.empty.insert sourceFile
 
-  -- Phase 2+3: Incremental reparse (preserves NodeIds for unchanged subtrees)
-  let (parsedTree, frontendDiags) := reparseToTree oldModule.parsedTree sourceFile
+  let (parsedTree, frontendDiags) := reparseToTree oldModule.parsedTree sourceFile diag
 
-  -- Phase 4: Find which NodeIds changed
   let oldNodeIds := oldModule.parsedTree.red.idToIdx
   let newNodeIds := parsedTree.red.idToIdx
 
@@ -172,7 +173,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     if changedDeclIds.isEmpty then
       (oldModule.declAsts, #[])
     else
-      let (freshAsts, diags) := lowerDeclarationsByIds parsedTree changedDeclIds.toArray
+      let (freshAsts, diags) := lowerDeclarationsByIds parsedTree diag changedDeclIds.toArray
       let prunedAsts := changedDeclIds.fold (init := oldModule.declAsts) fun acc declId =>
         acc.erase declId
       let mergedAsts := freshAsts.fold (init := prunedAsts) fun acc nodeId decl =>
@@ -193,15 +194,15 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   }
   let packageName := modName.package
   let supply := Soma.UniqueSupply.initial moduleName
-  let (checkDiags, _checkedModule, _) :=
-    Soma.Project.Check.checkModule modInfo checkedDeps
+  let (finalCtx, checkDiags, _checkedModule, _) :=
+    Soma.Project.Check.checkModule initialCtx modInfo checkedDeps
       Globals.empty InstanceEnv.empty AbbrevEnv.empty
       {} packageName supply preludeSymbols
 
-  let globals := _checkedModule.map (·.globals) |>.orElse fun _ => oldModule.globals
-  let instanceEnv := _checkedModule.map (·.instanceEnv) |>.orElse fun _ => oldModule.instanceEnv
-  let abbrevEnv := _checkedModule.map (·.abbrevEnv) |>.orElse fun _ => oldModule.abbrevEnv
-  let incrState := _checkedModule.map (·.incrementalState) |>.orElse fun _ => oldModule.incrementalState
+  let globals := (_checkedModule.map (·.globals)).orElse fun _ => oldModule.globals
+  let instanceEnv := (_checkedModule.map (·.instanceEnv)).orElse fun _ => oldModule.instanceEnv
+  let abbrevEnv := (_checkedModule.map (·.abbrevEnv)).orElse fun _ => oldModule.abbrevEnv
+  let incrState := (_checkedModule.map (·.incrementalState)).orElse fun _ => oldModule.incrementalState
   let localTypes := (_checkedModule.map (·.localTypes)).getD oldModule.localTypes
 
   let scopeMap := buildScopeMap parsedTree.red localTypes
@@ -211,6 +212,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     name := moduleName
     filePath := filePath
     parsedTree := parsedTree
+    diagCtx := finalCtx
     ast := some ast
     symbols := symbols
     diagnostics := allDiags
@@ -238,7 +240,7 @@ def analyzeSource (filePath : String) (content : String)
 
 /-- Get all error diagnostics -/
 def getErrors (mod : CompiledModule) : Diagnostics :=
-  mod.diagnostics.filter (·.severity == .error)
+  mod.diagnostics.filter (·.severity.level == .error)
 
 /-- Get error count -/
 def getErrorCount (mod : CompiledModule) : Nat :=
@@ -247,21 +249,5 @@ def getErrorCount (mod : CompiledModule) : Nat :=
 /-- Check if module has any errors -/
 def hasAnyErrors (mod : CompiledModule) : Bool :=
   getErrorCount mod > 0
-
-/-- Create diagnostics from red tree error nodes -/
-def treeErrorsToDiagnostics (tree : RedTree) : Diagnostics :=
-  tree.nodes.filterMap fun node =>
-    match node.green with
-    | .error msg _ _ => some (Diagnostic.error msg (tree.spanOf node))
-    | .missing expected => some (Diagnostic.error s!"expected {expected.describe}" (tree.spanOf node))
-    | _ => none
-
-/-- Merge diagnostics from multiple sources -/
-def mergeDiagnostics (sources : Array Diagnostics) : Diagnostics :=
-  sources.foldl (· ++ ·) #[]
-
-/-- Check if a file is a Soma source file -/
-def isSomaFile (path : String) : Bool :=
-  path.endsWith ".soma"
 
 end Lsp

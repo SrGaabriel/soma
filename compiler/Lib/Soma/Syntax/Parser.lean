@@ -427,4 +427,10 @@ def parseToTreeWith (parser : ParserM GreenNode) (source : SourceFile)
   let (green, diags) := parseWith parser source diag
   (ParsedTree.fromGreen green source, diags)
 
+/-- Reparse with an old tree, preserving NodeIds where possible -/
+def reparseToTreeWith (parser : ParserM GreenNode) (oldTree : ParsedTree)
+    (source : SourceFile) (diag : DiagBuilder) : ParsedTree × Diagnostics :=
+  let (green, diags) := parseWith parser source diag
+  (oldTree.reparse green source, diags)
+
 end Soma.Syntax

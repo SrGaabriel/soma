@@ -341,11 +341,6 @@ def mergeInstanceEnv (e1 e2 : InstanceEnv) : InstanceEnv :=
     nextInstanceId := max e1.nextInstanceId e2.nextInstanceId
     moduleName := e1.moduleName }
 
-These functions provide the core type checking logic that can be shared between
-the CLI (Check.lean) and LSP (Analysis.lean). They handle building globals,
-instance environments, and checking functions with proper incremental state tracking.
--/
-
 /-- Result of checking functions in a module -/
 structure FunctionCheckResult where
   /-- Final TC state after checking all functions -/

@@ -1910,13 +1910,6 @@ def tryWithRollback (action : TCM α) : TCM (Option α) := do
     set stateBefore
     return none
 
-These utilities support infallible type checking by:
-1. Collecting errors without stopping execution
-2. Providing placeholder values when errors occur
-3. Bounding recursion to prevent stack overflows
-4. Enabling partial results even when some definitions fail
--/
-
 /-- Result of an action that may fail but should continue with a default -/
 inductive RecoverResult (α : Type) where
   /-- Action succeeded with a value -/

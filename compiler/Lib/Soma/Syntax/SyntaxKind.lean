@@ -205,6 +205,12 @@ def SyntaxKind.describe : SyntaxKind → String
 instance : ToString SyntaxKind where
   toString := SyntaxKind.describe
 
+/-- Check if a syntax kind represents a declaration -/
+def SyntaxKind.isDecl : SyntaxKind → Bool
+  | .declDef | .declTheorem | .declInductive | .declStruct | .declTrait
+  | .declInstance | .declUse | .declAbbrev => true
+  | _ => false
+
 /-- Check if a syntax kind represents an expression -/
 def SyntaxKind.isExpr : SyntaxKind → Bool
   | .exprVar | .exprLit | .exprApp | .exprInfix | .exprLambda
@@ -231,5 +237,10 @@ def SyntaxKind.isType : SyntaxKind → Bool
 
 def SyntaxKind.isTerm (k : SyntaxKind) : Bool :=
   k.isType || k.isExpr || k == .name || k == .signature
+
+/-- Check if a syntax kind represents trivia -/
+def SyntaxKind.isTrivia : SyntaxKind → Bool
+  | .whitespace | .newline | .comment => true
+  | _ => false
 
 end Soma.Syntax

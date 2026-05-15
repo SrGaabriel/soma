@@ -119,10 +119,6 @@ partial def substituteElim (e : Elim) (paramNames : Array String)
 
 end
 
-Elaborate a type class (trait) declaration into a ClassInfo structure.
-The record type for the class is built from the method signatures.
--/
-
 /-- Build the dictionary record type for a class -/
 def elaborateClassRecordType (typeClass : Soma.Core.TypeClassMeta)
   (methods : Array (QualifiedName × Soma.Syntax.Expr)) : TCM Value := do

@@ -1,4 +1,6 @@
 import Soma.Syntax
+import Psychopomp
+import Psychopomp.Core.CharWidth
 import Lapis
 
 namespace Lsp
@@ -61,6 +63,42 @@ def sourceLocToPosition (sf : SourceFile) (loc : SourceLoc) : Position :=
 def spanToRange (sf : SourceFile) (span : Span) : Range :=
   { start := sourceLocToPosition sf span.start
   , «end» := sourceLocToPosition sf span.stop }
+
+partial def visualColToUtf8 (line : String) (tabWidth : Nat) (visualCol : Nat)
+    : Nat :=
+  go 0 0
+where
+  go (bytePos visualPos : Nat) : Nat :=
+    if visualPos >= visualCol then bytePos
+    else if bytePos >= line.utf8ByteSize then bytePos
+    else
+      let c := String.Pos.Raw.get line ⟨bytePos⟩
+      let nextByte := (String.Pos.Raw.next line ⟨bytePos⟩).byteIdx
+      let stepWidth :=
+        if c == '\t' then
+          let aligned := ((visualPos / tabWidth) + 1) * tabWidth
+          aligned - visualPos
+        else
+          Psychopomp.Char.visualWidth c
+      go nextByte (visualPos + stepWidth)
+
+/-- Convert a Psychopomp Position to an LSP Position -/
+def psyPositionToLsp (sf : SourceFile) (tabWidth : Nat) (line col : Nat)
+    : Position :=
+  if line == 0 then
+    { line := 0, character := 0 }
+  else
+    let lineIdx := line - 1
+    let lineContent := getLineContent sf lineIdx
+    let byteOffset := visualColToUtf8 lineContent tabWidth col
+    let utf16Col := utf8OffsetToUtf16 lineContent byteOffset
+    { line := lineIdx, character := utf16Col }
+
+/-- Convert a Psychopomp Span to an LSP Range -/
+def psySpanToRange (sf : SourceFile) (tabWidth : Nat := 4)
+    (span : Psychopomp.Span) : Range :=
+  { start := psyPositionToLsp sf tabWidth span.startLine span.startCol
+  , «end» := psyPositionToLsp sf tabWidth span.endLine span.endCol }
 
 /-- Convert an LSP Position (UTF-16 character) to a byte offset -/
 def positionToOffset (sf : SourceFile) (pos : Position) : Nat :=

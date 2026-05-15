@@ -29,6 +29,8 @@ instance : Hashable QualifiedName where
 def display (qn : QualifiedName) : String := qn.id.display
 def symbolName (qn : QualifiedName) : String := qn.id.symbolName
 
+def ofUnique (u : Unique) : QualifiedName := ⟨u⟩
+
 instance : ToString QualifiedName := ⟨QualifiedName.display⟩
 
 end QualifiedName

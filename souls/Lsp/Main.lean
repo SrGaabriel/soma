@@ -27,39 +27,84 @@ open Soma.Project (ModuleGraph ModuleInfo buildDependencyGraph
 open Soma.Project.Check (CheckedModule parseModuleFile parseModuleFiles checkModule
   checkModulesInOrder mergeGlobals extractPreludeSymbols)
 
-/-- Format the body of a Soma diagnostic for LSP display -/
-private def renderDiagMessage (diag : Soma.Syntax.Diagnostic) : String :=
-  let codePrefix := match diag.code with
-    | some c => s!"[{c}] "
-    | none => ""
-  let primaryLine := if diag.primaryLabel.message.isEmpty
-      || diag.primaryLabel.message == diag.message then ""
-    else s!"\n{diag.primaryLabel.message}"
-  let noteLines := diag.notes.foldl (fun acc n => acc ++ "\n" ++ "note: " ++ n) ""
-  let helpLine := match diag.help with
-    | some h => s!"\nhelp: {h}"
-    | none => ""
-  s!"{codePrefix}{diag.message}{primaryLine}{noteLines}{helpLine}"
+/-- Plain-text render config -/
+private def plainRenderConfig : Psychopomp.RenderConfig :=
+  { colorMode := .never, glyphSet := .ascii }
 
-/-- Build LSP `DiagnosticRelatedInformation` for each secondary label -/
-private def secondaryLabelsToRelated (sf : SourceFile) (uri : String)
-    (labels : Array Soma.Syntax.Label) : Array DiagnosticRelatedInformation :=
-  labels.map fun lbl =>
-    { location := { uri, range := spanToRange sf lbl.span }
-    , message := if lbl.message.isEmpty then "related" else lbl.message }
+/-- Render an attachment's body as plain-text lines prefixed by its title -/
+private def renderAttachment (sev : Psychopomp.Severity) (att : Psychopomp.Attachment)
+    : List String :=
+  let r := att.render sev .empty plainRenderConfig
+  r.title :: r.body
+
+/-- Append `s` to `acc` with a separating newline -/
+private def appendLine (acc s : String) : String :=
+  if acc.isEmpty then s
+  else acc ++ "\n" ++ s
+
+/-- Render a Psychopomp diagnostic into a single plain-text blob -/
+private def renderDiagMessage (diag : Psychopomp.Diagnostic) : String := Id.run do
+  let mut out : String :=
+    match diag.code with
+    | some c => s!"[{c}] {diag.message}"
+    | none => diag.message
+  if let some pmsg := diag.primary.message then
+    if !pmsg.isEmpty && pmsg != diag.message then
+      out := appendLine out pmsg
+  for note in diag.notes do
+    out := appendLine out s!"note: {note}"
+  for help in diag.helps do
+    out := appendLine out s!"help: {help}"
+  for att in diag.attachments do
+    for line in renderAttachment diag.severity att do
+      out := appendLine out line
+  if !diag.fixes.isEmpty then
+    out := appendLine out "available fixes:"
+    for (fix, i) in diag.fixes.toArray.zipIdx do
+      out := appendLine out s!"  #{i + 1}: {fix.description}"
+  return out
+
+/-- Convert a Psychopomp `Label` into an LSP `DiagnosticRelatedInformation` entry -/
+private def labelToRelated (sf : SourceFile) (uri : String)
+    (primaryRef : Psychopomp.SubstrateRef) (lbl : Psychopomp.Label)
+    : Option DiagnosticRelatedInformation :=
+  if lbl.substrate != primaryRef then none
+  else
+    let msg := lbl.message.getD "related"
+    let range := psySpanToRange sf 4 lbl.range
+    some { location := { uri, range }, message := msg }
+
+/-- Build LSP related-information entries from a diagnostic's secondary labels -/
+private def buildRelatedInformation (sf : SourceFile) (uri : String)
+    (diag : Psychopomp.Diagnostic) : Array DiagnosticRelatedInformation :=
+  let primaryRef := diag.primary.substrate
+  let fromSecondary := (diag.secondary.toArray).filterMap
+    (labelToRelated sf uri primaryRef)
+  let fromCauses := (diag.causedBy.toArray).filterMap fun cause =>
+    if cause.primary.substrate != primaryRef then none
+    else
+      let range := psySpanToRange sf 4 cause.primary.range
+      some
+        { location := { uri, range }
+        , message := s!"caused by: {cause.message}" }
+  fromSecondary ++ fromCauses
+
+/-- LSP severity for a Psychopomp severity level -/
+private def lspSeverity : Psychopomp.SeverityLevel → DiagnosticSeverity
+  | .error => .error
+  | .warning => .warning
+  | .info => .information
+  | .hint => .hint
+  | .lint => .hint
 
 /-- Convert Soma diagnostics to LSP format -/
-def convertDiagnostics (sf : SourceFile) (uri : String) (diags : Soma.Syntax.Diagnostics)
+def convertDiagnostics (sf : SourceFile) (uri : String) (diags : Soma.Diagnostics)
     : Array Diagnostic :=
   diags.map fun diag =>
-    let range := spanToRange sf diag.span
-    let related := secondaryLabelsToRelated sf uri diag.secondaryLabels
+    let range := psySpanToRange sf 4 diag.primary.range
+    let related := buildRelatedInformation sf uri diag
     { range := range
-    , severity := some (match diag.severity with
-        | .error => .error
-        | .warning => .warning
-        | .info => .information
-        | .hint => .hint)
+    , severity := some (lspSeverity diag.severity.level)
     , code := diag.code
     , source := some "soma"
     , message := renderDiagMessage diag
@@ -73,7 +118,7 @@ def loadHaomaProject (ctx : RequestContext LspState) (projectRoot : System.FileP
     let modulePairs := metadata.modules.map fun m =>
       (m.name, System.FilePath.mk m.path)
 
-    let (parseDiags, graph, _sourceMap) ← parseModuleFiles modulePairs
+    let (parseDiags, graph, parsedCtx) ← parseModuleFiles modulePairs
 
     if !parseDiags.isEmpty then
       ctx.logInfo s!"Parse diagnostics: {parseDiags.size}"
@@ -115,7 +160,7 @@ def loadHaomaProject (ctx : RequestContext LspState) (projectRoot : System.FileP
       match sortedNames.findIdx? (· == preludeModuleName) with
       | some idx =>
         let prefixNames := sortedNames.extract 0 (idx + 1)
-        let (_, prefixResults, _) := checkModulesInOrder prefixNames graph
+        let (_, _, prefixResults, _) := checkModulesInOrder parsedCtx prefixNames graph
           Globals.empty InstanceEnv.empty AbbrevEnv.empty emptySymbols packageName supply #[]
         match prefixResults.find? (·.name == preludeModuleName) with
         | some preludeCm =>
@@ -124,8 +169,8 @@ def loadHaomaProject (ctx : RequestContext LspState) (projectRoot : System.FileP
         | none => #[]
       | none => #[]
 
-    let (_checkDiags, checkedResults, finalSupply) :=
-      checkModulesInOrder sortedNames graph Globals.empty InstanceEnv.empty AbbrevEnv.empty
+    let (_, _checkDiags, checkedResults, finalSupply) :=
+      checkModulesInOrder parsedCtx sortedNames graph Globals.empty InstanceEnv.empty AbbrevEnv.empty
         emptySymbols packageName supply preludeSyms
 
     let checkedMap : Std.HashMap String CheckedModule := checkedResults.foldl (init := {})

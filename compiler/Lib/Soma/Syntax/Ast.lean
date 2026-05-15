@@ -30,6 +30,15 @@ instance : ToString QualName where
 
 namespace QualName
 
+/-- The fully qualified display string -/
+def display (qn : QualName) : String := toString qn
+
+/-- Whether this is an unqualified (simple) name -/
+def isSimple (qn : QualName) : Bool := qn.path.isEmpty
+
+/-- All segments as a flat list (path ++ [name]) -/
+def segments (qn : QualName) : List String := qn.path.toList ++ [qn.name]
+
 end QualName
 
 /-- Literal values -/
@@ -187,10 +196,21 @@ def binderInfo : TypeVarBinder → Soma.Core.BinderInfo
   | .mk _ _ _ bi => bi
   | .constraint .. => .instance_
 
+/-- The constraint of a `.constraint` binder -/
+def constraint? : TypeVarBinder → Option Constraint
+  | .mk .. => none
+  | .constraint _ cstr => some cstr
+
 /-- Whether this binder introduces a class-dictionary (instance) parameter -/
 def isConstraint : TypeVarBinder → Bool
   | .mk .. => false
   | .constraint .. => true
+
+/-- Source span of the binder -/
+def span : TypeVarBinder → Span
+  | .mk n _ _ _ => n.span
+  | .constraint (some n) _ => n.span
+  | .constraint none cstr => cstr.span
 
 end TypeVarBinder
 
@@ -315,6 +335,18 @@ instance : BEq TypeVarBinder where
     | _, _ => false
 
 namespace Pattern
+
+def span : Pattern → Span
+  | .var name => name.span
+  | .wildcard s => s
+  | .lit l => l.span
+  | .con _ _ s => s
+  | .tuple _ s => s
+  | .list _ s => s
+  | .cons _ _ s => s
+  | .parens _ s => s
+  | .typed _ _ s => s
+  | .variant _ _ s => s
 
 /-- Get all variable names bound by this pattern -/
 partial def boundVars : Pattern → Array QualName
@@ -444,9 +476,17 @@ partial def freeVars : Expr → Array QualName
       | none => caseVars
   | .listTy elem _ => elem.freeVars
 
+/-- Collect every identifier name (as a string) appearing in the expression -/
+partial def collectVarNames (e : Expr) : Std.HashSet String :=
+  (freeVars e).foldl (fun acc n => acc.insert n.name) {}
+
 end Expr
 
 namespace TypeAppArg
+
+def span : TypeAppArg → Span
+  | .type ty => ty.span
+  | .label name => name.span
 
 end TypeAppArg
 
@@ -482,6 +522,10 @@ inductive InstanceBinder where
   deriving Repr
 
 namespace InstanceBinder
+
+def span : InstanceBinder → Span
+  | .typeVar _ _ s => s
+  | .dictParam _ _ s => s
 
 end InstanceBinder
 
@@ -577,6 +621,27 @@ inductive Decl where
 instance : Nonempty Decl := ⟨.use false ⟨#[], "_", Span.uninhabited⟩ #[] Span.uninhabited⟩
 
 namespace Decl
+
+def span : Decl → Span
+  | .def_ _ _ _ _ _ s => s
+  | .theorem_ _ _ _ _ _ s => s
+  | .inductive _ _ _ _ _ s => s
+  | .record _ _ _ _ _ s => s
+  | .trait _ _ _ _ s => s
+  | .instance_ _ _ _ _ _ s => s
+  | .use _ _ _ s => s
+  | .abbrev _ _ _ s => s
+
+/-- Get the name of a declaration -/
+def name? : Decl → Option QualName
+  | .def_ _ name _ _ _ _ => some name
+  | .theorem_ _ name _ _ _ _ => some name
+  | .inductive _ name _ _ _ _ => some name
+  | .record _ name _ _ _ _ => some name
+  | .trait _ name _ _ _ => some name
+  | .instance_ instanceName _ _ _ _ _ => instanceName
+  | .use _ _ _ _ => none
+  | .abbrev name _ _ _ => some name
 
 end Decl
 

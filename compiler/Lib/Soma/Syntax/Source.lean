@@ -72,6 +72,19 @@ def SourceFile.columnAt (sf : SourceFile) (byteOffset : Nat) : Nat :=
 def SourceFile.slice (sf : SourceFile) (start stop : Nat) : String :=
   String.Pos.Raw.extract sf.content ⟨start⟩ ⟨stop⟩
 
+/-- Get the line content at a given line number (1-indexed) -/
+def SourceFile.getLine (sf : SourceFile) (line : Nat) : String :=
+  if line == 0 || line > sf.lineStarts.size then ""
+  else
+    let startIdx := line - 1
+    let start := if h : startIdx < sf.lineStarts.size then sf.lineStarts[startIdx] else 0
+    let stop :=
+      if h : line < sf.lineStarts.size then sf.lineStarts[line]
+      else sf.content.utf8ByteSize
+    -- Remove trailing newline if present
+    let str := String.Pos.Raw.extract sf.content ⟨start⟩ ⟨stop⟩
+    if str.endsWith "\n" then (str.dropEnd 1).copy else str
+
 /-- Rich source location with all information needed for diagnostics -/
 structure SourceLoc where
   file : FileId
@@ -126,14 +139,39 @@ def Span.fromOffsets (sf : SourceFile) (start stop : Nat) : Span :=
   , stop := SourceLoc.fromOffset sf stop
   }
 
+/-- Get the length of a span in bytes -/
+def Span.length (span : Span) : Nat :=
+  span.stop.byteOffset - span.start.byteOffset
+
+/-- Check if a span is empty (zero-width) -/
+def Span.isEmpty (span : Span) : Bool :=
+  span.start.byteOffset >= span.stop.byteOffset
+
 /-- Create a zero-width span at a location -/
 def Span.point (loc : SourceLoc) : Span :=
   { start := loc, stop := loc }
+
+/-- Get the text content of a span from a source file -/
+def Span.getText (span : Span) (sf : SourceFile) : String :=
+  sf.slice span.start.byteOffset span.stop.byteOffset
 
 /-- Uninhabited span, never use in real code -/
 def Span.uninhabited : Span :=
   { start := { file := ⟨0⟩, byteOffset := 0, line := 0, column := 0 }
   , stop := { file := ⟨0⟩, byteOffset := 0, line := 0, column := 0 }
+  }
+
+/-- Well-known FileId for built-in compiler constructs -/
+def FileId.builtin : FileId := ⟨1⟩
+
+/-- Create a synthetic source file for built-in compiler constructs -/
+def SourceFile.builtin : SourceFile :=
+  SourceFile.create FileId.builtin "<built-in>" ""
+
+/-- Create a span for built-in compiler constructs (type classes, instances, etc.) -/
+def Span.builtin : Span :=
+  { start := { file := FileId.builtin, byteOffset := 0, line := 1, column := 1 }
+  , stop := { file := FileId.builtin, byteOffset := 0, line := 1, column := 1 }
   }
 
 /-- A mapping from FileId to SourceFile for multi-file compilation -/
@@ -142,6 +180,33 @@ structure SourceFileMap where
   deriving Inhabited
 
 namespace SourceFileMap
+
+/-- Create an empty source file map -/
+def empty : SourceFileMap := { files := {} }
+
+/-- Create a source file map from a single source file -/
+def fromSingle (sf : SourceFile) : SourceFileMap :=
+  { files := ({} : Std.HashMap FileId SourceFile).insert sf.id sf }
+
+/-- Add a source file to the map -/
+def insert (map : SourceFileMap) (sf : SourceFile) : SourceFileMap :=
+  { files := map.files.insert sf.id sf }
+
+/-- Look up a source file by FileId -/
+def get? (map : SourceFileMap) (id : FileId) : Option SourceFile :=
+  map.files.get? id
+
+/-- Get the source file for a span -/
+def getForSpan? (map : SourceFileMap) (span : Span) : Option SourceFile :=
+  map.get? span.start.file
+
+/-- Check if the map is empty -/
+def isEmpty (map : SourceFileMap) : Bool :=
+  map.files.isEmpty
+
+/-- Get the number of files in the map -/
+def size (map : SourceFileMap) : Nat :=
+  map.files.size
 
 end SourceFileMap
 

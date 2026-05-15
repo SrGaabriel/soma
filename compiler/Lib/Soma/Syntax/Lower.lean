@@ -2044,4 +2044,64 @@ def lower (tree : ParsedTree) (diag : Soma.DiagBuilder)
 --     (lowerGreen green source moduleName).1 := by
 --   sorry
 
+/-- Lower a single declaration from a RedNode -/
+def lowerDeclFromRedNode (tree : ParsedTree) (diag : Soma.DiagBuilder) (node : RedNode)
+    : Option (Decl × Diagnostics) :=
+  match node.syntaxKind? with
+  | some kind =>
+    if kind.isDecl then
+      let ctx : LowerContext :=
+        { source := tree.red.source, redTree := tree.red, diag }
+      some ((lowerDecl node.green node.offset).run' ctx)
+    else
+      none
+  | none => none
+
+/-- Lower specific declarations by their NodeIds -/
+def lowerDeclarationsByIds (tree : ParsedTree) (diag : Soma.DiagBuilder)
+    (declIds : Array NodeId)
+    : Std.HashMap NodeId Decl × Diagnostics := Id.run do
+  let mut result : Std.HashMap NodeId Decl := {}
+  let mut allDiags : Diagnostics := #[]
+
+  for nodeId in declIds do
+    match tree.red.getById? nodeId with
+    | some node =>
+      match lowerDeclFromRedNode tree diag node with
+      | some (decl, diags) =>
+        result := result.insert nodeId decl
+        allDiags := allDiags ++ diags
+      | none => pure ()
+    | none => pure ()
+
+  return (result, allDiags)
+
+/-- Collect all top-level declaration NodeIds from a parsed tree -/
+def collectDeclNodeIds (tree : ParsedTree) : Array NodeId := Id.run do
+  let mut declIds : Array NodeId := #[]
+  match tree.red.root with
+  | some root =>
+    let mut idx := root.selfIdx + 1
+    for child in root.green.children do
+      if h : idx < tree.red.nodes.size then
+        let childNode := tree.red.nodes[idx]
+        match childNode.syntaxKind? with
+        | some kind =>
+          if kind.isDecl then
+            declIds := declIds.push childNode.id
+        | none => pure ()
+        idx := idx + RedTree.countGreenNodes child
+    return declIds
+  | none => return #[]
+
+/-- Build a Module AST from a map of declaration ASTs -/
+def buildModuleFromDeclMap (tree : ParsedTree) (declAsts : Std.HashMap NodeId Decl)
+    (moduleName : String) : Module := Id.run do
+  let declIds := collectDeclNodeIds tree
+  let decls := declIds.filterMap fun nodeId => declAsts.get? nodeId
+  let span := match tree.red.root with
+    | some root => root.span tree.red.source
+    | none => panic! "buildModuleFromDeclMap: ParsedTree has no root"
+  return { name := moduleName, decls := decls, span := span }
+
 end Soma.Syntax
