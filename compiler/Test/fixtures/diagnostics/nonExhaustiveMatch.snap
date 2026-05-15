@@ -1,0 +1,13 @@
+error[E1031]: non-exhaustive pattern match
+  ,-> Test/fixtures/diagnostics/nonExhaustiveMatch.soma:8:5
+  |
+7 | def f : Bool -> Bool
+8 |     | Bool::True => Bool::True
+  |     -------------------------- missing: `Bool::False`
+  |
+  = note: each listed shape can occur at runtime but no arm matches it
+  = help: add an arm for each listed case, or a catch-all variable / `_` pattern
+  = coverage:
+      scrutinee: Bool
+      missing:
+      • Bool::False

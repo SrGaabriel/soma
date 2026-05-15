@@ -1,0 +1,24 @@
+error[E1001]: type mismatch
+   ,-> Test/fixtures/diagnostics/nestedTypeMismatch.soma:18:20
+   |
+17 |
+18 | def z : Int32 := f y
+   |                    - cannot unify `Pair Int32 Bool` with `Pair Int32 Int32` (at structural path param 1)
+   |
+   ,-> <expected at 18:20>:1:12
+   |
+ 1 | Pair Int32 Bool
+   |            ---- expected type
+   |
+   ,-> <actual at 18:20>:1:12
+   |
+ 1 | Pair Int32 Int32
+   |            ----- actual type
+   |
+   = note: The types `Pair Int32 Bool` and `Pair Int32 Int32` have incompatible structure and cannot be unified. The obstruction lies in the param 1.
+   = help: add type annotations to help the compiler infer types
+   = type mismatch:
+       expected: Pair Int32 Bool
+         actual: Pair Int32 Int32
+   = unify trace:
+       (no steps recorded)

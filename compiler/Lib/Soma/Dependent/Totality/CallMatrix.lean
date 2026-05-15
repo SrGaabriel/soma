@@ -492,20 +492,6 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
   | .pi _ _ _ d c =>
     let acc' := collectCallsGo caller targets d ctx acc
     collectCallsGo caller targets c ctx acc'
-  | .eqTy _ ty l r =>
-    let acc' := collectCallsGo caller targets ty ctx acc
-    let acc'' := collectCallsGo caller targets l ctx acc'
-    collectCallsGo caller targets r ctx acc''
-  | .refl ty x =>
-    let acc' := collectCallsGo caller targets ty ctx acc
-    collectCallsGo caller targets x ctx acc'
-  | .transport _ ty m l r eq b =>
-    let acc' := collectCallsGo caller targets ty ctx acc
-    let acc'' := collectCallsGo caller targets m ctx acc'
-    let acc''' := collectCallsGo caller targets l ctx acc''
-    let acc'''' := collectCallsGo caller targets r ctx acc'''
-    let acc''''' := collectCallsGo caller targets eq ctx acc''''
-    collectCallsGo caller targets b ctx acc'''''
   | .rowExtend l ty tail =>
     let acc' := collectCallsGo caller targets l ctx acc
     let acc'' := collectCallsGo caller targets ty ctx acc'

@@ -1,0 +1,6 @@
+// Fixture: bodilessNotDerivable (E1032)
+
+inductive Int32 where
+    | MkInt32
+
+def absurd : Int32 -> Int32

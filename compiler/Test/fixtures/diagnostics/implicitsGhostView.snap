@@ -1,0 +1,28 @@
+error[E1001]: type mismatch
+   ,-> Test/fixtures/diagnostics/implicitsGhostView.soma:14:18
+   |
+13 |
+14 | def x : Int32 := id "hello"
+   |                  ---------- cannot unify `?m2` with `Int32`
+   |
+   ,-> <expected at 14:18>:1:1
+   |
+ 1 | ?m2
+   | --- expected type
+   |
+   ,-> <actual at 14:18>:1:1
+   |
+ 1 | Int32
+   | ----- actual type
+   |
+   = note: The types `?m2` and `Int32` have incompatible structure and cannot be unified.
+   = help: add type annotations to help the compiler infer types
+   = type mismatch:
+       expected: ?m2
+         actual: Int32
+   = implicits:
+       surface: @id
+       resolved:
+         a := String
+   = unify trace:
+       (no steps recorded)

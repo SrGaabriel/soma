@@ -233,11 +233,13 @@ def runLLVM (p : Parsed) : IO UInt32 := do
     Soma.Dependent.AbbrevEnv.empty
     none
 
-  let tcDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic parseRes.diagCtx)
+  let pp : Soma.Core.PpContext := .ofMetas tcResult.metas
+  let (diagCtx, tcDiags) :=
+    Soma.Dependent.TCErrors.toDiagnosticsDecorated parseRes.diagCtx pp tcResult.errors
   let allDiags := elabDiags ++ tcDiags
 
   if allDiags.hasErrors then
-    Soma.Render.eprintAllCtx parseRes.diagCtx allDiags
+    Soma.Render.eprintAllCtx diagCtx allDiags
     IO.eprintln ""
     IO.eprintln (Soma.Render.summary allDiags)
     return 1
@@ -317,11 +319,13 @@ def runAlloy (p : Parsed) : IO UInt32 := do
     Soma.Dependent.AbbrevEnv.empty
     none
 
-  let tcDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic parseRes.diagCtx)
+  let pp : Soma.Core.PpContext := .ofMetas tcResult.metas
+  let (diagCtx, tcDiags) :=
+    Soma.Dependent.TCErrors.toDiagnosticsDecorated parseRes.diagCtx pp tcResult.errors
   let allDiags := elabDiags ++ tcDiags
 
   if allDiags.hasErrors then
-    Soma.Render.eprintAllCtx parseRes.diagCtx allDiags
+    Soma.Render.eprintAllCtx diagCtx allDiags
     IO.eprintln ""
     IO.eprintln (Soma.Render.summary allDiags)
     return 1
@@ -395,11 +399,13 @@ def runCircuit (p : Parsed) : IO UInt32 := do
     Soma.Dependent.AbbrevEnv.empty
     none
 
-  let tcDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic parseRes.diagCtx)
+  let pp : Soma.Core.PpContext := .ofMetas tcResult.metas
+  let (diagCtx, tcDiags) :=
+    Soma.Dependent.TCErrors.toDiagnosticsDecorated parseRes.diagCtx pp tcResult.errors
   let allDiags := elabDiags ++ tcDiags
 
   if allDiags.hasErrors then
-    Soma.Render.eprintAllCtx parseRes.diagCtx allDiags
+    Soma.Render.eprintAllCtx diagCtx allDiags
     IO.eprintln ""
     IO.eprintln (Soma.Render.summary allDiags)
     return 1

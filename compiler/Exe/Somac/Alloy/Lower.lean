@@ -633,9 +633,6 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
   | Value.vLabelSort => .rawPtr
   | Value.vRowEmpty => .rawPtr
   | Value.vRowExtend _ _ _ => .rawPtr
-  | Value.vEq _ _ _ _ => .rawPtr
-  | Value.vRefl _ _ => .rawPtr
-  | Value.vTransport _ _ _ _ _ _ _ => .rawPtr
   | Value.vIntLit _ => .prim .i32
   | Value.vFloatLit _ => .prim .f64
   | Value.vStringLit _ => ctx.stringTy.embed
@@ -724,15 +721,6 @@ partial def collectTyVarLevels (val : Value) (acc : Std.HashSet Nat := {}) : Std
   | Value.vVariant row => collectTyVarLevels row acc
   | Value.vRowExtend _ fieldTy tail =>
     collectTyVarLevels tail (collectTyVarLevels fieldTy acc)
-  | Value.vEq _ ty lhs rhs =>
-    collectTyVarLevels rhs (collectTyVarLevels lhs (collectTyVarLevels ty acc))
-  | Value.vTransport _ ty motive lhs rhs eq body =>
-    let acc' := collectTyVarLevels ty acc
-    let acc' := collectTyVarLevels motive acc'
-    let acc' := collectTyVarLevels lhs acc'
-    let acc' := collectTyVarLevels rhs acc'
-    let acc' := collectTyVarLevels eq acc'
-    collectTyVarLevels body acc'
   | _ => acc
 
 end

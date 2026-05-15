@@ -55,6 +55,10 @@ def ensureType (v : Value) (span : Span) (context : Option String := none) : TCM
 /-- Ensure a value is a Pi type -/
 def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none)
     : TCM (Quantity × BinderInfo × String × Value × Closure) := do
+  let resolveOrigin : TCM ConstraintOrigin := do
+    match origin with
+    | some o => pure o
+    | none => return ((← TCM.getOrigin).getD .unknown)
   let v' ← force v
   match v' with
   | .vPi qty binder name dom cod => return (qty, binder, name, dom, cod)
@@ -76,13 +80,12 @@ def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none
         Soma.Dependent.unify v' piTy
         return (.omega, .explicit, "?dom", domMeta, codClosure)
       catch _ =>
-        TCM.throw (.expectedFunction v' span origin)
-    | _ => TCM.throw (.expectedFunction v' span origin)
+        TCM.throw (.expectedFunction v' span (← resolveOrigin))
+    | _ => TCM.throw (.expectedFunction v' span (← resolveOrigin))
   | _ =>
-    TCM.throw (.expectedFunction v' span origin)
+    TCM.throw (.expectedFunction v' span (← resolveOrigin))
 
-/-- Apply a motive value to an argument.
-    Used for transport where we have P : A -> Type and want P x. -/
+/-- Apply a motive value to an argument -/
 def vAppMotive (motive : Value) (arg : Value) : TCM Value := do
   match motive with
   | .vLam _ body =>
@@ -128,6 +131,7 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
             kind := .instanceArg
             abstractLocals := false
             piLevel := piLvl
+            displayHint := some s!"inst:{name}"
           }
         else
           let dom' ← force dom
@@ -144,6 +148,7 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
             includeInstanceLocals := false
             includeTermLocals := !(isSortDomain dom' && nextIsInstance)
             piLevel := piLvl
+            displayHint := some name
           }
       let metaId := fresh.id
       let argMeta := fresh.value
@@ -169,12 +174,6 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
       -- Explicit argument: stop inserting implicits
       return (fnTy', fnExpr, #[])
   | _ => return (fnTy', fnExpr, #[])
-
-/-- Insert implicit arguments, discarding created meta tracking info -/
-partial def insertImplicits (fnTy : Value) (fnExpr : Soma.Core.Expr) (span : Span)
-    : TCM (Value × Soma.Core.Expr) := do
-  let (ty, expr, _) ← insertImplicitsCore fnTy fnExpr span
-  return (ty, expr)
 
 private def valueMentionsTrackedMeta
     (v : Value) (metas : Array (MetaId × Value × String)) : Bool :=
@@ -212,7 +211,7 @@ partial def projectResultTypeWithMetas (ty : Value) (numExplicitArgs : Nat)
 /-- Insert implicit arguments with expected type guidance and full bidirectional propagation -/
 partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
     (expected : Option Value) (numExplicitArgs : Nat) (span : Span)
-    : TCM (Value × Soma.Core.Expr) := do
+    : TCM (Value × Soma.Core.Expr × Array (MetaId × Value × String)) := do
   -- Insert implicits and track the metas created
   let (fnTy', fnExpr', implicitMetas) ← insertImplicitsCore fnTy fnExpr span
 
@@ -221,12 +220,12 @@ partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
   | none =>
     let _ ← solveConstraints
     let finalTy ← force fnTy'
-    return (finalTy, fnExpr')
+    return (finalTy, fnExpr', implicitMetas)
   | some expectedTy =>
     if implicitMetas.isEmpty || numExplicitArgs > 0 then
       let _ ← solveConstraints
       let finalTy ← force fnTy'
-      return (finalTy, fnExpr')
+      return (finalTy, fnExpr', implicitMetas)
     else
       match ← projectResultTypeWithMetas fnTy' numExplicitArgs implicitMetas with
       | some resultTy =>
@@ -234,11 +233,11 @@ partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
         let _ ← tryUnify resultTy expectedTy
         let _ ← solveConstraints
         let finalTy ← force fnTy'
-        return (finalTy, fnExpr')
+        return (finalTy, fnExpr', implicitMetas)
       | none =>
         let _ ← solveConstraints
         let finalTy ← force fnTy'
-        return (finalTy, fnExpr')
+        return (finalTy, fnExpr', implicitMetas)
 
 /-- Check if we can solve a meta from the expected type -/
 def trySolveMetaFromExpected (metaId : MetaId) (expected : Value) : TCM Bool := do
@@ -331,7 +330,7 @@ partial def extractConstructorFieldTypes (ctorTy : Value) (scrutTy : Value)
     match ty' with
     | .vPi qty binder _name dom cod =>
       if binder.isImplicit then
-        let metaVal ← TCM.freshMetaVal dom
+        let metaVal ← TCM.freshMetaVal dom (origin := .patternVar)
         let resultTy ← applyClosure cod metaVal
         go resultTy acc
       else
@@ -350,33 +349,6 @@ partial def extractConstructorFieldTypes (ctorTy : Value) (scrutTy : Value)
     | none => pure ()
 
   unify resultTy scrutTy
-
-  let resForced ← force resultTy
-  let scrutForced ← force scrutTy
-  match resForced, scrutForced with
-  | .vDataType id1 ps1, .vDataType id2 ps2 =>
-    if id1 == id2 ∧ ps1.length == ps2.length then
-      for (p1, p2) in ps1.zip ps2 do
-        let p1f ← force p1
-        match p1f with
-        | .vNeutral _ neu =>
-          if neu.spine.isEmpty then
-            match neu.head with
-            | .hMeta mid =>
-              if !(← TCM.isMetaSolved mid) then
-                -- Skip self-reference to avoid creating a meta cycle
-                let p2f ← force p2
-                let p2HasMeta := match p2f with
-                  | .vNeutral _ neu2 =>
-                    match neu2.head with
-                    | .hMeta mid2 => mid == mid2
-                    | _ => false
-                  | _ => false
-                if !p2HasMeta then
-                  TCM.solveMeta mid p2f
-            | _ => pure ()
-        | _ => pure ()
-  | _, _ => pure ()
 
   return fields
 
@@ -404,7 +376,7 @@ partial def findFieldIndex (row : Value) (fieldName : String) (idx : Nat := 0) :
 partial def findFieldInRow (row : Value) (fieldName : String) (span : Span) : TCM Value := do
   match row with
   | .vRowEmpty =>
-    TCM.throw (.fieldNotFound fieldName row span #[] none)
+    TCM.throw (.fieldNotFound fieldName row span #[] .unknown)
   | .vRowExtend (.vLabelLit name) ty tail =>
     if name == fieldName then
       return ty
@@ -413,10 +385,10 @@ partial def findFieldInRow (row : Value) (fieldName : String) (span : Span) : TC
   | .vNeutral _ _ =>
     -- Can't search in neutral row
     let available ← collectRowFields row
-    TCM.throw (.fieldNotFound fieldName row span available none)
+    TCM.throw (.fieldNotFound fieldName row span available .unknown)
   | _ =>
     let available ← collectRowFields row
-    TCM.throw (.fieldNotFound fieldName row span available none)
+    TCM.throw (.fieldNotFound fieldName row span available .unknown)
 
 /-- If a type is a type-class application, instantiate its class record type -/
 private def normalizeRecordLikeType (ty : Value) (span : Span := Span.uninhabited) : TCM Value := do
@@ -430,7 +402,7 @@ private def normalizeRecordLikeType (ty : Value) (span : Span := Span.uninhabite
       if args.length > classInfo.numParams then
         TCM.throw (.cannotInfer
           s!"type class expects {classInfo.numParams} argument(s) but was applied to {args.length}"
-          span none)
+          span .unknown)
       let mut instTy := classInfo.recordType
       for arg in args do
         let instTy' ← force instTy
@@ -440,7 +412,7 @@ private def normalizeRecordLikeType (ty : Value) (span : Span := Span.uninhabite
         | _ =>
           TCM.throw (.cannotInfer
             s!"type class record type is not a function; cannot apply remaining argument"
-            span none)
+            span .unknown)
       return instTy
   | _ =>
     return ty'
@@ -478,7 +450,7 @@ partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) :
     | some (_, ty) => return ty
     | none =>
       let available := fields.map (·.1) |>.toArray
-      TCM.throw (.fieldNotFound fieldName recTy' span available none)
+      TCM.throw (.fieldNotFound fieldName recTy' span available .unknown)
   | .vDataType typeId args =>
     -- Check if this data type is a record with named fields
     let ctx ← TCM.getCtx
@@ -499,7 +471,7 @@ partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) :
       let available := match ctx.globals.lookupInductive ⟨typeId⟩ with
         | some indInfo => indInfo.fieldNames
         | none => #[]
-      TCM.throw (.fieldNotFound fieldName recTy' span available none)
+      TCM.throw (.fieldNotFound fieldName recTy' span available .unknown)
   | _ =>
     TCM.throw (.expectedRecord recTy' span #[])
 
@@ -515,7 +487,7 @@ partial def findFieldInRowByLabelVal (row : Value) (lookupLabel : Value) (span :
       | .vLabelLit name => name
       | .vNeutral _ (.nVar v) => v.name
       | _ => "<label>"
-    TCM.throw (.fieldNotFound labelStr row' span #[] none)
+    TCM.throw (.fieldNotFound labelStr row' span #[] .unknown)
   | .vRowExtend rowLabel ty tail =>
     -- Try to unify the row label with the lookup label
     -- If they unify, we found our field; otherwise, search the tail
@@ -538,14 +510,14 @@ partial def findFieldInRowByLabelVal (row : Value) (lookupLabel : Value) (span :
       | .vNeutral _ (.nVar v) => v.name
       | _ => "<label>"
     let available ← collectRowFields row'
-    TCM.throw (.fieldNotFound labelStr row' span available none)
+    TCM.throw (.fieldNotFound labelStr row' span available .unknown)
   | _ =>
     let labelStr := match lookupLabel' with
       | .vLabelLit name => name
       | .vNeutral _ (.nVar v) => v.name
       | _ => "<label>"
     let available ← collectRowFields row'
-    TCM.throw (.fieldNotFound labelStr row' span available none)
+    TCM.throw (.fieldNotFound labelStr row' span available .unknown)
 
 /-- Infer polymorphic field access (`rec @l`). -/
 partial def inferPolymorphicFieldAccess
@@ -561,36 +533,87 @@ partial def inferPolymorphicFieldAccess
   let fieldExpr := Soma.Core.Expr.fieldAccess recExpr labelName 0
   return (fieldTy, fieldExpr)
 
-/-! ## Syntax.Expr-based inference (Phase 5b) -/
-
-/-- Short debug description of a Syntax.Expr -/
-def syntaxExprKind : Soma.Syntax.Expr → String
-  | .var name => s!"var({name.name})"
-  | .lit _ => "lit"
-  | .app _ _ _ => "app"
-  | .infix op _ _ _ => s!"infix({op.value})"
-  | .lambda params _ _ => s!"λ({params.size} params)"
-  | .if_ _ _ _ _ => "if"
-  | .case _ _ _ => "case"
-  | .tuple elems _ => s!"tuple({elems.size})"
-  | .list _ _ => "list"
-  | .record _ _ => "record"
-  | .recordUpdate _ _ _ => "recordUpdate"
+/-- Short description of a syntax expression -/
+partial def syntaxExprDescription : Soma.Syntax.Expr → String
+  | .var name => name.name
+  | .lit (.int n _) => toString n
+  | .lit (.string s _) => s!"\"{s}\""
+  | .lit (.bool b _) => toString b
   | .fieldAccess _ field _ => s!".{field.name}"
-  | .projection tn fn _ => s!"proj({tn.name}.{fn.name})"
-  | .parens _ _ => "parens"
-  | .typeAnnot _ _ _ => "ann"
-  | .typeApp _ _ => "typeApp"
-  | .composeBlock stmts _ _ => s!"composeBlock({stmts.size} stmts)"
-  | .variant label _ _ => s!"variant(.{label.name})"
-  | .con name => s!"con({name.name})"
-  | .arrow _ _ _ => "arrow"
-  | .pi _ _ _ _ _ _ => "pi"
-  | .sigma _ _ _ _ _ => "sigma"
-  | .forall_ vars _ _ => s!"forall({vars.size})"
-  | .recordTy _ _ _ => "recordTy"
-  | .variantTy _ _ _ => "variantTy"
-  | .listTy _ _ => "listTy"
+  | .projection tn fn _ => s!"{tn.name}.{fn.name}"
+  | .con name => name.name
+  | .variant label _ _ => s!".{label.name}"
+  | .parens inner _ => syntaxExprDescription inner
+  | .typeAnnot inner _ _ => syntaxExprDescription inner
+  | _ => "<expression>"
+
+/-- Flatten a left-associative application chain -/
+partial def flattenApp : Soma.Syntax.Expr → Soma.Syntax.Expr × Array Soma.Syntax.Expr
+  | .app fn arg _ =>
+    let (head, args) := flattenApp fn
+    (head, args.push arg)
+  | e => (e, #[])
+
+/-- Count the number of explicit Pi binders in a constructor's declared type -/
+private partial def countExplicitPiArity (ty : Soma.Core.Value) : TCM Nat := do
+  let ty' ← force ty
+  match ty' with
+  | .vPi _ binder name dom cod =>
+    let lvl ← TCM.currentLevel
+    let x := Soma.Core.Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+    let cod' ← applyClosure cod x
+    let rest ← countExplicitPiArity cod'
+    return rest + (if binder.isImplicit then 0 else 1)
+  | _ => return 0
+
+private def checkConstructorArityAtHead
+    (head : Soma.Syntax.Expr) (totalArgs : Nat) (span : Span) : TCM Unit := do
+  let name? : Option Soma.Syntax.QualName := match head with
+    | .var n => some n
+    | .con n => some n
+    | _ => none
+  match name? with
+  | none => return
+  | some name =>
+    match ← TCM.lookupGlobal name.path name.name with
+    | some info =>
+      if !info.isConstructor then return
+      let expected ← countExplicitPiArity info.type
+      if totalArgs != expected then
+        TCM.throw (.wrongConstructorArity name.name expected totalArgs span)
+    | none => return
+
+/-- Classify a surface-syntax expression into the structured ExprKind -/
+def exprKindOf : Soma.Syntax.Expr → ExprKind
+  | .var name => .var name.name
+  | .lit _ => .lit
+  | .app _ _ _ => .app
+  | .infix op _ _ _ => .infixOp op.value
+  | .lambda params _ _ => .lambda params.size
+  | .if_ _ _ _ _ => .ifElse
+  | .case _ _ _ => .caseExpr
+  | .tuple elems _ => .tuple elems.size
+  | .list _ _ => .list
+  | .record _ _ => .record
+  | .recordUpdate _ _ _ => .recordUpdate
+  | .fieldAccess _ field _ => .fieldAccess field.name
+  | .projection tn fn _ => .projection tn.name fn.name
+  | .parens _ _ => .parens
+  | .typeAnnot _ _ _ => .annotation
+  | .typeApp _ _ => .typeApp
+  | .composeBlock stmts _ _ => .composeBlock stmts.size
+  | .variant label _ _ => .variant label.name
+  | .con name => .constructor name.name
+  | .arrow _ _ _ => .arrow
+  | .pi _ _ _ _ _ _ => .piType
+  | .sigma _ _ _ _ _ => .sigmaType
+  | .forall_ vars _ _ => .forallType vars.size
+  | .recordTy _ _ _ => .recordType
+  | .variantTy _ _ _ => .variantType
+  | .listTy _ _ => .listType
+
+def syntaxExprKind (e : Soma.Syntax.Expr) : String :=
+  (exprKindOf e).describe
 
 private def requireUniqueWiredRole (role : WiredRole) (span : Span) : TCM GlobalInfo := do
   let infos ← TCM.lookupWiredInAll role
@@ -601,7 +624,7 @@ private def requireUniqueWiredRole (role : WiredRole) (span : Span) : TCM Global
   | _ =>
     let names := infos.map (fun i => i.name.display)
     let details := String.intercalate ", " names.toList
-    TCM.throw (.cannotInfer s!"wired role '{role.canonical}' is ambiguous: {details}" span none)
+    TCM.throw (.cannotInfer s!"wired role '{role.canonical}' is ambiguous: {details}" span .unknown)
 
 /-- A binding produced by pattern elaboration -/
 structure PatternBinding where
@@ -693,17 +716,17 @@ partial def convertPatternWithBindings
     match ctorInfo? with
     | some ctorInfo =>
       let fields ← extractConstructorFieldTypes ctorInfo.type scrutTy (some name.name) span
+      if args.size != fields.size then
+        TCM.throw
+          (.wrongConstructorArity name.name fields.size args.size span)
       let mut coreArgs : Array Soma.Core.Pattern := #[]
       let mut argVals : Array Value := #[]
       let mut bindings : List PatternBinding := []
       let mut curLvl := startLvl
       for h : i in [:args.size] do
         let arg := args[i]
-        let (fieldTy, fieldQty) ← if h' : i < fields.size then
-          pure fields[i]
-        else
-          let ty ← TCM.freshMetaVal (.vType .zero)
-          pure (ty, .omega)
+        let dummyTy : Value := .vType .zero
+        let (fieldTy, fieldQty) := fields[i]?.getD (dummyTy, .omega)
         let (corePat, argVal, argBindings, curLvl') ←
           convertPatternWithBindings arg fieldTy (scrutQty * fieldQty) curLvl
         coreArgs := coreArgs.push corePat
@@ -861,7 +884,7 @@ partial def convertPatternListWithBindings
     (pats : List Soma.Syntax.Pattern)
     (scruts : List (Value × Quantity × Value))
     (startLvl : Nat)
-    : TCM (Array Soma.Core.Pattern × Array Value × List PatternBinding × Nat) := do
+    : TCM (Array Soma.Core.Pattern × Array Value × List PatternBinding × Nat × LevelSubst) := do
   goList pats scruts startLvl LevelSubst.empty #[] #[] []
 where
   goList (pats : List Soma.Syntax.Pattern)
@@ -869,32 +892,38 @@ where
       (σ : LevelSubst)
       (accPats : Array Soma.Core.Pattern) (accVals : Array Value)
       (accBindings : List PatternBinding)
-      : TCM (Array Soma.Core.Pattern × Array Value × List PatternBinding × Nat) := do
+      : TCM (Array Soma.Core.Pattern × Array Value × List PatternBinding × Nat × LevelSubst) := do
     match pats, scruts with
     | [], _ =>
       let refinedBindings ← accBindings.mapM fun b => do
         let ty' ← substValue σ b.type
         pure { b with type := ty' }
-      return (accPats, accVals, refinedBindings, curLvl)
+      return (accPats, accVals, refinedBindings, curLvl, σ)
     | pat :: rest, (ty, qty, scrutVal) :: restScruts =>
       let refinedTy ← substValue σ ty
       let refinedScrutVal ← substValue σ scrutVal
-      let (corePat, patVal, patBindings, midLvl) ←
-        convertPatternWithBindings pat refinedTy qty curLvl (some refinedScrutVal)
+      let ((corePat, patVal, patBindings, midLvl), refs) ←
+        TCM.withPatternRefinements <|
+          convertPatternWithBindings pat refinedTy qty curLvl (some refinedScrutVal)
+      let σRefined : LevelSubst :=
+        refs.fold (fun acc lvl v => acc.extend ⟨lvl⟩ v) σ
       let σ' ← do
         if patternConcretelyMatches corePat then
           match ← scrutLevel? refinedScrutVal with
-          | some lvl => pure (σ.extend lvl patVal)
-          | none => pure σ
-        else pure σ
+          | some lvl => pure (σRefined.extend lvl patVal)
+          | none => pure σRefined
+        else pure σRefined
       goList rest restScruts midLvl σ'
         (accPats.push corePat) (accVals.push patVal)
         (accBindings ++ patBindings)
     | pat :: rest, [] =>
       let freshTy ← TCM.freshMetaVal (.vType .zero)
-      let (corePat, patVal, patBindings, midLvl) ←
-        convertPatternWithBindings pat freshTy .omega curLvl none
-      goList rest [] midLvl σ
+      let ((corePat, patVal, patBindings, midLvl), refs) ←
+        TCM.withPatternRefinements <|
+          convertPatternWithBindings pat freshTy .omega curLvl none
+      let σRefined : LevelSubst :=
+        refs.fold (fun acc lvl v => acc.extend ⟨lvl⟩ v) σ
+      goList rest [] midLvl σRefined
         (accPats.push corePat) (accVals.push patVal)
         (accBindings ++ patBindings)
   /-- True when the pattern pins the scrutinee to a specific structural shape -/
@@ -1103,19 +1132,25 @@ where
       | .lambda #[(name, none)] body lamSpan =>
         inferLetStyle name body arg lamSpan
       | _ =>
-        let (fnTy, fnExpr) ← inferSyntax fn
-        inferSyntaxApp fnTy fnExpr arg span
+        let (head, priorArgs) := flattenApp fn
+        let fnName := syntaxExprDescription head
+        let argIdx := priorArgs.size
+        unless ← TCM.inApplicationChain do
+          let totalArgs := priorArgs.size + 1
+          checkConstructorArityAtHead head totalArgs span
+        let (fnTy, fnExpr) ← TCM.withInApplicationChain (inferSyntax fn)
+        TCM.withOrigin (.application fnName argIdx span) do
+          inferSyntaxApp fnTy fnExpr arg span
 
     -- Infix operators: resolve op, apply to both args
     | .infix op left right span => do
-      -- `a = b` desugars to the propositional equality type `Eq {A} a b`
       if op.value == "=" then
-        let _eqInfo ← requireUniqueWiredRole .typeEq span
+        let eqInfo ← requireUniqueWiredRole .typeEq span
         let (lhsTy, lhsExpr) ← inferSyntax left
         let rhsExpr ← checkSyntax right lhsTy
         let tyLevel ← inferUniverse lhsTy
         let tyExpr ← quoteValueToExpr lhsTy
-        return (.vType tyLevel, .eqTy tyLevel tyExpr lhsExpr rhsExpr)
+        return (.vType tyLevel, .dataTy eqInfo.name.id #[tyExpr, lhsExpr, rhsExpr])
       else
         -- Resolve the operator name
         let (opTy, opExpr) ← inferSyntax (.var ⟨#[], op.value, op.span⟩)
@@ -1134,7 +1169,13 @@ where
       let boolTy ← TCM.primTypeValue .bool span
       let condExpr ← checkSyntax cond boolTy
       let ((thenTy, thenExpr), thenUsages) ← captureUsages (inferSyntax then_)
-      let (elseExpr, elseUsages) ← captureUsages (checkSyntax else_ thenTy)
+      let ((elseTy, elseExpr), elseUsages) ← captureUsages (inferSyntax else_)
+      let unifySuccess ← TCM.tryWithRollback (Soma.Dependent.unify thenTy elseTy)
+      match unifySuccess with
+      | some _ => pure ()
+      | none =>
+        TCM.throw (.branchTypeMismatch .ifElse
+          #[(then_.span, thenTy), (else_.span, elseTy)] span)
       let joined ← checkBranchUsages thenUsages elseUsages span
       applyUsages joined
       return (thenTy, .if_ condExpr thenExpr elseExpr)
@@ -1206,7 +1247,7 @@ where
           | some (_, ty) => pure (ty, 0)
           | none =>
             let available := fields.map (·.1) |>.toArray
-            TCM.throw (.fieldNotFound field.name normalizedTy span available none)
+            TCM.throw (.fieldNotFound field.name normalizedTy span available .unknown)
         | .vDataType typeId _ =>
           let fieldTy ← lookupFieldType normalizedTy field.name span
           let ctx ← TCM.getCtx
@@ -1229,11 +1270,12 @@ where
     -- Parenthesized: recurse
     | .parens inner _ => inferSyntax inner
 
-    | .typeAnnot expr ty _ => do
-      let tyExpr ← TCM.inErasedContext do inferTypeExpr ty
-      let tyVal ← TCM.evalExpr tyExpr
-      let checkedExpr ← checkSyntax expr tyVal
-      return (tyVal, .ann checkedExpr tyExpr)
+    | .typeAnnot expr ty span => do
+      TCM.withOrigin (.annotation span) do
+        let tyExpr ← TCM.inErasedContext do inferTypeExpr ty
+        let tyVal ← TCM.evalExpr tyExpr
+        let checkedExpr ← checkSyntax expr tyVal
+        return (tyVal, .ann checkedExpr tyExpr)
 
     -- Explicit type application
     | .typeApp _arg _span => do
@@ -1473,15 +1515,16 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
         let _ ← solveConstraints
         return (resultTy, appExpr)
       else
-        -- Explicit param with typeApp — insert implicits first, then apply
-        let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
-        let (_, _, _, _dom, cod) ← ensurePi fnTy'' span
-        let argVal ← elaborateTypeArg typeArg
-        let argExpr ← quoteValueToExpr argVal
-        let resultTy ← applyClosure cod argVal
-        let appExpr := Soma.Core.Expr.app fnExpr' argExpr
-        let _ ← solveConstraints
-        return (resultTy, appExpr)
+        -- Explicit param with typeApp
+        let (fnTy'', fnExpr', impls) ← insertImplicitsCore fnTy fnExpr span
+        TCM.withImplicits (toString fnExpr) impls do
+          let (_, _, _, _dom, cod) ← ensurePi fnTy'' span
+          let argVal ← elaborateTypeArg typeArg
+          let argExpr ← quoteValueToExpr argVal
+          let resultTy ← applyClosure cod argVal
+          let appExpr := Soma.Core.Expr.app fnExpr' argExpr
+          let _ ← solveConstraints
+          return (resultTy, appExpr)
     | .vRecord row =>
       -- Polymorphic field access: rec @l
       match typeArg with
@@ -1490,8 +1533,18 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
         let _ ← solveConstraints
         return (fieldTy, fieldExpr)
       | _ =>
-        -- Not a label — insert implicits and apply
-        let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
+        let (fnTy'', fnExpr', impls) ← insertImplicitsCore fnTy fnExpr span
+        TCM.withImplicits (toString fnExpr) impls do
+          let (_, _, _, _dom, cod) ← ensurePi fnTy'' span
+          let argVal ← elaborateTypeArg typeArg
+          let argExpr ← quoteValueToExpr argVal
+          let resultTy ← applyClosure cod argVal
+          let appExpr := Soma.Core.Expr.app fnExpr' argExpr
+          let _ ← solveConstraints
+          return (resultTy, appExpr)
+    | _ =>
+      let (fnTy'', fnExpr', impls) ← insertImplicitsCore fnTy fnExpr span
+      TCM.withImplicits (toString fnExpr) impls do
         let (_, _, _, _dom, cod) ← ensurePi fnTy'' span
         let argVal ← elaborateTypeArg typeArg
         let argExpr ← quoteValueToExpr argVal
@@ -1499,62 +1552,56 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
         let appExpr := Soma.Core.Expr.app fnExpr' argExpr
         let _ ← solveConstraints
         return (resultTy, appExpr)
-    | _ =>
-      let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
-      let (_, _, _, _dom, cod) ← ensurePi fnTy'' span
-      let argVal ← elaborateTypeArg typeArg
-      let argExpr ← quoteValueToExpr argVal
-      let resultTy ← applyClosure cod argVal
-      let appExpr := Soma.Core.Expr.app fnExpr' argExpr
-      let _ ← solveConstraints
-      return (resultTy, appExpr)
   | _ =>
-    -- Regular value application: insert implicits, then check arg against domain
-    let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
-    let (qty, _, _, dom, cod) ← ensurePi fnTy'' span
-    let checkArg : TCM Soma.Core.Expr := checkSyntax arg dom
-    let argExpr ← if qty == .zero then TCM.inErasedContext checkArg else checkArg
-    let argVal ← TCM.evalExpr argExpr
-    let resultTy ← applyClosure cod argVal
-    let _ ← solveConstraints
-    let appExpr := Soma.Core.Expr.app fnExpr' argExpr
-    return (resultTy, appExpr)
+    -- Regular value application
+    let (fnTy'', fnExpr', impls) ← insertImplicitsCore fnTy fnExpr span
+    TCM.withImplicits (toString fnExpr) impls do
+      let (qty, _, _, dom, cod) ← ensurePi fnTy'' span
+      let checkArg : TCM Soma.Core.Expr := checkSyntax arg dom
+      let argExpr ← if qty == .zero then TCM.inErasedContext checkArg else checkArg
+      let argVal ← TCM.evalExpr argExpr
+      let resultTy ← applyClosure cod argVal
+      let _ ← solveConstraints
+      let appExpr := Soma.Core.Expr.app fnExpr' argExpr
+      return (resultTy, appExpr)
 
 /-- Elaborate `(λ name → body) value` as a let binding -/
 partial def inferLetStyle (name : Soma.Syntax.QualName) (body : Soma.Syntax.Expr)
     (value : Soma.Syntax.Expr) (lamSpan : Span)
-    : TCM (Value × Soma.Core.Expr) := do
-  let (valueTy, valueExpr) ← inferSyntax value
-  let report ← solveConstraintsSoft
-  report.allowPostponed
-  let valueTy ← zonkValue valueTy
-  let bindingId ← TCM.freshLocalId name.name
-  TCM.recordLocalBindingType name.span valueTy
-  withCheckedBinding name.name bindingId valueTy .omega .explicit lamSpan do
-    let some entry ← TCM.lookupLocal name.name
-      | panic! s!"inferLetStyle: binding '{name.name}' missing immediately after withCheckedBinding"
-    let (bodyTy, bodyExpr) ← inferSyntax body
-    let domExpr ← quoteValueToExpr valueTy
-    let lamExpr := buildLambdas [(entry.fvarId, name.name, domExpr)] bodyExpr
-    return (bodyTy, .app lamExpr valueExpr)
+    : TCM (Value × Soma.Core.Expr) :=
+  TCM.withOrigin (.letBinding name.name name.span) do
+    let (valueTy, valueExpr) ← inferSyntax value
+    let report ← solveConstraintsSoft
+    report.allowPostponed
+    let valueTy ← zonkValue valueTy
+    let bindingId ← TCM.freshLocalId name.name
+    TCM.recordLocalBindingType name.span valueTy
+    withCheckedBinding name.name bindingId valueTy .omega .explicit lamSpan do
+      let some entry ← TCM.lookupLocal name.name
+        | panic! s!"inferLetStyle: binding '{name.name}' missing immediately after withCheckedBinding"
+      let (bodyTy, bodyExpr) ← inferSyntax body
+      let domExpr ← quoteValueToExpr valueTy
+      let lamExpr := buildLambdas [(entry.fvarId, name.name, domExpr)] bodyExpr
+      return (bodyTy, .app lamExpr valueExpr)
 
 /-- Check-mode counterpart to `inferLetStyle` -/
 partial def checkLetStyle (name : Soma.Syntax.QualName) (body : Soma.Syntax.Expr)
     (value : Soma.Syntax.Expr) (expected : Value) (lamSpan : Span)
-    : TCM Soma.Core.Expr := do
-  let (valueTy, valueExpr) ← inferSyntax value
-  let report ← solveConstraintsSoft
-  report.allowPostponed
-  let valueTy ← zonkValue valueTy
-  let bindingId ← TCM.freshLocalId name.name
-  TCM.recordLocalBindingType name.span valueTy
-  withCheckedBinding name.name bindingId valueTy .omega .explicit lamSpan do
-    let some entry ← TCM.lookupLocal name.name
-      | panic! s!"checkLetStyle: binding '{name.name}' missing immediately after withCheckedBinding"
-    let bodyExpr ← checkSyntax body expected
-    let domExpr ← quoteValueToExpr valueTy
-    let lamExpr := buildLambdas [(entry.fvarId, name.name, domExpr)] bodyExpr
-    return .app lamExpr valueExpr
+    : TCM Soma.Core.Expr :=
+  TCM.withOrigin (.letBinding name.name name.span) do
+    let (valueTy, valueExpr) ← inferSyntax value
+    let report ← solveConstraintsSoft
+    report.allowPostponed
+    let valueTy ← zonkValue valueTy
+    let bindingId ← TCM.freshLocalId name.name
+    TCM.recordLocalBindingType name.span valueTy
+    withCheckedBinding name.name bindingId valueTy .omega .explicit lamSpan do
+      let some entry ← TCM.lookupLocal name.name
+        | panic! s!"checkLetStyle: binding '{name.name}' missing immediately after withCheckedBinding"
+      let bodyExpr ← checkSyntax body expected
+      let domExpr ← quoteValueToExpr valueTy
+      let lamExpr := buildLambdas [(entry.fvarId, name.name, domExpr)] bodyExpr
+      return .app lamExpr valueExpr
 
 /-- Infer lambda body from Syntax params, building nested Core.Expr lambdas -/
 partial def inferSyntaxLamBody
@@ -1749,10 +1796,25 @@ partial def checkSyntaxArms (arms : List Soma.Syntax.MatchArm)
   for arm in arms do
     let pats := arm.patterns.toList
     let startLvl := (← TCM.getCtx).level.lvl
-    let (corePatterns, patVals, bindings, _endLvl) ←
+    let (corePatterns, patVals, bindings, _endLvl, σ) ←
       convertPatternListWithBindings pats scruts startLvl
+    let patDesc :=
+      String.intercalate ", " (pats.map fun
+        | .var n => n.name
+        | .wildcard _ => "_"
+        | .lit (.int n _) => toString n
+        | .lit (.string s _) => s!"\"{s}\""
+        | .lit (.bool b _) => toString b
+        | .con n _ _ => n.name
+        | .tuple _ _ => "(...)"
+        | .list _ _ => "[...]"
+        | .cons _ _ _ => "(_ : _)"
+        | .parens _ _ => "(...)"
+        | .typed _ _ _ => "(_ : _)"
+        | .variant label _ _ => s!".{label.name}")
     let (bodyExpr, armUsages) ← captureUsages
-      (checkArmBodyWithBindings bindings patVals motive arm.body arm.span)
+      (TCM.withOrigin (.patternMatch patDesc arm.span) <|
+        checkArmBodyWithBindings bindings patVals motive σ arm.body arm.span)
     let abstractedBody := bindings.foldl
       (fun body b => body.abstractFVar b.fvarId) bodyExpr
     results := results.push (Soma.Core.Arm.mk corePatterns abstractedBody)
@@ -1768,20 +1830,22 @@ partial def checkSyntaxArms (arms : List Soma.Syntax.MatchArm)
 /-- Push pattern bindings into the context and check the body against the reduced version -/
 partial def checkArmBodyWithBindings
     (bindings : List PatternBinding) (patVals : Array Value) (motive : Value)
+    (armRefinement : LevelSubst)
     (body : Soma.Syntax.Expr) (span : Span)
     : TCM Soma.Core.Expr := do
   match bindings with
   | [] =>
     let armExpectedTy ← applyMotiveSpine motive patVals
-    checkSyntax body armExpectedTy
+    let refinedExpectedTy ← substValue armRefinement armExpectedTy
+    checkSyntax body refinedExpectedTy
   | b :: rest =>
     match b.nbeValue? with
     | some nbeVal =>
       withCheckedBindingValue b.name b.fvarId b.type b.qty .explicit span nbeVal do
-        checkArmBodyWithBindings rest patVals motive body span
+        checkArmBodyWithBindings rest patVals motive armRefinement body span
     | none =>
       withCheckedBinding b.name b.fvarId b.type b.qty .explicit span do
-        checkArmBodyWithBindings rest patVals motive body span
+        checkArmBodyWithBindings rest patVals motive armRefinement body span
 
 /-- Infer nested tuple as nested pairs -/
 partial def inferSyntaxTuple (elems : List Soma.Syntax.Expr) (span : Span)
@@ -1811,11 +1875,14 @@ partial def checkSyntax (e : Soma.Syntax.Expr) (expected : Value)
   match e with
   | .parens inner _ => checkSyntax inner expected
   | _ =>
-  let kind := syntaxExprKind e
-  TCM.debugEnter "checkS" s!"{kind} ⇐ {expected}"
+  let exprKind := exprKindOf e
+  TCM.debugEnter "checkS" s!"{exprKind} ⇐ {expected}"
+  let origin : ConstraintOrigin :=
+    .checking exprKind expected e.span
   let result ← TCM.withDebugIndent do
     TCM.withSpan e.span do
-      checkSyntaxCore e expected
+      TCM.withOrigin origin do
+        checkSyntaxCore e expected
   TCM.debugLeave "checkS" "ok"
   return result
 where
@@ -1842,16 +1909,18 @@ where
           return .lit (.float (Float.ofInt n))
         else
           let (inferred, expr) ← inferSyntax e
-          let (inferred', expr') ← insertImplicits inferred expr e.span
-          subtypeUnify inferred' expected'
-          let _ ← solveConstraints
-          return expr'
+          let (inferred', expr', impls) ← insertImplicitsCore inferred expr e.span
+          TCM.withImplicits (toString expr) impls do
+            subtypeUnify inferred' expected
+            let _ ← solveConstraints
+            return expr'
       | none =>
         let (inferred, expr) ← inferSyntax e
-        let (inferred', expr') ← insertImplicits inferred expr e.span
-        subtypeUnify inferred' expected'
-        let _ ← solveConstraints
-        return expr'
+        let (inferred', expr', impls) ← insertImplicitsCore inferred expr e.span
+        TCM.withImplicits (toString expr) impls do
+          subtypeUnify inferred' expected
+          let _ ← solveConstraints
+          return expr'
 
     -- If-then-else: check both branches
     | .if_ cond then_ else_ span, _ => do
@@ -1884,10 +1953,11 @@ where
         checkSyntaxTupleAgainstSigma elems.toList expected'
       else
         let (inferred, expr) ← inferSyntax e
-        let (inferred', expr') ← insertImplicits inferred expr e.span
-        subtypeUnify inferred' expected'
-        let _ ← solveConstraints
-        return expr'
+        let (inferred', expr', impls) ← insertImplicitsCore inferred expr e.span
+        TCM.withImplicits (toString expr) impls do
+          subtypeUnify inferred' expected
+          let _ ← solveConstraints
+          return expr'
 
     | .tuple elems _, .vType _ => do
       inferTupleAsSigma elems.toList
@@ -1898,12 +1968,18 @@ where
       | .lambda #[(name, none)] body lamSpan =>
         checkLetStyle name body arg expected' lamSpan
       | _ =>
-        let (fnTy, fnExpr) ← inferSyntax fn
-        let (fnTy', fnExpr') ← insertImplicitsWithExpected fnTy fnExpr (some expected') 1 span
-        let (resultTy, appExpr) ← inferSyntaxApp fnTy' fnExpr' arg span
-        let _ ← solveConstraints
-        subtypeUnify resultTy expected'
-        return appExpr
+        unless ← TCM.inApplicationChain do
+          let (head, priorArgs) := flattenApp fn
+          let totalArgs := priorArgs.size + 1
+          checkConstructorArityAtHead head totalArgs span
+        let (fnTy, fnExpr) ← TCM.withInApplicationChain (inferSyntax fn)
+        let (fnTy', fnExpr', impls) ←
+          insertImplicitsWithExpected fnTy fnExpr (some expected') 1 span
+        TCM.withImplicits (toString fnExpr) impls do
+          let (resultTy, appExpr) ← inferSyntaxApp fnTy' fnExpr' arg span
+          let _ ← solveConstraints
+          subtypeUnify resultTy expected'
+          return appExpr
 
     | .composeBlock stmts final_ _, _ =>
       checkSyntax (desugarCompose stmts final_) expected'
@@ -1918,18 +1994,20 @@ where
         return .array elemsChecked.toArray listTyExpr
       else
         let (inferred, expr) ← inferSyntax e
-        let (inferred', expr') ← insertImplicits inferred expr e.span
-        subtypeUnify inferred' expected'
-        let _ ← solveConstraints
-        return expr'
+        let (inferred', expr', impls) ← insertImplicitsCore inferred expr e.span
+        TCM.withImplicits (toString expr) impls do
+          subtypeUnify inferred' expected
+          let _ ← solveConstraints
+          return expr'
 
     -- Default: infer against expected
     | _, _ => do
       let (inferred, expr) ← inferSyntax e
-      let (inferred', expr') ← insertImplicits inferred expr e.span
-      subtypeUnify inferred' expected'
-      let _ ← solveConstraints
-      return expr'
+      let (inferred', expr', impls) ← insertImplicitsCore inferred expr e.span
+      TCM.withImplicits (toString expr) impls do
+        subtypeUnify inferred' expected
+        let _ ← solveConstraints
+        return expr'
 
 /-- Check tuple elements against an expected pair type -/
 partial def checkSyntaxTupleAgainstSigma (elems : List Soma.Syntax.Expr) (sigmaTy : Value)

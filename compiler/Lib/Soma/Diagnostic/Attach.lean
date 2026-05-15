@@ -169,6 +169,76 @@ def universeMismatch (lhs rhs : String) : Psychopomp.Attachment :=
       ("rhs", jstr rhs)
     ]) }
 
+structure UnfoldStep where
+  term : String
+  rule : Option String := none
+  stuck : Bool := false
+  deriving Inhabited
+
+def unfoldTrace (steps : List UnfoldStep) : Psychopomp.Attachment :=
+  { tag := "unfold-trace"
+    render := fun _ _ cfg =>
+      if steps.isEmpty then
+        { title := styledTitle "unfold trace:" cfg
+          body := ["  (no reductions tried)"] }
+      else
+        let bodyLines := steps.map fun s =>
+          let arrow := if s.stuck then "  ⊘" else "  ≡"
+          let suffix := match s.rule with
+            | some r => s!"   -- {r}"
+            | none => ""
+          s!"{arrow} {s.term}{suffix}"
+        { title := styledTitle "unfold trace:" cfg, body := bodyLines }
+    payload := some (jarr (steps.map fun s =>
+      let base : List (String × JsonValue) :=
+        [("term", jstr s.term), ("stuck", jbool s.stuck)]
+      let fields := match s.rule with
+        | some r => base ++ [("rule", jstr r)]
+        | none => base
+      jobj fields)) }
+
+def defEqHint (expectedReduced actualReduced : String)
+    (suggestion : Option String := none) : Psychopomp.Attachment :=
+  { tag := "def-eq-hint"
+    render := fun _ _ cfg =>
+      let body :=
+        [ s!"  expected reduces to: {expectedReduced}"
+        , s!"  actual reduces to:   {actualReduced}" ] ++
+        (match suggestion with
+          | some s => [s!"  suggestion: {s}"]
+          | none => [])
+      { title := styledTitle "defeq hint:" cfg, body }
+    payload :=
+      let base : List (String × JsonValue) :=
+        [ ("expectedReduced", jstr expectedReduced)
+        , ("actualReduced", jstr actualReduced) ]
+      let fields := match suggestion with
+        | some s => base ++ [("suggestion", jstr s)]
+        | none => base
+      some (jobj fields) }
+
+structure InsertedImplicit where
+  name : String
+  value : String
+
+def implicits (surfaceForm : String) (resolved : List InsertedImplicit)
+    : Psychopomp.Attachment :=
+  { tag := "implicits"
+    render := fun _ _ cfg =>
+      if resolved.isEmpty then
+        { title := styledTitle "implicits:" cfg
+          body := [s!"  surface: {surfaceForm}", "  (no implicits inserted)"] }
+      else
+        let resolvedLines := resolved.map fun r =>
+          s!"    {r.name} := {r.value}"
+        let body := s!"  surface: {surfaceForm}" :: "  resolved:" :: resolvedLines
+        { title := styledTitle "implicits:" cfg, body }
+    payload := some (jobj [
+      ("surfaceForm", jstr surfaceForm),
+      ("resolved", jarr (resolved.map fun r =>
+        jobj [("name", jstr r.name), ("value", jstr r.value)]))
+    ]) }
+
 structure RefineCandidate where
   name : String
   type : String

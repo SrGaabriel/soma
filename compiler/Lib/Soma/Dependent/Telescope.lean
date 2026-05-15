@@ -147,6 +147,7 @@ structure MetaPolicy where
   includeTermLocals : Bool := true
   includeErasedProofLocals : Bool := false
   piLevel : Option Nat := none
+  displayHint : Option String := none
   deriving Inhabited, Repr
 
 /-- A freshly-created meta plus the corresponding value and core expression -/
@@ -160,8 +161,10 @@ structure FreshMeta where
 def freshMetaWithPolicy (expectedTy : Value) (policy : MetaPolicy := {})
     : TCM FreshMeta := do
   if !policy.abstractLocals then
-    let mid ← TCM.freshMeta expectedTy (piLevel := policy.piLevel)
+    let mid ← TCM.freshMeta expectedTy
+      (piLevel := policy.piLevel)
       (origin := policy.kind.origin)
+      (displayHint := policy.displayHint)
     pure {
       id := mid
       value := Value.vNeutral expectedTy (.nMeta mid)
@@ -192,8 +195,10 @@ def freshMetaWithPolicy (expectedTy : Value) (policy : MetaPolicy := {})
       metaTyExpr := .pi entry.qty entry.binder entry.name typeExpr metaTyExpr
     let metaTy ← TCM.evalExprInEnv Soma.Core.Env.empty metaTyExpr
 
-    let mid ← TCM.freshMeta metaTy (piLevel := policy.piLevel)
+    let mid ← TCM.freshMeta metaTy
+      (piLevel := policy.piLevel)
       (origin := policy.kind.origin)
+      (displayHint := policy.displayHint)
     let metaBare := Value.vNeutral metaTy (.nMeta mid)
     let value := ordered.foldl
       (init := metaBare)

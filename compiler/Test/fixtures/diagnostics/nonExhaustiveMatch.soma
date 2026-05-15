@@ -1,0 +1,8 @@
+// Fixture: nonExhaustiveMatch (E1031)
+
+inductive Bool where
+    | False
+    | True
+
+def f : Bool -> Bool
+    | Bool::True => Bool::True

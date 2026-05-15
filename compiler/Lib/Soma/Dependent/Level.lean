@@ -60,25 +60,6 @@ partial def zonkValueLevels (v : Value) : TCM Value := do
     let args' ← args.mapM zonkValueLevels
     let rty' ← zonkValueLevels rty
     return .vConstructor name tag args' rty'
-  | .vEq tyLevel ty lhs rhs =>
-    let tyLevel' ← solveLevelVars tyLevel
-    let ty' ← zonkValueLevels ty
-    let lhs' ← zonkValueLevels lhs
-    let rhs' ← zonkValueLevels rhs
-    return .vEq tyLevel' ty' lhs' rhs'
-  | .vRefl ty x =>
-    let ty' ← zonkValueLevels ty
-    let x' ← zonkValueLevels x
-    return .vRefl ty' x'
-  | .vTransport tyLevel ty motive lhs rhs eq body =>
-    let tyLevel' ← solveLevelVars tyLevel
-    let ty' ← zonkValueLevels ty
-    let motive' ← zonkValueLevels motive
-    let lhs' ← zonkValueLevels lhs
-    let rhs' ← zonkValueLevels rhs
-    let eq' ← zonkValueLevels eq
-    let body' ← zonkValueLevels body
-    return .vTransport tyLevel' ty' motive' lhs' rhs' eq' body'
   -- Values without levels
   | .vIntLit _ | .vFloatLit _ | .vStringLit _
   | .vRowEmpty | .vLabelLit _ | .vRecordVal _

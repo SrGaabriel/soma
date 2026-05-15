@@ -303,6 +303,25 @@ partial def applyClosure (clos : Closure) (arg : Value) : TCM Value := do
 
 end
 
+/-- Try to expand a `vDataType` head once when it refers to a fully-applied type abbreviation -/
+partial def tryUnfoldOneStep (v : Value) : TCM (Option (Value × String)) := do
+  match v with
+  | .vDataType dId params =>
+    let abbrev? ← TCM.lookupAbbrev ⟨dId⟩
+    match abbrev? with
+    | some abbrevInfo =>
+      if params.length == abbrevInfo.arity then
+        let mut result := abbrevInfo.expansion
+        for arg in params do
+          match result with
+          | .vLam _ body => result ← applyClosure body arg
+          | .vPi _ _ _ _ cod => result ← applyClosure cod arg
+          | _ => return none
+        return some (result, s!"abbrev {dId.original}")
+      else return none
+    | none => return none
+  | _ => return none
+
 abbrev LevelSubst := Std.HashMap Nat Value
 
 namespace LevelSubst
@@ -353,23 +372,6 @@ partial def substValue (σ : LevelSubst) (v : Value) : TCM Value := do
     let args' ← args.mapM (substValue σ)
     let rty' ← substValue σ rty
     return .vConstructor name tag args' rty'
-  | .vEq l t lhs rhs =>
-    let t' ← substValue σ t
-    let lhs' ← substValue σ lhs
-    let rhs' ← substValue σ rhs
-    return .vEq l t' lhs' rhs'
-  | .vRefl t x =>
-    let t' ← substValue σ t
-    let x' ← substValue σ x
-    return .vRefl t' x'
-  | .vTransport l t m lhs rhs eq body =>
-    let t' ← substValue σ t
-    let m' ← substValue σ m
-    let lhs' ← substValue σ lhs
-    let rhs' ← substValue σ rhs
-    let eq' ← substValue σ eq
-    let body' ← substValue σ body
-    return .vTransport l t' m' lhs' rhs' eq' body'
   | .vNeutral ty neu =>
     let ty' ← substValue σ ty
     substNeutral σ ty' neu
@@ -683,15 +685,18 @@ partial def shouldAutoEraseBinder (domVal : Value) : TCM Bool := do
   | .vType _ => return true
   | _ => valueInPropUniverse domVal
 
-/-- Walk a constructor's Pi chain and check every explicit field's type lives in `Prop` -/
-partial def allCtorFieldsInProp (ctorType : Value) : TCM Bool := do
+/-- Walk a constructor's Pi chain and check every field -/
+partial def allCtorFieldsInProp (ctorType : Value) (skipParams : Nat) : TCM Bool := do
   match (← force ctorType) with
   | .vPi _ _ name dom cod =>
-    if !(← valueInPropUniverse dom) then return false
     let lvl ← TCM.currentLevel
     let dummy := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
     let codVal ← applyClosure cod dummy
-    allCtorFieldsInProp codVal
+    if skipParams > 0 then
+      allCtorFieldsInProp codVal (skipParams - 1)
+    else
+      if !(← valueInPropUniverse dom) then return false
+      allCtorFieldsInProp codVal 0
   | _ => return true
 
 /-- Is a Prop-kinded inductive small -/
@@ -699,7 +704,7 @@ partial def isInductiveSmall (info : InductiveMeta) : TCM Bool := do
   if !info.headSort.isProp then return false
   match info.ctors.size with
   | 0 => return true
-  | 1 => allCtorFieldsInProp info.ctors[0]!.type
+  | 1 => allCtorFieldsInProp info.ctors[0]!.type info.typeVarNames.size
   | _ => return false
 
 /-- Does a value seen at the type level name a small Prop inductive -/
@@ -812,66 +817,6 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     if n1 != n2 || t1 != t2 then return false
     if as1.length != as2.length then return false
     convertValueLists as1 as2
-
-  -- Equality types
-  | .vEq l1 t1 a1 b1, .vEq l2 t2 a2 b2 =>
-    let lvlEq ← convertLevel l1 l2
-    if !lvlEq then return false
-    let tyEq ← convert t1 t2
-    if !tyEq then return false
-    let lhsEq ← convert a1 a2
-    if !lhsEq then return false
-    convert b1 b2
-
-  | .vEq _ t1 a1 b1, .vDataType id2 ps2 =>
-    match ← TCM.lookupWiredIn .typeEq with
-    | some info =>
-      if info.name.id != id2 then return false
-      match ps2 with
-      | [t2, a2, b2] =>
-        let tyEq ← convert t1 t2
-        if !tyEq then return false
-        let lhsEq ← convert a1 a2
-        if !lhsEq then return false
-        convert b1 b2
-      | _ => return false
-    | none => return false
-
-  | .vDataType id1 ps1, .vEq _ t2 a2 b2 =>
-    match ← TCM.lookupWiredIn .typeEq with
-    | some info =>
-      if info.name.id != id1 then return false
-      match ps1 with
-      | [t1, a1, b1] =>
-        let tyEq ← convert t1 t2
-        if !tyEq then return false
-        let lhsEq ← convert a1 a2
-        if !lhsEq then return false
-        convert b1 b2
-      | _ => return false
-    | none => return false
-
-  -- Refl
-  | .vRefl t1 x1, .vRefl t2 x2 =>
-    let tyEq ← convert t1 t2
-    if !tyEq then return false
-    convert x1 x2
-
-  -- Transport
-  | .vTransport l1 t1 m1 lhs1 rhs1 eq1 b1, .vTransport l2 t2 m2 lhs2 rhs2 eq2 b2 =>
-    let lvlEq ← convertLevel l1 l2
-    if !lvlEq then return false
-    let tyEq ← convert t1 t2
-    if !tyEq then return false
-    let motiveEq ← convert m1 m2
-    if !motiveEq then return false
-    let lhsEq ← convert lhs1 lhs2
-    if !lhsEq then return false
-    let rhsEq ← convert rhs1 rhs2
-    if !rhsEq then return false
-    let eqEq ← convert eq1 eq2
-    if !eqEq then return false
-    convert b1 b2
 
   -- Neutral terms
   | .vNeutral _ n1, .vNeutral _ n2 =>

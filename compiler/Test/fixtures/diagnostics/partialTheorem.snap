@@ -1,9 +1,11 @@
-error: theorem 'bogus' cannot be marked @[partial]
+error[E1037]: theorem `bogus` cannot be marked `@[partial]`
   ,-> Test/fixtures/diagnostics/partialTheorem.soma:8:1
   |
 7 |
 8 |+ @[partial]
 9 || theorem bogus : Bool := True
-  |+----------------------------- theorem 'bogus' cannot be marked @[partial]
+  |+----------------------------- a partial proof is not a proof
   |
-  = help: drop @[partial], or make this a `def` if it's runtime code
+  = note: theorems are required to be total
+  = help: drop `@[partial]`, make the recursion structurally decreasing, or restate the declaration as a `def` if it's really runtime code
+  ⤷ 2 downstream diagnostics suppressed

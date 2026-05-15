@@ -1,0 +1,9 @@
+// Fixture: unsolvedMeta with non-empty local context
+
+inductive Int32 where
+    | MkInt32
+
+def id : ∀ a. a -> a
+    | x => x
+
+def f (x : Int32) := id id

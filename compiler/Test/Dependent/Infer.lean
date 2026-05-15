@@ -264,8 +264,10 @@ def testCheckPurposeDescribe : IO TestResult := do
 /-- Test: UnifyFailure.message -/
 def testUnifyFailureMessage : IO TestResult := do
   let f := UnifyFailure.headMismatch testIntTy testStringTy
-  if !f.message.toSlice.contains "unify" then
-    return .failed s!"message should mention 'unify': {f.message}"
+    Soma.Core.Path.empty none #[] none
+  let msg := f.message Soma.Core.PpContext.empty
+  if !msg.toSlice.contains "unify" then
+    return .failed s!"message should mention 'unify': {msg}"
   return .passed
 
 /-- Test: TCError.toDiagnostic creates valid diagnostic -/
@@ -273,7 +275,7 @@ def testErrorToDiagnostic : IO TestResult := do
   let err := TCError.unboundVariable "x" testSpan #[]
   let sf := Soma.Syntax.SourceFile.create ⟨0⟩ "<test>" ""
   let ctx := Soma.DiagContext.ofSourceFile sf
-  let diag := err.toDiagnostic ctx
+  let diag := err.toDiagnostic ctx Soma.Core.PpContext.empty
   if diag.message.isEmpty then
     return .failed "diagnostic message should not be empty"
   if diag.code.isNone then
@@ -525,8 +527,6 @@ def testExpectedTypeSolvesImplicit : IO TestResult := do
   let action : TCM Bool := do
     -- Create a metavariable for the implicit type parameter
     let metaId ← TCM.freshMeta (.vType .zero)
-    let metaVal := Value.vNeutral (.vType .zero) (.nMeta metaId)
-
     -- Try to solve the meta from expected type Int
     let solved ← trySolveMetaFromExpected metaId testIntTy
 
@@ -555,9 +555,7 @@ def testGreedySolving : IO TestResult := do
   let action : TCM Bool := do
     -- Create two metavariables
     let meta1 ← TCM.freshMeta (.vType .zero)
-    let meta2 ← TCM.freshMeta (.vType .zero)
     let metaVal1 := Value.vNeutral (.vType .zero) (.nMeta meta1)
-    let metaVal2 := Value.vNeutral (.vType .zero) (.nMeta meta2)
 
     -- Postpone a constraint: ?meta1 = Int
     TCM.postpone (.unify metaVal1 testIntTy testSpan)

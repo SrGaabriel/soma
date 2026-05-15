@@ -5,8 +5,10 @@ import Psychopomp.Driver.Json
 import Psychopomp.Render.Diff
 import Psychopomp.Render.Color
 import Soma.Syntax.Source
+import Psychopomp.Render.Speculative
 import Soma.Diagnostic.Attach
 import Soma.Diagnostic.Cascade
+import Soma.Diagnostic.Vocab
 
 namespace Soma
 
@@ -60,6 +62,16 @@ def severity (phase : Phase) (level : Psychopomp.SeverityLevel := .error)
     : Psychopomp.Severity :=
   { level, phase := some phase.toString, certainty := .certain, audiences := [] }
 
+def cascadeRootTag : String := "soma:cascade-root"
+
+def isCascadeRoot (d : Psychopomp.Diagnostic) : Bool :=
+  d.severity.audiences.contains cascadeRootTag
+
+def markCascadeRoot (d : Psychopomp.Diagnostic) : Psychopomp.Diagnostic :=
+  if isCascadeRoot d then d
+  else
+    { d with severity := { d.severity with audiences := d.severity.audiences ++ [cascadeRootTag] } }
+
 namespace Bridge
 
 /-- Convert a Soma `SourceFile` to a Psychopomp `SourceContext` -/
@@ -81,7 +93,10 @@ end Bridge
 
 structure SubstrateRepo where
   views : Array Psychopomp.SubstrateView := #[]
+  /-- Source-file substrate dedup -/
   byFile : Std.HashMap Soma.Syntax.FileId Psychopomp.SubstrateRef := ∅
+  /-- Synthetic substrate dedup -/
+  byContent : Std.HashMap UInt64 (Array Psychopomp.SubstrateRef) := ∅
   deriving Inhabited
 
 namespace SubstrateRepo
@@ -101,8 +116,56 @@ def putFile (r : SubstrateRepo) (sf : Soma.Syntax.SourceFile)
   | none =>
     let ref := r.views.size
     let view := (Bridge.sourceContextOf sf).toSubstrateView
-    ({ views := r.views.push view
-       byFile := r.byFile.insert sf.id ref }, ref)
+    ({ r with
+        views := r.views.push view,
+        byFile := r.byFile.insert sf.id ref }, ref)
+
+/-- Compute a stable content hash for a substrate view -/
+def contentHash (view : Psychopomp.SubstrateView) : UInt64 := Id.run do
+  let mut h : UInt64 := view.name.hash
+  let kindTag : String := match view.kind with
+    | .text => "text"
+    | .tree => "tree"
+    | .graph => "graph"
+    | .custom s => s!"custom:{s}"
+  h := mixHash h kindTag.hash
+  h := mixHash h (UInt64.ofNat view.numLines)
+  for i in [:view.numLines] do
+    h := mixHash h (view.getLine (i + 1)).hash
+  return h
+
+private def kindTag (kind : Psychopomp.SubstrateKind) : String :=
+  match kind with
+  | .text => "text"
+  | .tree => "tree"
+  | .graph => "graph"
+  | .custom s => s!"custom:{s}"
+
+/-- Structural equality for the visible substrate content -/
+def sameContent (a b : Psychopomp.SubstrateView) : Bool := Id.run do
+  if a.name != b.name then return false
+  if kindTag a.kind != kindTag b.kind then return false
+  if a.numLines != b.numLines then return false
+  if a.tabWidth != b.tabWidth then return false
+  for i in [:a.numLines] do
+    if a.getLine (i + 1) != b.getLine (i + 1) then return false
+  return true
+
+/-- Register a synthetic substrate view -/
+def putSynthetic (r : SubstrateRepo) (view : Psychopomp.SubstrateView)
+    : SubstrateRepo × Psychopomp.SubstrateRef :=
+  let h := contentHash view
+  let bucket := r.byContent[h]?.getD #[]
+  match bucket.find? (fun ref =>
+      match r.views[ref]? with
+      | some existing => sameContent existing view
+      | none => false) with
+  | some ref => (r, ref)
+  | none =>
+    let ref := r.views.size
+    ({ r with
+        views := r.views.push view,
+        byContent := r.byContent.insert h (bucket.push ref) }, ref)
 
 end SubstrateRepo
 
@@ -208,6 +271,39 @@ end DiagContext
 
 namespace Fix
 
+private partial def editRanges : Psychopomp.Edit → List Psychopomp.Span
+  | .replace _ r _ => [r]
+  | .insert _ r _ => [r]
+  | .delete _ r => [r]
+  | .seq edits => edits.flatMap editRanges
+
+/-- Render a preview of what a set of edits would produce -/
+def renderPreview (view : Psychopomp.SubstrateView)
+    (edits : List Psychopomp.Edit) : Option String :=
+  match Psychopomp.Render.applyEdits view edits with
+  | .error _ => none
+  | .ok modified =>
+    let lineRange : Option (Nat × Nat) :=
+      edits.foldl (init := none) fun acc edit =>
+        let spanLines? : Option (Nat × Nat) :=
+          (editRanges edit).foldl
+            (init := none)
+            (fun acc r =>
+              match acc with
+              | none => some (r.startLine, r.endLine)
+              | some (lo, hi) => some (min lo r.startLine, max hi r.endLine))
+        match acc, spanLines? with
+        | none, x => x
+        | x, none => x
+        | some (a, b), some (c, d) => some (min a c, max b d)
+    match lineRange with
+    | none => none
+    | some (s, e) =>
+      let lo := if s == 0 then 1 else s
+      let hi := if e > modified.numLines then modified.numLines else e
+      let lines := (List.range (hi + 1 - lo)).map fun i => modified.getLine (lo + i)
+      some (String.intercalate "\n" lines)
+
 /-- Build a list of `QuickFix.replace` operations from typo-correction suggestions -/
 def renameSuggestions (ctx : DiagContext) (span : Soma.Syntax.Span)
     (suggestions : Array String) : List Psychopomp.QuickFix :=
@@ -215,9 +311,13 @@ def renameSuggestions (ctx : DiagContext) (span : Soma.Syntax.Span)
   | none => []
   | some b =>
     let psy := b.psy span
+    let view := b.srcCtx.toSubstrateView
     suggestions.toList.map fun candidate =>
+      let edits : List Psychopomp.Edit :=
+        [.replace b.subRef psy candidate]
       { description := s!"rename to `{candidate}`"
-        edits := [.replace b.subRef psy candidate] }
+        edits
+        preview := renderPreview view edits }
 
 /-- Build a `QuickFix.delete` for an attribute span -/
 def deleteSpan (ctx : DiagContext) (span : Soma.Syntax.Span)
@@ -225,7 +325,9 @@ def deleteSpan (ctx : DiagContext) (span : Soma.Syntax.Span)
   match ctx.builderFor? span with
   | none => []
   | some b =>
-    [{ description, edits := [.delete b.subRef (b.psy span)] }]
+    let view := b.srcCtx.toSubstrateView
+    let edits : List Psychopomp.Edit := [.delete b.subRef (b.psy span)]
+    [{ description, edits, preview := renderPreview view edits }]
 
 /-- Build a `QuickFix.replace` for a single span -/
 def replaceSpan (ctx : DiagContext) (span : Soma.Syntax.Span)
@@ -233,7 +335,9 @@ def replaceSpan (ctx : DiagContext) (span : Soma.Syntax.Span)
   match ctx.builderFor? span with
   | none => []
   | some b =>
-    [{ description, edits := [.replace b.subRef (b.psy span) newText] }]
+    let view := b.srcCtx.toSubstrateView
+    let edits : List Psychopomp.Edit := [.replace b.subRef (b.psy span) newText]
+    [{ description, edits, preview := renderPreview view edits }]
 
 end Fix
 

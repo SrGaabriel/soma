@@ -329,12 +329,6 @@ partial def mentionsWorldTy (ctx : LowerCtx) (v : Value) : Bool :=
   | .vDataType _ params => params.any ctx.mentionsWorldTy
   | .vConstructor _ _ args resultTy =>
     args.any ctx.mentionsWorldTy || ctx.mentionsWorldTy resultTy
-  | .vEq _ ty lhs rhs =>
-    ctx.mentionsWorldTy ty || ctx.mentionsWorldTy lhs || ctx.mentionsWorldTy rhs
-  | .vRefl ty x => ctx.mentionsWorldTy ty || ctx.mentionsWorldTy x
-  | .vTransport _ ty motive lhs rhs eq body =>
-    ctx.mentionsWorldTy ty || ctx.mentionsWorldTy motive || ctx.mentionsWorldTy lhs ||
-      ctx.mentionsWorldTy rhs || ctx.mentionsWorldTy eq || ctx.mentionsWorldTy body
   | _ => false
 
 /-- Is this qualified name `io_bind` -/
@@ -511,7 +505,6 @@ partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
   | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
-  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
   | .mvar _ | .bvar _ | .proj _ _ _ | .tyvar _ _ => {}
 
 namespace LowerM
@@ -775,7 +768,6 @@ private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
   | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
-  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
   | .mvar _ | .bvar _ => true
   | _ => false
 
@@ -955,8 +947,7 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
   | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty
   | .rowExtend _ _ _ | .recordTy _ | .variantTy _
-  | .labelLit _ | .dataTy _ _ | .eqTy _ _ _ _
-  | .refl _ _ | .transport _ _ _ _ _ _ _
+  | .labelLit _ | .dataTy _ _
   | .bvar _ | .tyvar _ _ =>
     pure none
 

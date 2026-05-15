@@ -4,6 +4,8 @@ import Soma.Core.Level
 import Soma.Core.Eval
 import Soma.Core.Expr
 import Soma.Core.Intrinsic
+import Soma.Dependent.Origin
+import Soma.Core.Path
 import Soma.Dependent.Error
 import Soma.Dependent.Suggest
 import Soma.Core.Module
@@ -736,10 +738,15 @@ def toGlobalEnv (g : Globals) : GlobalEnv :=
       match indMeta.ctors[0]? with
       | some ctor => acc.insertRecordCtorInfo typeQN.id ctor.type indMeta.fieldNames
       | none => acc
-  WiredRole.all.foldl (init := withRecords) fun acc role =>
+  let withPrims := WiredRole.all.foldl (init := withRecords) fun acc role =>
     match WiredRole.primTyOfRole? role, g.wiredIn.getUnique? role with
     | some p, some info => acc.insertPrimTyInductive p info.name.id
     | _, _ => acc
+  let eqId? : Option Unique :=
+    (g.wiredIn.getUnique? .typeEq).map (·.name.id)
+  let reflInfo? : Option (Soma.Core.QualifiedName × Nat) :=
+    (g.wiredIn.getUnique? .refl).map fun info => (info.name, info.ctorTag)
+  { withPrims with eqInductiveId := eqId?, reflConstructor := reflInfo? }
 
 end Globals
 
@@ -858,9 +865,6 @@ partial def ofValue : Value → DiscrKey
   | .vRecord _ => .record
   | .vVariant _ => .variant
   | .vRowExtend _ _ _ => .rowExtend
-  | .vEq _ _ _ _ => .equality
-  | .vRefl _ _ => .refl_
-  | .vTransport _ _ _ _ _ _ _ => .transport
   | .vNeutral _ neu =>
     match neu.head with
     | .hConst qn _ => .constHead qn
@@ -1191,6 +1195,8 @@ structure TCState where
       made whatever progress it could, but the overall constraint is stuck on
       these dependencies." -/
   stuckSignal : Option (Array MetaId × Array LevelVarId) := none
+  /-- Pattern-context unification buffer -/
+  patternRefinementsBuffer? : Option (Std.HashMap Nat Value) := none
   /-- Accumulated errors -/
   errors : Array TCError := #[]
   /-- Accumulated warnings -/
@@ -1218,9 +1224,11 @@ def forModule (moduleName : String) : TCState :=
 /-- Create a fresh metavariable -/
 def freshMeta (s : TCState) (ty : Value) (ctx : List CtxEntry)
     (piLevel : Option Nat := none) (origin : Soma.Core.MetaOrigin := .user)
+    (displayHint : Option String := none)
     : MetaId × TCState :=
   let ctxList := ctx.map fun e => (e.name, e.type, e.qty)
-  let (id, metas') := s.metas.fresh ty ctxList (piLevel := piLevel) (origin := origin)
+  let (id, metas') := s.metas.fresh ty ctxList
+    (piLevel := piLevel) (origin := origin) (displayHint := displayHint)
   (id, { s with metas := metas' })
 
 /-- Create a fresh level variable -/
@@ -1384,6 +1392,18 @@ structure TCContext where
   methodSelfRefs : Std.HashMap String (Soma.Core.QualifiedName × Value) := {}
   /-- Current span (for error reporting) -/
   currentSpan : Span := Span.uninhabited
+  /-- Current constraint origin -/
+  currentOrigin : Option ConstraintOrigin := none
+  /-- Current structural path the unifier has walked -/
+  currentPath : Path := Path.empty
+  /-- The two root values for an in-progress unification -/
+  currentUnifyRoot : Option (Soma.Core.Value × Soma.Core.Value) := none
+  /-- Whether we are already inside an application chain  -/
+  inApplicationChain : Bool := false
+  /-- Whether we know we are descending into an injective head -/
+  inInjectiveDescent : Bool := false
+  /-- Implicit arguments inserted most recently -/
+  currentImplicits : Option (String × Array (Soma.Core.MetaId × Soma.Core.Value × String)) := none
   /-- Are we in erased context? (under a 0-quantity binder) -/
   inErased : Bool := false
   /-- Current multiplier for quantity tracking (for nested binders) -/
@@ -1504,6 +1524,57 @@ def getSpan : TCM Span := do
 /-- Run with a different span -/
 def withSpan (span : Span) (m : TCM α) : TCM α :=
   withReader (·.withSpan span) m
+
+/-- Get the current `ConstraintOrigin` -/
+def getOrigin : TCM (Option ConstraintOrigin) := do
+  let ctx ← getCtx
+  return ctx.currentOrigin
+
+/-- Run an action with a specific `ConstraintOrigin` in scope -/
+def withOrigin (origin : ConstraintOrigin) (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with currentOrigin := some origin }) m
+
+/-- Read the current `Path` accumulated by recursive `Value`-descent -/
+def getPath : TCM Path := do
+  let ctx ← getCtx
+  return ctx.currentPath
+
+/-- Run an action with a structural `PathStep` pushed onto `currentPath` -/
+def withPathStep (step : PathStep) (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with currentPath := ctx.currentPath.push step }) m
+
+/-- Run an action with a reset path -/
+def withFreshPath (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with currentPath := Path.empty }) m
+
+/-- Read the two values currently being unified at the root -/
+def getUnifyRoot : TCM (Option (Soma.Core.Value × Soma.Core.Value)) := do
+  let ctx ← getCtx
+  return ctx.currentUnifyRoot
+
+/-- Run an action with the given values pinned as the root unification targets -/
+def withUnifyRoot (v1 v2 : Soma.Core.Value) (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with currentUnifyRoot := some (v1, v2) }) m
+
+/-- Read whether we are already inside an outer-recognised application chain -/
+def inApplicationChain : TCM Bool := do
+  let ctx ← getCtx
+  return ctx.inApplicationChain
+
+/-- Mark a TCM action as running inside an application chain -/
+def withInApplicationChain (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with inApplicationChain := true }) m
+
+/-- Bring an inserted-implicits view into scope -/
+def withImplicits (surface : String)
+    (impls : Array (Soma.Core.MetaId × Soma.Core.Value × String))
+    (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with currentImplicits := some (surface, impls) }) m
+
+def getImplicits : TCM (Option (String × Array (Soma.Core.MetaId × Soma.Core.Value × String))) := do
+  let ctx ← getCtx
+  return ctx.currentImplicits
+
 
 /-- Run with an extended context -/
 def withBinding (name : String) (bindingId : Unique) (ty : Value)
@@ -1759,10 +1830,12 @@ def getErrors : TCM (Array TCError) := do
 
 /-- Create a fresh metavariable of the given type -/
 def freshMeta (ty : Value) (piLevel : Option Nat := none)
-    (origin : Soma.Core.MetaOrigin := .user) : TCM MetaId := do
+    (origin : Soma.Core.MetaOrigin := .user)
+    (displayHint : Option String := none) : TCM MetaId := do
   let ctx ← getCtx
   let state ← getState
-  let (id, state') := state.freshMeta ty ctx.locals (piLevel := piLevel) (origin := origin)
+  let (id, state') := state.freshMeta ty ctx.locals
+    (piLevel := piLevel) (origin := origin) (displayHint := displayHint)
   set state'
   return id
 
@@ -1771,8 +1844,9 @@ def getMetaCount : TCM Nat := do
   return state.metas.nextId
 
 /-- Create a fresh metavariable and return it as a Value -/
-def freshMetaVal (ty : Value) (origin : Soma.Core.MetaOrigin := .user) : TCM Value := do
-  let id ← freshMeta ty (origin := origin)
+def freshMetaVal (ty : Value) (origin : Soma.Core.MetaOrigin := .user)
+    (displayHint : Option String := none) : TCM Value := do
+  let id ← freshMeta ty (origin := origin) (displayHint := displayHint)
   return .vNeutral ty (.nMeta id)
 
 /-- Force-cycle detection -/
@@ -1793,20 +1867,6 @@ where
     | .vRecordVal fields => fields.anyM fun (_, v) => goVal v visited
     | .vDataType _ params => params.anyM fun p => goVal p visited
     | .vConstructor _ _ args _ => args.anyM fun a => goVal a visited
-    | .vEq _ ty lhs rhs =>
-      if ← goVal ty visited then return true
-      if ← goVal lhs visited then return true
-      goVal rhs visited
-    | .vRefl ty x =>
-      if ← goVal ty visited then return true
-      goVal x visited
-    | .vTransport _ ty motive lhs rhs eq body =>
-      if ← goVal ty visited then return true
-      if ← goVal motive visited then return true
-      if ← goVal lhs visited then return true
-      if ← goVal rhs visited then return true
-      if ← goVal eq visited then return true
-      goVal body visited
     | .vNeutral _ neu => goNeutral neu visited
 
   goNeutral (neu : Neutral) (visited : Std.HashSet Nat) : TCM Bool := do
@@ -1839,7 +1899,7 @@ def solveMeta (id : MetaId) (v : Value) (callerTag : String := "?") : TCM Unit :
   let _ := callerTag
   if ← wouldFormForceCycle id v then
     let span ← getSpan
-    throw (.unificationFailed (.occursCheck id v) .general span #[] #[id])
+    throw (.unificationFailed (.occursCheck id v Path.empty none) .general span #[] #[id])
   modifyState (·.solveMeta id v)
 
 /-- Clear a metavariable's solution, making it unsolved again -/
@@ -1998,6 +2058,43 @@ def clearStuckSignal : TCM Unit :=
 /-- Read the current stuck signal -/
 def getStuckSignal : TCM (Option (Array MetaId × Array LevelVarId)) := do
   return (← getState).stuckSignal
+
+/-- Whether we are currently collecting pattern-unification refinements -/
+def isPatternUnifyMode : TCM Bool := do
+  return (← getState).patternRefinementsBuffer?.isSome
+
+/-- Whether we are currently descending through a known-injective head -/
+def isInInjectiveDescent : TCM Bool := do
+  return (← getCtx).inInjectiveDescent
+
+/-- Run an action with `inInjectiveDescent` set -/
+def withInjectiveDescent (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with inInjectiveDescent := true }) m
+
+/-- Run an action with `inInjectiveDescent` cleared -/
+def withoutInjectiveDescent (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with inInjectiveDescent := false }) m
+
+/-- Record an index-equality refinement learned during pattern unification -/
+def recordPatternRefinement (lvl : DeBruijnLvl) (replacement : Value) : TCM Unit := do
+  modifyState fun s =>
+    match s.patternRefinementsBuffer? with
+    | some buf =>
+      { s with patternRefinementsBuffer? := some (buf.insert lvl.lvl replacement) }
+    | none => s
+
+/-- Run `m` in pattern-unify mode and return the collected refinements alongside its result -/
+def withPatternRefinements (m : TCM α) : TCM (α × Std.HashMap Nat Value) := do
+  let savedBuffer := (← getState).patternRefinementsBuffer?
+  modifyState fun s => { s with patternRefinementsBuffer? := some {} }
+  try
+    let a ← m
+    let collected := (← getState).patternRefinementsBuffer?.getD {}
+    modifyState fun s => { s with patternRefinementsBuffer? := savedBuffer }
+    return (a, collected)
+  catch e =>
+    modifyState fun s => { s with patternRefinementsBuffer? := savedBuffer }
+    throw e
 
 /-- Pop a constraint from the worklist -/
 def popWorklist : TCM (Option ConstraintId) := do

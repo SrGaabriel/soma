@@ -1,26 +1,9 @@
-/-
-  Soma.Unique - Unique identifiers for compiler-generated names
-
-  This module provides a rigid, type-safe unique identifier system matching
-  the Haskell compiler's design. Uniques are globally unique within a module
-  and carry enough context for debugging and cross-module disambiguation.
--/
 import Kenosis
 
 namespace Soma
 
 open Kenosis
 
-/-- A unique identifier within the compiler.
-
-    Uniques are the foundation of the name system. They provide:
-    - Global uniqueness within a module (via `id`)
-    - Cross-module disambiguation (via `module`)
-    - Debugging/error message support (via `original`)
-
-    Two Uniques are equal iff they have the same `id` AND `module`.
-    The `original` name is purely for display purposes.
--/
 structure Unique where
   /-- Numeric ID, unique within the module -/
   id : Nat

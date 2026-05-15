@@ -5,6 +5,16 @@ error[E1001]: type mismatch
 12 | def x : Int32 := "not an int"
    |                  ------------ cannot unify `String` with `Int32`
    |
+   ,-> <expected at 12:18>:1:1
+   |
+ 1 | String
+   | ------ expected type
+   |
+   ,-> <actual at 12:18>:1:1
+   |
+ 1 | Int32
+   | ----- actual type
+   |
    = note: The types `String` and `Int32` have incompatible structure and cannot be unified.
    = help: add type annotations to help the compiler infer types
    = type mismatch:

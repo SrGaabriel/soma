@@ -68,11 +68,6 @@ partial def collectExprVars : Expr → List String
   | .fieldAccess e _ _ => collectExprVars e
   | .inject _ args _ => args.toList.flatMap collectExprVars
   | .pi _ _ _ d c => collectExprVars d ++ collectExprVars c
-  | .eqTy _ ty l r => collectExprVars ty ++ collectExprVars l ++ collectExprVars r
-  | .refl ty x => collectExprVars ty ++ collectExprVars x
-  | .transport _ ty m l r eq b =>
-      collectExprVars ty ++ collectExprVars m ++ collectExprVars l ++
-      collectExprVars r ++ collectExprVars eq ++ collectExprVars b
   | .rowExtend l t tail => collectExprVars l ++ collectExprVars t ++ collectExprVars tail
   | .recordTy r => collectExprVars r
   | .variantTy r => collectExprVars r

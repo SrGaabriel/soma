@@ -75,22 +75,6 @@ partial def normKey (v : Value) (depth : Nat) (m : NormMap)
       parts := parts ++ [s!"{name}={sv}"]
     let body := ",".intercalate parts
     return ("RV{" ++ body ++ "}", m')
-  | .vEq lv ty lhs rhs =>
-    let (t, m₁) ← normKey ty depth m
-    let (l, m₂) ← normKey lhs depth m₁
-    let (r, m₃) ← normKey rhs depth m₂
-    return (s!"EQ{toString lv}({t};{l}={r})", m₃)
-  | .vRefl _ x =>
-    let (x', m') ← normKey x depth m
-    return (s!"refl({x'})", m')
-  | .vTransport lv ty motive lhs rhs eq body =>
-    let (t, m₁) ← normKey ty depth m
-    let (mo, m₂) ← normKey motive depth m₁
-    let (l, m₃) ← normKey lhs depth m₂
-    let (r, m₄) ← normKey rhs depth m₃
-    let (e, m₅) ← normKey eq depth m₄
-    let (b, m₆) ← normKey body depth m₅
-    return (s!"tp{toString lv}({t};{mo};{l};{r};{e};{b})", m₆)
   | .vPi qty binder _ dom cod =>
     let (ds, m₁) ← normKey dom depth m
     let dummy := Value.vNeutral dom (.nVar ⟨"_κ", ⟨depth⟩⟩)
@@ -459,11 +443,6 @@ private partial def refreshStaleMetas (v : Value) (mapping : Std.HashMap Nat Met
       args' := args' ++ [arg']
     let (resultTy', mapping'') ← refreshStaleMetas resultTy mapping'
     return (.vConstructor name tag args' resultTy', mapping'')
-  | .vEq lv ty lhs rhs =>
-    let (ty', mapping') ← refreshStaleMetas ty mapping
-    let (lhs', mapping'') ← refreshStaleMetas lhs mapping'
-    let (rhs', mapping''') ← refreshStaleMetas rhs mapping''
-    return (.vEq lv ty' lhs' rhs', mapping''')
   | other => return (other, mapping)
 where
   refreshStaleMetasNeutral (n : Neutral) (mapping : Std.HashMap Nat MetaId)

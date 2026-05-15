@@ -432,9 +432,6 @@ private def exprTag : Nat → UInt64
   | 32 => 0x1021 -- ann
   | 33 => 0x1022 -- hole
   | 34 => 0x1023 -- mvar
-  | 35 => 0x1024 -- eq
-  | 36 => 0x1025 -- refl
-  | 37 => 0x1026 -- transport
   | 38 => 0x1027 -- rowSort
   | 39 => 0x1028 -- labelSort
   | _ => 0x1FFF
@@ -512,8 +509,11 @@ partial def hashSyntaxExpr (e : Soma.Syntax.Expr) : UInt64 :=
 /-- Hash a function by traversing its expression tree -/
 def hashFunction (fn : Soma.Core.UntypedFunction) : UInt64 :=
   let nameHash := hashString fn.name.display
-  let paramsHash := fn.params.foldl (fun acc name =>
-    combineHash acc (hashString name)) 0
+  let paramsHash := fn.params.foldl (fun acc p =>
+    let nameHash := combineHash acc (hashString p.name)
+    match p.typeSyntax with
+    | none => nameHash
+    | some tyExpr => combineHash nameHash (hashSyntaxExpr tyExpr)) 0
   let bodyHash := hashSyntaxExpr fn.body
   -- Also hash the declared type if present
   let typeHash := match fn.declaredTypeSyntax with

@@ -202,9 +202,15 @@ private def lowerFunctionDeclCore
                   badClause.span])
             | none => pure ()  -- Alias application in tail: defer arity check to elaborator
 
-        let headerParamNames := (headerParams.filter (!·.isImplicit)).map (·.name.name)
+        let headerExplicit := headerParams.filter (!·.isImplicit)
+        let headerParamSlots : Array Soma.Core.FunctionParam :=
+          headerExplicit.map fun p => { name := p.name.name, typeSyntax := p.type? }
+        let headerParamNames : Array String := headerParamSlots.map (·.name)
         if allSimplePatterns clause.patterns then
-          let params := headerParamNames ++ (clause.patterns.map extractVarName)
+          let clauseSlots : Array Soma.Core.FunctionParam :=
+            clause.patterns.map fun p =>
+              { name := extractVarName p, typeSyntax := none }
+          let params := headerParamSlots ++ clauseSlots
           return (some {
             name := globalName
             params := params
@@ -223,15 +229,17 @@ private def lowerFunctionDeclCore
           | none => []
         let sigBinderArr : Array String := sigBinderNames.toArray
         let numClauseParams := clause.patterns.size
-        let clauseParams := (List.range numClauseParams).toArray.map fun i =>
+        let clauseParamNames := (List.range numClauseParams).toArray.map fun i =>
           if h : i < sigBinderArr.size then
             let n := sigBinderArr[i]
             -- TODO: review
             if n == "_" then s!"_arg{i}" else n
           else
             s!"_arg{i}"
-        let params := headerParamNames ++ clauseParams
-        let scrutineeSyntax : Array Syntax.Expr := clauseParams.map fun paramName =>
+        let clauseSlots : Array Soma.Core.FunctionParam :=
+          clauseParamNames.map fun n => { name := n, typeSyntax := none }
+        let params := headerParamSlots ++ clauseSlots
+        let scrutineeSyntax : Array Syntax.Expr := clauseParamNames.map fun paramName =>
           Syntax.Expr.var ⟨#[], paramName, span⟩
         let armsSyntax : Array Syntax.MatchArm := clauses.map fun c =>
           Syntax.MatchArm.mk c.patterns c.guard c.body c.span
@@ -260,10 +268,12 @@ private def lowerFunctionDeclCore
             isExternStub := true
           }, #[])
         if sig.isSome then
-          let headerExplicitNames := (headerParams.filter (!·.isImplicit)).map (·.name.name)
+          let headerExplicitSlots : Array Soma.Core.FunctionParam :=
+            (headerParams.filter (!·.isImplicit)).map fun p =>
+              { name := p.name.name, typeSyntax := p.type? }
           return (some {
             name := globalName
-            params := headerExplicitNames
+            params := headerExplicitSlots
             body := Syntax.Expr.lit (Syntax.Literal.string "" span)
             span := span
             declaredTypeSyntax := sig
@@ -482,13 +492,7 @@ def lowerModule (ast : Syntax.Module) (diag : DiagBuilder) : Result :=
       if let some fn := fn? then
         -- Route to the right bucket based on the original declaration kind
         match decl with
-        | .theorem_ _ name _ _ _ span =>
-          if fn.attrs.partial_ then
-            diagnostics := diagnostics.push (mkLowerError diag
-              s!"theorem '{name.name}' cannot be marked @[partial]" span
-              (help := some "drop @[partial], or make this a `def` if it's runtime code"))
-          else
-            theorems := theorems.push fn
+        | .theorem_ _ _ _ _ _ _ => theorems := theorems.push fn
         | _ => functions := functions.push fn
 
       let (td?, tdDiags, supply') := lowerTypeDecl diag decl registry supply

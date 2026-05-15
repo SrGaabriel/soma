@@ -209,13 +209,14 @@ def elaborateTraitMethodType
 
 
 /-- Convert a `TCError` to a `Psychopomp.Diagnostic` -/
-def tcErrorToDiagnostic (ctx : Soma.DiagContext) (e : TCError) : Diagnostic :=
-  TCError.toDiagnostic ctx e
+def tcErrorToDiagnostic (ctx : Soma.DiagContext) (pp : Soma.Core.PpContext)
+    (e : TCError) : Diagnostic :=
+  TCError.toDiagnostic ctx pp e
 
 /-- Convert an array of `TCError`s -/
-def tcErrorsToDiagnostics (ctx : Soma.DiagContext) (errors : Array TCError)
-    : Diagnostics :=
-  errors.map (TCError.toDiagnostic ctx)
+def tcErrorsToDiagnostics (ctx : Soma.DiagContext) (pp : Soma.Core.PpContext)
+    (errors : Array TCError) : Diagnostics :=
+  errors.map (TCError.toDiagnostic ctx pp)
 
 /-- State maintained across function checks for totality tracking -/
 structure CheckState where
@@ -229,14 +230,14 @@ private def inferIntrinsicInfo (fn : Soma.Core.UntypedFunction) : TCM (Option In
   | some tag =>
     if tag.isEmpty then
       TCM.throw (.cannotInfer
-        s!"@[intrinsic] on '{fn.name.display}' requires a tag string, e.g. @[intrinsic \"primop.add\"]"
-        fn.span none)
+        s!"@[intrinsic] on '{fn.name.display}' requires a tag string"
+        fn.span .unknown)
     else
       match Intrinsic.fromTag? tag with
       | some i => pure (some i)
       | none => TCM.throw (.cannotInfer
           s!"unknown intrinsic tag '{tag}' on '{fn.name.display}'"
-          fn.span none)
+          fn.span .unknown)
   | none =>
     pure (fn.attrs.extern.map Intrinsic.extern)
 
@@ -247,7 +248,7 @@ def checkFunctionTotality (fn : Soma.Core.UntypedFunction) (body : Soma.Core.Exp
     name := fn.name
     markedTotal := fn.attrs.total
     status := .isUnknown
-    params := fn.params
+    params := fn.paramNames
     fnType := Value.vType .zero
     span := fn.span
   }
@@ -289,23 +290,23 @@ where
     match ty' with
     | .vPi qty binder name dom cod =>
       if numExplicit == 0 && !binder.isImplicit then
-        return (#[], ty')
+        return (#[], ty)
       let dummyArg := Value.vNeutral dom (.nVar ⟨name, ⟨lvl⟩⟩)
       let codTy ← applyClosure cod dummyArg
       let remainingExplicit := if binder.isImplicit then numExplicit else numExplicit - 1
       let (restParams, resultTy) ← go codTy remainingExplicit (lvl + 1)
       return (#[(name, dom, binder, qty)] ++ restParams, resultTy)
     | _ =>
-      return (#[], ty')
+      return (#[], ty)
 
 /-- Extend the context with function parameters and run an action -/
-def withFunctionParams (params : Array String) (paramTypes : Array Value)
+def withFunctionParams (params : Array Soma.Core.FunctionParam) (paramTypes : Array Value)
     (span : Span) (action : TCM α) : TCM (Array (Soma.Unique × String) × α) := do
   -- First generate all local ids
   let mut bindings : Array (Soma.Unique × String) := #[]
-  for name in params do
-    let bindingId ← TCM.freshLocalId name
-    bindings := bindings.push (bindingId, name)
+  for p in params do
+    let bindingId ← TCM.freshLocalId p.name
+    bindings := bindings.push (bindingId, p.name)
   -- Then extend context with each
   let rec go (idx : Nat) : TCM α := do
     if idx >= bindings.size then
@@ -474,7 +475,9 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     | some _ =>
       let declaredType ← match storedType with
         | some ty => pure ty
-        | none => TCM.freshMetaVal (.vType .zero)
+        | none =>
+          TCM.freshMetaVal (.vType .zero)
+            (displayHint := some s!"return:{fn.name.display}")
       Soma.Dependent.drainConstraints
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
@@ -482,6 +485,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       return (declaredType'', Soma.Core.TypedFunction.externBody fn.name, #[], #[], false)
     | none =>
       let ty ← TCM.freshMetaVal (.vType .zero)
+        (displayHint := some s!"return:{fn.name.display}")
       return (ty, Soma.Core.TypedFunction.externBody fn.name, #[], #[], false)
   match fn.declaredTypeSyntax with
   | some typeSyntax =>
@@ -522,8 +526,9 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     | some body =>
       let bodyIsProof ← Soma.Dependent.valueInPropUniverse resultType
       let runBodyCheck : TCM Soma.Core.Expr :=
-        TCM.infallible (Soma.Dependent.checkSyntax body resultType) default
-      let (generatedParams, valueParams, typedBody) ← withSignaturePrefixBindingsFull allParams fn.params span do
+        TCM.withOrigin (.returnType fn.name.display body.span) <|
+          TCM.infallible (Soma.Dependent.checkSyntax body resultType) default
+      let (generatedParams, valueParams, typedBody) ← withSignaturePrefixBindingsFull allParams fn.paramNames span do
         let bodyExpr ← if bodyIsProof then TCM.inErasedContext runBodyCheck else runBodyCheck
         Soma.Dependent.drainConstraints
         pure bodyExpr
@@ -534,8 +539,13 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       let declaredType'' ← expandAbbrevValue declaredType'
       return (declaredType'', typedBody', generatedParams, valueParams, false)
   | none =>
-    -- No signature: create fresh metavariables for param types
-    let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
+    let paramTypes ← fn.params.mapM fun param => do
+      match param.typeSyntax with
+      | some tySyntax =>
+        TCM.recoverWithM (elaborateFunctionType tySyntax) (TCM.typePlaceholder span)
+      | none =>
+        TCM.freshMetaVal (.vType .zero)
+          (displayHint := some s!"type:{param.name}")
     -- Extend context with parameters and infer body type
     let (generatedParams, (inferredType, typedBody)) ← withFunctionParams fn.params paramTypes span do
       TCM.infallibleExpr (Soma.Dependent.inferSyntax fn.body) span
@@ -722,7 +732,7 @@ private def registerWiredRoleFromAttrs
       | some (Soma.Syntax.Expr.lit (Soma.Syntax.Literal.string roleName _)) =>
         match WiredRole.fromString? roleName with
         | none =>
-          TCM.throw (.cannotInfer s!"unknown wired_in role '{roleName}' on {what}" attr.span none)
+          TCM.throw (.cannotInfer s!"unknown wired_in role '{roleName}' on {what}" attr.span .unknown)
         | some role =>
           let existing := g.wiredIn.getAll role
           let conflicts := existing.filter (fun e => e.name != info.name)
@@ -730,9 +740,9 @@ private def registerWiredRoleFromAttrs
             g := { g with wiredIn := g.wiredIn.register role info }
           else
             let prev := String.intercalate ", " ((conflicts.map (fun e => e.name.display)).toList)
-            TCM.throw (.cannotInfer s!"duplicate wired_in role '{role.canonical}' on {what}; already bound to {prev}" attr.span none)
+            TCM.throw (.cannotInfer s!"duplicate wired_in role '{role.canonical}' on {what}; already bound to {prev}" attr.span .unknown)
       | _ =>
-        TCM.throw (.cannotInfer s!"@[wired_in] on {what} requires a string literal role argument" attr.span none)
+        TCM.throw (.cannotInfer s!"@[wired_in] on {what} requires a string literal role argument" attr.span .unknown)
   pure g
 
 private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Globals) : TCM Globals := do
@@ -759,9 +769,9 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
             g := { g with wiredIn := g.wiredIn.register role fnInfo }
           else
             let prev := String.intercalate ", " ((conflicts.map (fun e => e.name.display)).toList)
-            TCM.throw (.cannotInfer s!"duplicate wired_in role '{role.canonical}' on function {fn.name.display}; already bound to {prev}" fn.span none)
+            TCM.throw (.cannotInfer s!"duplicate wired_in role '{role.canonical}' on function {fn.name.display}; already bound to {prev}" fn.span .unknown)
         | none =>
-          TCM.throw (.cannotInfer s!"unknown wired_in role '{roleName}' on function {fn.name.display}" fn.span none)
+          TCM.throw (.cannotInfer s!"unknown wired_in role '{roleName}' on function {fn.name.display}" fn.span .unknown)
   pure g
 
 /-- Elaborate a type constructor's head kind from its parameter binders -/
@@ -924,8 +934,7 @@ def resolveAndZonkSignatures (module : Soma.Core.UntypedModule) : TCM Globals :=
     | none => pure ()
     | some info =>
       let zonked ← zonkValue info.type
-      let expanded ← expandAbbrevValue zonked
-      let info' := { info with type := expanded }
+      let info' := { info with type := zonked }
       globals := { globals with defs := globals.defs.insert fn.name info' }
       globals := globals.register ns fn.name.display info'
   return globals

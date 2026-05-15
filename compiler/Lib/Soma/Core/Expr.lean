@@ -140,12 +140,6 @@ inductive Expr where
   | labelLit (name : String)
   | dataTy (id : Unique) (params : Array Expr)
 
-  -- Equality types
-  | eqTy (tyLevel : Level) (ty : Expr) (lhs : Expr) (rhs : Expr)
-  | refl (ty : Expr) (x : Expr)
-  | transport (tyLevel : Level) (ty : Expr) (motive : Expr)
-              (lhs : Expr) (rhs : Expr) (eqProof : Expr) (body : Expr)
-
   -- Control flow
   | if_ (cond : Expr) (then_ : Expr) (else_ : Expr)
   | panic (msg : String)
@@ -213,13 +207,6 @@ partial def Expr.replaceMvar (e : Expr) (metaId : MetaId) (replacement : Expr) :
   | .recordTy r => .recordTy (r.replaceMvar metaId replacement)
   | .variantTy r => .variantTy (r.replaceMvar metaId replacement)
   | .dataTy id ps => .dataTy id (ps.map (·.replaceMvar metaId replacement))
-  | .eqTy lv t l r =>
-    .eqTy lv (t.replaceMvar metaId replacement) (l.replaceMvar metaId replacement) (r.replaceMvar metaId replacement)
-  | .refl t x => .refl (t.replaceMvar metaId replacement) (x.replaceMvar metaId replacement)
-  | .transport lv t m l r ep b =>
-    .transport lv (t.replaceMvar metaId replacement) (m.replaceMvar metaId replacement)
-      (l.replaceMvar metaId replacement) (r.replaceMvar metaId replacement)
-      (ep.replaceMvar metaId replacement) (b.replaceMvar metaId replacement)
   | .fvar id ty => .fvar id (ty.replaceMvar metaId replacement)
   | .const n ty => .const n (ty.replaceMvar metaId replacement)
   | .bvar _ | .sort _ | .lit _ | .rowSort | .labelSort
@@ -275,9 +262,6 @@ partial def Expr.toDebugString : Expr → String
   | .dataTy id ps =>
     let psStr := ps.map (·.toDebugString) |>.toList |> String.intercalate ", "
     s!"Data<{id.original}, {psStr}>"
-  | .eqTy _ _ l r => s!"({l.toDebugString} = {r.toDebugString})"
-  | .refl _ x => s!"refl({x.toDebugString})"
-  | .transport _ _ _ _ _ _ _ => "<transport>"
   | .if_ c t e => s!"(if {c.toDebugString} then {t.toDebugString} else {e.toDebugString})"
   | .panic msg => s!"panic({msg})"
   | .closure n caps _ =>
@@ -307,7 +291,6 @@ def Expr.ctorName : Expr → String
   | .rowEmpty => "rowEmpty" | .rowExtend _ _ _ => "rowExtend"
   | .recordTy _ => "recordTy" | .variantTy _ => "variantTy"
   | .labelLit _ => "labelLit" | .dataTy _ _ => "dataTy"
-  | .eqTy _ _ _ _ => "eqTy" | .refl _ _ => "refl" | .transport _ _ _ _ _ _ _ => "transport"
   | .if_ _ _ _ => "if" | .panic _ => "panic"
   | .closure _ _ _ => "closure" | .array _ _ => "array" | .tuple _ => "tuple"
   | .proj _ _ _ => "proj" | .ann _ _ => "ann"
@@ -373,13 +356,6 @@ partial def shift (e : Expr) (amount : Int) (cutoff : Nat) : Expr :=
   | .recordTy r => .recordTy (r.shift amount cutoff)
   | .variantTy r => .variantTy (r.shift amount cutoff)
   | .dataTy id ps => .dataTy id (ps.map (·.shift amount cutoff))
-  | .eqTy lv t l r =>
-    .eqTy lv (t.shift amount cutoff) (l.shift amount cutoff) (r.shift amount cutoff)
-  | .refl t x => .refl (t.shift amount cutoff) (x.shift amount cutoff)
-  | .transport lv t m l r ep b =>
-    .transport lv (t.shift amount cutoff) (m.shift amount cutoff)
-               (l.shift amount cutoff) (r.shift amount cutoff)
-               (ep.shift amount cutoff) (b.shift amount cutoff)
   | .ann x t => .ann (x.shift amount cutoff) (t.shift amount cutoff)
 
 def shiftUp (e : Expr) (n : Nat := 1) : Expr :=
@@ -419,11 +395,6 @@ where
     | .recordTy r => .recordTy (go r depth)
     | .variantTy r => .variantTy (go r depth)
     | .dataTy id ps => .dataTy id (ps.map (go · depth))
-    | .eqTy lv t l r => .eqTy lv (go t depth) (go l depth) (go r depth)
-    | .refl t x => .refl (go t depth) (go x depth)
-    | .transport lv t m l r ep b =>
-      .transport lv (go t depth) (go m depth) (go l depth)
-                 (go r depth) (go ep depth) (go b depth)
     | .ann x t => .ann (go x depth) (go t depth)
 
 /-- Close over a free variable: FVar(fvar) → BVar(depth) -/
@@ -459,11 +430,6 @@ where
     | .recordTy r => .recordTy (go r depth)
     | .variantTy r => .variantTy (go r depth)
     | .dataTy id ps => .dataTy id (ps.map (go · depth))
-    | .eqTy lv t l r => .eqTy lv (go t depth) (go l depth) (go r depth)
-    | .refl t x => .refl (go t depth) (go x depth)
-    | .transport lv t m l r ep b =>
-      .transport lv (go t depth) (go m depth) (go l depth)
-                 (go r depth) (go ep depth) (go b depth)
     | .ann x t => .ann (go x depth) (go t depth)
 
 /-- Open a binder: replace BVar(depth) with replacement -/
@@ -503,11 +469,6 @@ where
     | .recordTy r => .recordTy (go r depth)
     | .variantTy r => .variantTy (go r depth)
     | .dataTy id ps => .dataTy id (ps.map (go · depth))
-    | .eqTy lv t l r => .eqTy lv (go t depth) (go l depth) (go r depth)
-    | .refl t x => .refl (go t depth) (go x depth)
-    | .transport lv t m l r ep b =>
-      .transport lv (go t depth) (go m depth) (go l depth)
-                 (go r depth) (go ep depth) (go b depth)
     | .ann x t => .ann (go x depth) (go t depth)
 
 /-- Replace all occurrences of FVar(fvar) with replacement -/
@@ -553,15 +514,6 @@ partial def replaceFVar (e : Expr) (fvar : Unique) (replacement : Expr) : Expr :
   | .recordTy r => .recordTy (r.replaceFVar fvar replacement)
   | .variantTy r => .variantTy (r.replaceFVar fvar replacement)
   | .dataTy id ps => .dataTy id (ps.map (·.replaceFVar fvar replacement))
-  | .eqTy lv t l r =>
-    .eqTy lv (t.replaceFVar fvar replacement) (l.replaceFVar fvar replacement)
-             (r.replaceFVar fvar replacement)
-  | .refl t x =>
-    .refl (t.replaceFVar fvar replacement) (x.replaceFVar fvar replacement)
-  | .transport lv t m l r ep b =>
-    .transport lv (t.replaceFVar fvar replacement) (m.replaceFVar fvar replacement)
-               (l.replaceFVar fvar replacement) (r.replaceFVar fvar replacement)
-               (ep.replaceFVar fvar replacement) (b.replaceFVar fvar replacement)
   | .ann x t =>
     .ann (x.replaceFVar fvar replacement) (t.replaceFVar fvar replacement)
 
@@ -599,10 +551,6 @@ where
     | .recordTy r => go r acc
     | .variantTy r => go r acc
     | .dataTy _ ps => ps.foldl (fun a e => go e a) acc
-    | .eqTy _ t l r => go r (go l (go t acc))
-    | .refl t x => go x (go t acc)
-    | .transport _ t m l r ep b =>
-      go b (go ep (go r (go l (go m (go t acc)))))
     | .ann x t => go t (go x acc)
 
 /-- Collect every global (`.const`) reference in an expression, keyed by the callee's `QualifiedName`) -/
@@ -639,10 +587,6 @@ where
     | .recordTy r => go r acc
     | .variantTy r => go r acc
     | .dataTy _ ps => ps.foldl (fun a e => go e a) acc
-    | .eqTy _ t l r => go r (go l (go t acc))
-    | .refl t x => go x (go t acc)
-    | .transport _ t m l r ep b =>
-      go b (go ep (go r (go l (go m (go t acc)))))
     | .ann x t => go t (go x acc)
 
 /-- Check if an expression contains a specific free variable -/
@@ -673,11 +617,6 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
   | .recordTy r => r.hasFVar fvar
   | .variantTy r => r.hasFVar fvar
   | .dataTy _ ps => ps.any (·.hasFVar fvar)
-  | .eqTy _ t l r => t.hasFVar fvar || l.hasFVar fvar || r.hasFVar fvar
-  | .refl t x => t.hasFVar fvar || x.hasFVar fvar
-  | .transport _ t m l r ep b =>
-    t.hasFVar fvar || m.hasFVar fvar || l.hasFVar fvar ||
-    r.hasFVar fvar || ep.hasFVar fvar || b.hasFVar fvar
   | .ann x t => x.hasFVar fvar || t.hasFVar fvar
 
 /-- Is the type expression `ty` itself a universe -/
@@ -692,7 +631,6 @@ partial def isTypeLevelExpr : Expr → Bool
   | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
-  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
   | .mvar _ | .tyvar _ _ => true
   | .const _ ty => isTypeUniverse ty
   | .fvar _ ty => isTypeUniverse ty
@@ -815,11 +753,6 @@ partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   | .recordTy r => r.countFVar fvar
   | .variantTy r => r.countFVar fvar
   | .dataTy _ ps => ps.foldl (fun acc p => acc + p.countFVar fvar) 0
-  | .eqTy _ t l r => t.countFVar fvar + l.countFVar fvar + r.countFVar fvar
-  | .refl t x => t.countFVar fvar + x.countFVar fvar
-  | .transport _ t m l r ep b =>
-    t.countFVar fvar + m.countFVar fvar + l.countFVar fvar +
-    r.countFVar fvar + ep.countFVar fvar + b.countFVar fvar
   | .ann x t => x.countFVar fvar + t.countFVar fvar
 
 /-- Collect every metavariable referenced anywhere inside this expression -/
@@ -834,11 +767,6 @@ partial def collectMetas : Expr → Array MetaId
     let m := scruts.foldl (fun acc s => acc ++ collectMetas s) #[]
     let m := m ++ collectMetas motive
     arms.foldl (fun acc arm => acc ++ collectMetas arm.body) m
-  | .eqTy _ t l r => collectMetas t ++ collectMetas l ++ collectMetas r
-  | .refl t x => collectMetas t ++ collectMetas x
-  | .transport _ t m l r e b =>
-    collectMetas t ++ collectMetas m ++ collectMetas l ++
-    collectMetas r ++ collectMetas e ++ collectMetas b
   | .rowExtend l t tail => collectMetas l ++ collectMetas t ++ collectMetas tail
   | .recordTy r => collectMetas r
   | .variantTy r => collectMetas r

@@ -15,3 +15,15 @@ theorem cong {a : Type} {b : Type} {x : a} {y : a} (f : a -> b) : Eq x y -> Eq (
 
 theorem sym {a : Type} {x : a} {y : a} : Eq x y -> Eq y x
     | Eq::Refl => Eq::Refl
+
+theorem trans {a : Type} {x : a} {y : a} {z : a} : Eq x y -> Eq y z -> Eq x z
+    | Eq::Refl, Eq::Refl => Eq::Refl
+
+theorem subst {a : Type} {x : a} {y : a} (p : a -> Prop) : Eq x y -> p x -> p y
+    | Eq::Refl, h => h
+
+def mpr {a : Type} {b : Type} : Eq a b -> b -> a
+    | Eq::Refl, x => x
+
+def mp {a : Type} {b : Type} : Eq a b -> a -> b
+    | Eq::Refl, x => x

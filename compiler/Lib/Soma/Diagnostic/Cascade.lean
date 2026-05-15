@@ -4,10 +4,16 @@ namespace Soma.Diagnostic.Cascade
 
 open Psychopomp
 
-/-- Read `SOMA_COLLAPSE` to decide whether collapse is disabled (TODO) -/
+/-- The audience tag -/
+def cascadeRootTag : String := "soma:cascade-root"
+
+/-- Whether a diagnostic was tagged as a cascade root by its producer -/
+def isCascadeRoot (d : Diagnostic) : Bool :=
+  d.severity.audiences.contains cascadeRootTag
+
 def disabled : IO Bool := do
   match ← IO.getEnv "SOMA_COLLAPSE" with
-  | none => return true
+  | none => return false
   | some s =>
     let t := s.trimAscii
     return (t == "0" || t == "false")
@@ -25,7 +31,21 @@ def phaseRank : Option String → Nat
 def shouldAbsorb (rootPhase childPhase : Option String) : Bool :=
   phaseRank rootPhase < phaseRank childPhase
 
-/-- Find the first error-severity diagnostic in `ds` that lives in `substrate` -/
+private def spanContains (outer inner : Span) : Bool :=
+  let startsBefore :=
+    outer.startLine < inner.startLine ||
+      (outer.startLine == inner.startLine && outer.startCol <= inner.startCol)
+  let endsAfter :=
+    outer.endLine > inner.endLine ||
+      (outer.endLine == inner.endLine && outer.endCol >= inner.endCol)
+  startsBefore && endsAfter
+
+private def shouldAbsorbDiagnostic (root child : Diagnostic) : Bool :=
+  root.primary.substrate == child.primary.substrate &&
+    (shouldAbsorb root.severity.phase child.severity.phase ||
+      (isCascadeRoot root && spanContains root.primary.range child.primary.range))
+
+/-- Pick the cascade root inside a single substrate -/
 private def findRoot (ds : Array Diagnostic) (substrate : Nat) : Option Diagnostic := Id.run do
   let mut best : Option Diagnostic := none
   for d in ds do
@@ -34,7 +54,10 @@ private def findRoot (ds : Array Diagnostic) (substrate : Nat) : Option Diagnost
     match best with
     | none => best := some d
     | some r =>
-      if phaseRank d.severity.phase < phaseRank r.severity.phase then
+      if isCascadeRoot d && !isCascadeRoot r then
+        best := some d
+      else if isCascadeRoot d == isCascadeRoot r &&
+          phaseRank d.severity.phase < phaseRank r.severity.phase then
         best := some d
   return best
 
@@ -43,7 +66,6 @@ private def collapseFile (file : Nat) (ds : Array Diagnostic) : Array Diagnostic
   match findRoot ds file with
   | none => return ds
   | some root =>
-    let rootPhase := root.severity.phase
     let rootId := root.id
     let isRoot (d : Diagnostic) : Bool :=
       d.primary.substrate == root.primary.substrate
@@ -58,7 +80,7 @@ private def collapseFile (file : Nat) (ds : Array Diagnostic) : Array Diagnostic
         continue
       if isRoot d then
         continue
-      if shouldAbsorb rootPhase d.severity.phase then
+      if shouldAbsorbDiagnostic root d then
         children := children.push d
       else
         keep := keep.push d

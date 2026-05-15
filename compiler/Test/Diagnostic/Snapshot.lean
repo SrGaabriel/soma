@@ -19,7 +19,8 @@ def normalisePaths (s : String) : String :=
   s.replace "\\" "/"
 
 def renderAll (repo : Soma.SubstrateRepo) (ds : Array Psychopomp.Diagnostic) : String :=
-  let parts := ds.map Soma.Render.assignIdRec |>.toList.filterMap fun d =>
+  let collapsed := Soma.Diagnostic.Cascade.collapse ds
+  let parts := collapsed.map Soma.Render.assignIdRec |>.toList.filterMap fun d =>
     match Psychopomp.Driver.Flush.render d renderCfg repo with
     | .ok s => some (normalisePaths s)
     | .error _ => none

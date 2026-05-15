@@ -1,0 +1,30 @@
+error[E1001]: type mismatch
+   ,-> Test/fixtures/diagnostics/unfoldTraceAbbrev.soma:14:18
+   |
+13 |
+14 | def x : MyInt := "not an int"
+   |                  ------------ cannot unify `String` with `MyInt`
+   |
+   ,-> <expected at 14:18>:1:1
+   |
+ 1 | String
+   | ------ expected type
+   |
+   ,-> <actual at 14:18>:1:1
+   |
+ 1 | MyInt
+   | ----- actual type
+   |
+   = note: The types `String` and `MyInt` have incompatible structure and cannot be unified.
+   = help: add type annotations to help the compiler infer types
+   = type mismatch:
+       expected: String
+         actual: MyInt
+   = defeq hint:
+       expected reduces to: String
+       actual reduces to:   Int32
+   = unfold trace:
+       ≡ MyInt
+       ⊘ Int32   -- abbrev MyInt
+   = unify trace:
+       (no steps recorded)

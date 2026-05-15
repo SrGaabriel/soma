@@ -1120,14 +1120,6 @@ def testDupCtor : IO TestResult := do
     let dup ← GraphM.addNode (.dup label) testTy
     GraphM.connect (PortId.principal dup) (PortId.principal ctor)
 
-    -- MAT on copy0: hit branch returns field0, miss returns 0
-    let mat0 ← GraphM.addNode (.mat 1) testTy
-    let hit0Lam ← GraphM.addNode (.lam false) testTy
-    -- hit: λpayload. project first field (just return the var itself,
-    -- but we need something simpler — let's use a known pattern)
-    -- Actually, let's use OP2 to combine field values from both copies
-    -- Simpler test: just sum both copies' principal results via readback
-    -- Use reduceNF to check we get two ctors
     return ⟨dup, ⟨1⟩⟩
   let result ← reduceNF g .forTotalEval
   match result.value with
@@ -1298,13 +1290,6 @@ def testDupCtorFieldAccess : IO TestResult := do
     let dup ← GraphM.addNode (.dup label) testTy
     GraphM.connect (PortId.principal dup) (PortId.principal ctor)
 
-    -- Match copy0 to extract field0
-    let mat0 ← GraphM.addNode (.mat 0) testTy
-    let hit0 ← GraphM.addNode (.lam false) testTy  -- λpayload. ...
-    -- hit0 receives the ctor payload; we need to destructure
-    -- Simpler: use a record-based approach or just readback
-    -- Actually let's use the same pattern but readback both copies separately
-    -- and check that both are ctor(0, [3, 7])
     return ⟨dup, ⟨1⟩⟩
   let result ← reduceNF g .forTotalEval
   match result.value with

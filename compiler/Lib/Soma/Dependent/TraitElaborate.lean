@@ -295,7 +295,6 @@ private partial def valueContainsMeta : Value → Bool
   | .vRecord row => valueContainsMeta row
   | .vVariant row => valueContainsMeta row
   | .vConstructor _ _ args rty => args.any valueContainsMeta || valueContainsMeta rty
-  | .vEq _ ty l r => valueContainsMeta ty || valueContainsMeta l || valueContainsMeta r
   | _ => false
 where
   neutralContainsMeta (n : Neutral) : Bool :=
@@ -515,7 +514,7 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
   let (sigPrefix, resultType) ← extractMethodSignaturePrefix expectedType methodFn.params.size
 
   let (generatedParams, valueParams, coreBody) ←
-    withMethodSignaturePrefix sigPrefix methodFn.params methodFn.span do
+    withMethodSignaturePrefix sigPrefix (methodFn.params.map (·.name)) methodFn.span do
       let bodyIsProof ← Soma.Dependent.valueInPropUniverse resultType
       let checked ←
         if bodyIsProof then

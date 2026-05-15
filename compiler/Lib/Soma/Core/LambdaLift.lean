@@ -191,20 +191,6 @@ partial def substituteCtorTypeParams (v : Value) (params : Array Value) : Value 
   | .vConstructor name tag args rty =>
     .vConstructor name tag (args.map (substituteCtorTypeParams · params))
       (substituteCtorTypeParams rty params)
-  | .vEq lv ty l r =>
-    .vEq lv (substituteCtorTypeParams ty params)
-      (substituteCtorTypeParams l params)
-      (substituteCtorTypeParams r params)
-  | .vRefl ty x =>
-    .vRefl (substituteCtorTypeParams ty params)
-      (substituteCtorTypeParams x params)
-  | .vTransport lv ty motive lhs rhs eq body =>
-    .vTransport lv (substituteCtorTypeParams ty params)
-      (substituteCtorTypeParams motive params)
-      (substituteCtorTypeParams lhs params)
-      (substituteCtorTypeParams rhs params)
-      (substituteCtorTypeParams eq params)
-      (substituteCtorTypeParams body params)
   | other => other
 
 private def rowFieldTypeByLabel (row : Value) (label : String) : Option Value :=
@@ -397,13 +383,6 @@ partial def inlineIOBind (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   | .variantTy r => return .variantTy (← inlineIOBind r)
   | .dataTy id ps =>
     return .dataTy id (← ps.mapM inlineIOBind)
-  | .eqTy lv t l r =>
-    return .eqTy lv (← inlineIOBind t) (← inlineIOBind l) (← inlineIOBind r)
-  | .refl t x =>
-    return .refl (← inlineIOBind t) (← inlineIOBind x)
-  | .transport lv t m l r ep b =>
-    return .transport lv (← inlineIOBind t) (← inlineIOBind m) (← inlineIOBind l)
-      (← inlineIOBind r) (← inlineIOBind ep) (← inlineIOBind b)
   | .ann x t =>
     return .ann (← inlineIOBind x) (← inlineIOBind t)
   | _ => pure e
@@ -443,10 +422,6 @@ where
     | .recordTy r => go r acc
     | .variantTy r => go r acc
     | .dataTy _ ps => ps.foldl (fun a e => go e a) acc
-    | .eqTy _ t l r => go r (go l (go t acc))
-    | .refl t x => go x (go t acc)
-    | .transport _ t m l r ep b =>
-      go b (go ep (go r (go l (go m (go t acc)))))
     | .ann x t => go t (go x acc)
 
 /-- Collect free variables with their type expressions in deterministic first-occurrence order -/
@@ -515,20 +490,6 @@ where
     | .recordTy r | .variantTy r => go r seen acc
     | .dataTy _ ps =>
       ps.foldl (fun (seen, acc) e => go e seen acc) (seen, acc)
-    | .eqTy _ t l r =>
-      let (seen, acc) := go t seen acc
-      let (seen, acc) := go l seen acc
-      go r seen acc
-    | .refl t x =>
-      let (seen, acc) := go t seen acc
-      go x seen acc
-    | .transport _ t m l r ep b =>
-      let (seen, acc) := go t seen acc
-      let (seen, acc) := go m seen acc
-      let (seen, acc) := go l seen acc
-      let (seen, acc) := go r seen acc
-      let (seen, acc) := go ep seen acc
-      go b seen acc
     | .ann x t =>
       let (seen, acc) := go x seen acc
       go t seen acc
@@ -604,15 +565,6 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   | .recordTy r => do pure (.recordTy (← liftCoreExpr r))
   | .variantTy r => do pure (.variantTy (← liftCoreExpr r))
   | .dataTy id ps => do pure (.dataTy id (← ps.mapM (liftCoreExpr ·)))
-  | .eqTy lv t l r => do
-    pure (.eqTy lv (← liftCoreExpr t) (← liftCoreExpr l)
-                    (← liftCoreExpr r))
-  | .refl t x => do
-    pure (.refl (← liftCoreExpr t) (← liftCoreExpr x))
-  | .transport lv t m l r ep b => do
-    pure (.transport lv (← liftCoreExpr t) (← liftCoreExpr m)
-                     (← liftCoreExpr l) (← liftCoreExpr r)
-                     (← liftCoreExpr ep) (← liftCoreExpr b))
   | .ann x t => do
     pure (.ann (← liftCoreExpr x) (← liftCoreExpr t))
 

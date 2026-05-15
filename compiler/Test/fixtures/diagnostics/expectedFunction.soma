@@ -1,0 +1,8 @@
+// Fixture: expectedFunction (E1003)
+
+@[wired_in "type.int"]
+inductive Int32 where
+    | MkInt32
+
+def n : Int32 := Int32::MkInt32
+def x : Int32 := n n

@@ -13,6 +13,7 @@ import Test.Dependent.Equality
 import Test.Dependent.Totality
 import Test.Dependent.Integration
 import Test.Diagnostic.Snapshot
+import Test.Diagnostic.PathCoverage
 import Test.Alloy
 import Test.Circuit
 import Test.Circuit.Reduce
@@ -84,6 +85,10 @@ def main : IO UInt32 := do
   -- Run diagnostic snapshots
   let snapshotRunner ← Test.Diagnostic.Snapshot.run
   total := total.merge snapshotRunner
+
+  -- Run PathStep coverage regression
+  let pathCoverageRunner ← Test.Diagnostic.PathCoverage.run
+  total := total.merge pathCoverageRunner
 
   -- Run Alloy IR tests
   let alloyRunner ← Test.Alloy.run

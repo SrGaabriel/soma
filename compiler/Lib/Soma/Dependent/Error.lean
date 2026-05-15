@@ -2,7 +2,11 @@ import Soma.Core.Value
 import Soma.Core.Level
 import Soma.Core.Quantity
 import Soma.Core.Quote
+import Soma.Core.Pp
 import Soma.Diagnostic
+import Soma.Diagnostic.Pretty.Substrate
+import Soma.Dependent.Origin
+import Soma.Core.Path
 import Soma.Dependent.Suggest
 
 namespace Soma.Dependent
@@ -32,6 +36,24 @@ private def mkLinkedSupport (ctx : DiagContext) (span : Span) (msg : String)
     (linkGroup : String) : Label :=
   ctx.label span msg { LabelStyle.support with linkGroup := some linkGroup }
 
+private def mkDefinitionLabel (ctx : DiagContext) (span : Span) (msg : String) : Label :=
+  ctx.label span msg Soma.LabelStyle.definition
+
+private def mkReferenceLabel (ctx : DiagContext) (span : Span) (msg : String) : Label :=
+  ctx.label span msg Soma.LabelStyle.reference
+
+private def mkInsertedLabel (ctx : DiagContext) (span : Span) (msg : String) : Label :=
+  ctx.label span msg Soma.LabelStyle.inserted
+
+private def mkOverriddenLabel (ctx : DiagContext) (span : Span) (msg : String) : Label :=
+  ctx.label span msg Soma.LabelStyle.overridden
+
+private def mkEnclosedLabel (ctx : DiagContext) (span : Span) (msg : String) : Label :=
+  ctx.label span msg Soma.LabelStyle.enclosed
+
+private def mkSuggestionLabel (ctx : DiagContext) (span : Span) (msg : String) : Label :=
+  ctx.label span msg Soma.LabelStyle.suggestion
+
 /-- Assemble a typical elaborator diagnostic -/
 private def mkDiag (ctx : DiagContext) (code : String) (message : String)
     (primarySpan : Span) (primaryMsg : String := message)
@@ -50,98 +72,6 @@ private def mkDiag (ctx : DiagContext) (code : String) (message : String)
     helps := match help with | some h => [h] | none => []
     fixes }
 
-/-- The purpose of a type check - provides context for error messages -/
-inductive CheckPurpose where
-  /-- Checking function body against declared return type -/
-  | functionBody (fnName : String)
-  /-- Checking argument against parameter type -/
-  | functionArg (fnName : String) (argIndex : Nat)
-  /-- Checking if condition against Bool -/
-  | ifCondition
-  /-- Checking if branches have same type -/
-  | ifBranches
-  /-- Checking case arm bodies have same type -/
-  | caseArms
-  /-- Checking pattern against scrutinee type -/
-  | patternMatch
-  /-- Checking let binding value against declared type -/
-  | letBinding (name : String)
-  /-- Checking against explicit type annotation -/
-  | typeAnnotation
-  /-- Checking pair element -/
-  | pairElement (isFirst : Bool)
-  /-- General checking (fallback) -/
-  | general
-  deriving Repr, BEq, Inhabited
-
-namespace CheckPurpose
-
-def describe : CheckPurpose → String
-  | .functionBody fn => s!"in return type of function '{fn}'"
-  | .functionArg fn idx => s!"in argument {idx + 1} of call to '{fn}'"
-  | .ifCondition => "in if condition"
-  | .ifBranches => "in if/else branches"
-  | .caseArms => "in case expression arms"
-  | .patternMatch => "in pattern match"
-  | .letBinding name => s!"in let binding '{name}'"
-  | .typeAnnotation => "in type annotation"
-  | .pairElement true => "in first element of pair"
-  | .pairElement false => "in second element of pair"
-  | .general => ""
-
-end CheckPurpose
-
-/-- Where a constraint originated from -/
-inductive ConstraintOrigin where
-  /-- From checking an expression against an expected type -/
-  | checking (exprDesc : String) (expectedDesc : String) (span : Span)
-  /-- From inferring an expression's type -/
-  | inferring (exprDesc : String) (span : Span)
-  /-- From a function application -/
-  | application (fnName : String) (argIndex : Nat) (span : Span)
-  /-- From implicit argument insertion -/
-  | implicitArg (paramName : String) (fnName : String) (span : Span)
-  /-- From a type annotation -/
-  | annotation (span : Span)
-  /-- From pattern matching -/
-  | patternMatch (patternDesc : String) (span : Span)
-  /-- From instance resolution -/
-  | instanceSearch (className : String) (span : Span)
-  /-- From a let binding -/
-  | letBinding (name : String) (span : Span)
-  /-- From return type checking -/
-  | returnType (fnName : String) (span : Span)
-  /-- No origin information recorded -/
-  | unknown
-  deriving Repr, Inhabited
-
-namespace ConstraintOrigin
-
-def span : ConstraintOrigin → Option Span
-  | .checking _ _ s => some s
-  | .inferring _ s => some s
-  | .application _ _ s => some s
-  | .implicitArg _ _ s => some s
-  | .annotation s => some s
-  | .patternMatch _ s => some s
-  | .instanceSearch _ s => some s
-  | .letBinding _ s => some s
-  | .returnType _ s => some s
-  | .unknown => none
-
-def describe : ConstraintOrigin → String
-  | .checking expr expected _ => s!"checking `{expr}` against `{expected}`"
-  | .inferring expr _ => s!"inferring type of `{expr}`"
-  | .application fn idx _ => s!"argument {idx + 1} of `{fn}`"
-  | .implicitArg param fn _ => s!"implicit `{param}` in call to `{fn}`"
-  | .annotation _ => "type annotation"
-  | .patternMatch pat _ => s!"pattern `{pat}`"
-  | .instanceSearch cls _ => s!"finding instance for `{cls}`"
-  | .letBinding name _ => s!"let binding `{name}`"
-  | .returnType fn _ => s!"return type of `{fn}`"
-  | .unknown => "unknown origin"
-
-end ConstraintOrigin
 
 /-- Information about a constraint in the solving chain -/
 structure ConstraintInfo where
@@ -155,65 +85,118 @@ structure ConstraintInfo where
 
 /-- Reasons why unification might fail -/
 inductive UnifyFailure where
-  /-- Head mismatch -/
-  | headMismatch (v1 v2 : Value)
-  /-- Occurs check failed: metavariable appears in its solution -/
-  | occursCheck (metaId : MetaId) (value : Value)
-  /-- Rigid-rigid mismatch: two different stuck terms -/
-  | rigidMismatch (n1 n2 : Neutral)
+  /-- Head mismatch at the given structural path within `v1`/`v2` -/
+  | headMismatch
+      (v1 v2 : Value)
+      (path : Path)
+      (reduced : Option (Value × Value))
+      (trace : Array Soma.Attach.UnfoldStep)
+      (implicits : Option (String × Array Soma.Attach.InsertedImplicit))
+  /-- Occurs check failed -/
+  | occursCheck
+      (metaId : MetaId)
+      (value : Value)
+      (path : Path)
+      (roots : Option (Value × Value))
+  /-- Rigid-rigid mismatch at the given structural path -/
+  | rigidMismatch
+      (n1 n2 : Neutral)
+      (path : Path)
+      (roots : Option (Value × Value))
   /-- Universe level mismatch -/
-  | levelMismatch (l1 l2 : Level)
+  | levelMismatch
+      (l1 l2 : Level)
+      (path : Path)
+      (roots : Option (Value × Value))
   /-- Row label not found during rewriting -/
-  | rowLabelNotFound (label : String) (row : Value)
+  | rowLabelNotFound
+      (label : String)
+      (row : Value)
+      (path : Path)
+      (roots : Option (Value × Value))
   /-- Spine length mismatch in pattern unification -/
-  | spineLengthMismatch (expected actual : Nat)
+  | spineLengthMismatch
+      (expected actual : Nat)
+      (path : Path)
+      (roots : Option (Value × Value))
   /-- Non-linear pattern: variable appears multiple times -/
-  | nonLinearPattern (varName : String)
+  | nonLinearPattern
+      (varName : String)
+      (path : Path)
+      (roots : Option (Value × Value))
   /-- Solution would reference out-of-scope variable -/
-  | escapingVariable (varName : String) (level : DeBruijnLvl) (bindingSite : Option Span)
+  | escapingVariable
+      (varName : String)
+      (level : DeBruijnLvl)
+      (bindingSite : Option Span)
+      (path : Path)
+      (roots : Option (Value × Value))
   deriving Inhabited
 
 namespace UnifyFailure
 
-def message : UnifyFailure → String
-  | .headMismatch v1 v2 => s!"cannot unify `{v1}` with `{v2}`"
-  | .occursCheck m v => s!"infinite type: `{m}` would contain itself via `{v}`"
-  | .rigidMismatch n1 n2 => s!"cannot unify `{n1}` with `{n2}` (both are stuck)"
-  | .levelMismatch l1 l2 => s!"universe level mismatch: `{l1}` vs `{l2}`"
-  | .rowLabelNotFound label row => s!"field `{label}` not found in `{row}`"
-  | .spineLengthMismatch expected actual =>
-      s!"expected {expected} arguments, found {actual}"
-  | .nonLinearPattern name => s!"variable `{name}` appears multiple times in pattern"
-  | .escapingVariable name _ _ =>
-      s!"variable `{name}` would escape its scope in the solution"
+/-- Build the " at <path>" suffix shown in the headline message -/
+private def pathSuffix (path : Path) (roots : Option (Value × Value)) : String :=
+  if path.isEmpty then ""
+  else if roots.isSome then s!" at {path.describe}"
+  else s!" (at structural path {path.describe})"
 
-def detailedMessage : UnifyFailure → String
-  | .headMismatch v1 v2 =>
-      s!"The types `{v1}` and `{v2}` have incompatible structure and cannot be unified."
-  | .occursCheck m v =>
-      s!"Solving `{m}` would create an infinite type because `{m}` appears in its own solution `{v}`. " ++
-      "This usually means a type annotation is needed to break the cycle."
-  | .rigidMismatch n1 n2 =>
-      s!"Both `{n1}` and `{n2}` are blocked on unsolved variables or computations, " ++
-      "so they cannot be compared. Adding type annotations may help resolve them."
-  | .levelMismatch l1 l2 =>
+/-- Same shape as `pathSuffix` but for the multi-sentence `detailedMessage` -/
+private def pathDetail (path : Path) (roots : Option (Value × Value)) : String :=
+  if path.isEmpty then ""
+  else if roots.isSome then s!" The clash sits inside the {path.describe} of the surrounding types."
+  else s!" Structural path: {path.describe}."
+
+/-- One-line message describing the failure -/
+def message (pp : Soma.Core.PpContext) : UnifyFailure → String
+  | .headMismatch v1 v2 path _ _ _ =>
+      s!"cannot unify `{Soma.Core.Value.pp pp v1}` with `{Soma.Core.Value.pp pp v2}`{pathSuffix path none}"
+  | .occursCheck m v path roots =>
+      s!"infinite type: `?m{m.id}` would contain itself via `{Soma.Core.Value.pp pp v}`{pathSuffix path roots}"
+  | .rigidMismatch n1 n2 path roots =>
+      s!"cannot unify `{Soma.Core.Neutral.pp pp n1}` with `{Soma.Core.Neutral.pp pp n2}` (both are stuck){pathSuffix path roots}"
+  | .levelMismatch l1 l2 path roots =>
+      s!"universe level mismatch: `{l1}` vs `{l2}`{pathSuffix path roots}"
+  | .rowLabelNotFound label row path roots =>
+      s!"field `{label}` not found in `{Soma.Core.Value.pp pp row}`{pathSuffix path roots}"
+  | .spineLengthMismatch expected actual path roots =>
+      s!"expected {expected} arguments, found {actual}{pathSuffix path roots}"
+  | .nonLinearPattern name path roots =>
+      s!"variable `{name}` appears multiple times in pattern{pathSuffix path roots}"
+  | .escapingVariable name _ _ path roots =>
+      s!"variable `{name}` would escape its scope in the solution{pathSuffix path roots}"
+
+/-- Multi-sentence explanation of the failure -/
+def detailedMessage (pp : Soma.Core.PpContext) : UnifyFailure → String
+  | .headMismatch v1 v2 path _ _ _ =>
+      let suf :=
+        if path.isEmpty then ""
+        else s!" The obstruction lies in the {path.describe}."
+      s!"The types `{Soma.Core.Value.pp pp v1}` and `{Soma.Core.Value.pp pp v2}` have incompatible structure and cannot be unified.{suf}"
+  | .occursCheck m v path roots =>
+      s!"Solving `?m{m.id}` would create an infinite type because `?m{m.id}` appears in its own solution `{Soma.Core.Value.pp pp v}`. " ++
+      "This usually means a type annotation is needed to break the cycle." ++ pathDetail path roots
+  | .rigidMismatch n1 n2 path roots =>
+      s!"Both `{Soma.Core.Neutral.pp pp n1}` and `{Soma.Core.Neutral.pp pp n2}` are blocked on unsolved variables or computations, " ++
+      "so they cannot be compared. Adding type annotations may help resolve them." ++ pathDetail path roots
+  | .levelMismatch l1 l2 path roots =>
       s!"Universe levels `{l1}` and `{l2}` cannot be unified. " ++
-      "This may indicate mixing values and types incorrectly."
-  | .rowLabelNotFound label row =>
-      s!"The row type `{row}` does not contain a field named `{label}`."
-  | .spineLengthMismatch expected actual =>
-      s!"Function was applied to {actual} arguments but expected {expected}."
-  | .nonLinearPattern name =>
+      "This may indicate mixing values and types incorrectly." ++ pathDetail path roots
+  | .rowLabelNotFound label row path roots =>
+      s!"The row type `{Soma.Core.Value.pp pp row}` does not contain a field named `{label}`." ++ pathDetail path roots
+  | .spineLengthMismatch expected actual path roots =>
+      s!"Function was applied to {actual} arguments but expected {expected}." ++ pathDetail path roots
+  | .nonLinearPattern name path roots =>
       s!"In pattern unification, each variable must appear exactly once, " ++
-      s!"but `{name}` appears multiple times."
-  | .escapingVariable name lvl bindingSite =>
+      s!"but `{name}` appears multiple times." ++ pathDetail path roots
+  | .escapingVariable name lvl bindingSite path roots =>
       let siteInfo := match bindingSite with
         | some _ => " (see binding site)"
         | none => s!" (at De Bruijn level {lvl.lvl})"
       s!"Variable `{name}`{siteInfo} is not in scope where the solution would be used. " ++
-      "This often happens when trying to solve an outer metavariable with an inner-scoped variable."
+      "This often happens when trying to solve an outer metavariable with an inner-scoped variable." ++ pathDetail path roots
 
-instance : ToString UnifyFailure := ⟨UnifyFailure.message⟩
+instance : ToString UnifyFailure := ⟨UnifyFailure.message .empty⟩
 
 end UnifyFailure
 
@@ -237,6 +220,20 @@ structure MetaConstraintInfo where
   isBlocked : Bool
   deriving Repr, Inhabited
 
+/-- Which kind of branch construct fired a `branchTypeMismatch` -/
+inductive BranchKind where
+  | ifElse
+  | caseArms
+  deriving Repr, BEq, Inhabited
+
+namespace BranchKind
+
+def describe : BranchKind → String
+  | .ifElse => "branches of `if/else`"
+  | .caseArms => "arms of `case`"
+
+end BranchKind
+
 /-- Type checking errors with full provenance information -/
 inductive TCError where
   /-- Unification failed with full constraint chain -/
@@ -256,11 +253,17 @@ inductive TCError where
       (actualSpan : Span)
       (inferenceSteps : Array ConstraintInfo)
 
+  /-- Branches of an `if` / `case` disagree on their result type -/
+  | branchTypeMismatch
+      (kind : BranchKind)
+      (branches : Array (Span × Value))
+      (span : Span)
+
   /-- Expected a function type (Pi) but got something else -/
   | expectedFunction
       (actual : Value)
       (span : Span)
-      (inferredFrom : Option ConstraintOrigin)
+      (inferredFrom : ConstraintOrigin)
 
   /-- Expected a type (universe) but got something else -/
   | expectedType
@@ -297,7 +300,7 @@ inductive TCError where
       (recordTy : Value)
       (span : Span)
       (availableFields : Array String)
-      (inferredRecordType : Option ConstraintOrigin)
+      (inferredRecordType : ConstraintOrigin)
 
   /-- Wrong number of arguments to constructor -/
   | wrongConstructorArity
@@ -336,12 +339,7 @@ inductive TCError where
       (span : Span)
       (relatedConstraints : Array MetaConstraintInfo)
       (suggestedFix : Option String)
-
-  /-- Unsolved hole -/
-  | unsolvedHole
-      (name : Option String)
-      (ty : Value)
-      (span : Span)
+      (localContext : List (String × Value) := [])
 
   /-- Cannot infer implicit argument -/
   | ambiguousImplicit
@@ -354,20 +352,10 @@ inductive TCError where
   | cannotInfer
       (reason : String)
       (span : Span)
-      (context : Option ConstraintOrigin)
+      (context : ConstraintOrigin)
 
   /-- Compiler bug -/
   | compilerBug
-      (message : String)
-      (span : Span)
-
-  /-- Feature the compiler doesn't yet handle -/
-  | unhandledFeature
-      (feature : String)
-      (span : Span)
-
-  /-- The user wrote something well-formed-but-meaningless -/
-  | userTriggered
       (message : String)
       (span : Span)
 
@@ -481,10 +469,24 @@ inductive TCError where
 
 namespace TCError
 
+/-- Whether this error should be treated as the root of a cascade -/
+def isCascadeRoot : TCError → Bool
+  | .partialTheorem _ _ => true
+  | .terminationCheckFailed _ _ _ _ _ => true
+  | .positivityViolation _ _ _ _ => true
+  | .partialInhabitsUninhabited _ _ => true
+  | .partialInTypeIndex _ _ => true
+  | .bodilessNotDerivable _ _ _ => true
+  | .patternArityMismatch _ _ _ _ _ => true
+  | .impossiblePattern _ _ _ _ => true
+  | .propElimToType _ _ _ => true
+  | _ => false
+
 /-- Get the primary span of an error -/
 def span : TCError → Span
   | .unificationFailed _ _ s _ _ => s
   | .typeMismatch _ _ _ _ s _ => s
+  | .branchTypeMismatch _ _ s => s
   | .expectedFunction _ s _ => s
   | .expectedType _ s _ => s
   | .expectedRecord _ s _ => s
@@ -497,13 +499,10 @@ def span : TCError → Span
   | .linearNotUsed _ s => s
   | .linearUsedMultiple _ _ s => s
   | .erasedUsedAtRuntime _ s _ => s
-  | .unsolvedMeta _ s _ _ => s
-  | .unsolvedHole _ _ s => s
+  | .unsolvedMeta _ s _ _ _ => s
   | .ambiguousImplicit _ s _ _ => s
   | .cannotInfer _ s _ => s
   | .compilerBug _ s => s
-  | .unhandledFeature _ s => s
-  | .userTriggered _ s => s
   | .noInstance _ _ s _ _ => s
   | .instanceCycle _ s _ => s
   | .instanceDepthExceeded _ s _ => s
@@ -523,41 +522,68 @@ def span : TCError → Span
   | .missingInstanceMethods _ _ s => s
 
 /-- Build secondary labels from constraint chain -/
-private def chainToLabels (ctx : DiagContext) (chain : Array ConstraintInfo) : Array Label :=
+private def chainToLabels (ctx : DiagContext) (pp : Soma.Core.PpContext)
+    (chain : Array ConstraintInfo) : Array Label :=
   chain.filterMap fun info =>
     if info.span != Span.uninhabited then
-      some (ctx.support info.span info.origin.describe)
+      some (ctx.support info.span (info.origin.describeWith pp))
     else
       none
 
 /-- Convert a TCError to a Diagnostic for rich rendering -/
-def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
+def toDiagnostic (ctx : DiagContext) (pp : Soma.Core.PpContext)
+    (e : TCError) : Diagnostic :=
+  letI : ToString Soma.Core.Value := ⟨Soma.Core.Value.pp pp⟩
+  letI : ToString Soma.Core.Neutral := ⟨Soma.Core.Neutral.pp pp⟩
+  let maybeMarkRoot (d : Diagnostic) : Diagnostic :=
+    if e.isCascadeRoot then Soma.markCascadeRoot d else d
+  maybeMarkRoot <| match e with
   | .unificationFailed failure purpose span chain _metas =>
     let purposeStr := purpose.describe
     let baseMsg := match failure with
-      | .headMismatch _ _ => "type mismatch"
-      | .occursCheck _ _ => "infinite type"
-      | .rigidMismatch _ _ => "unification stuck"
-      | .escapingVariable _ _ _ => "scope error"
-      | .levelMismatch _ _ => "universe level mismatch"
+      | .headMismatch .. => "type mismatch"
+      | .occursCheck .. => "infinite type"
+      | .rigidMismatch .. => "unification stuck"
+      | .escapingVariable .. => "scope error"
+      | .levelMismatch .. => "universe level mismatch"
       | _ => "unification failed"
     let msg := if purposeStr.isEmpty
       then baseMsg
       else s!"{baseMsg} {purposeStr}"
-    let secondaryLabels := chainToLabels ctx chain
+    let secondaryLabels := chainToLabels ctx pp chain
     let unifySteps : List Soma.Attach.UnifyStep :=
       chain.toList.map fun info =>
-        { origin := info.origin.describe, description := info.description }
+        { origin := info.origin.describeWith pp, description := info.description }
     let traceAttach := Soma.Attach.unifyTrace unifySteps
+    let vpp (v : Soma.Core.Value) : String := Soma.Core.Value.pp pp v
+    let npp (n : Soma.Core.Neutral) : String := Soma.Core.Neutral.pp pp n
     let attachments : List Psychopomp.Attachment := match failure with
-      | .headMismatch v1 v2 | .rigidMismatch v1 v2 =>
-        [Soma.Attach.typeMismatch (toString v1) (toString v2), traceAttach]
-      | .levelMismatch l1 l2 =>
+      | .headMismatch v1 v2 _ reduced trace implicits =>
+        let mismatchAttach := Soma.Attach.typeMismatch (vpp v1) (vpp v2)
+        let defEqAttach : List Psychopomp.Attachment := match reduced with
+          | some (r1, r2) =>
+            let s1 := vpp v1
+            let s2 := vpp v2
+            let rs1 := vpp r1
+            let rs2 := vpp r2
+            if rs1 == s1 && rs2 == s2 then [] else [Soma.Attach.defEqHint rs1 rs2]
+          | none => []
+        let unfoldAttach : List Psychopomp.Attachment :=
+          if trace.isEmpty then [] else [Soma.Attach.unfoldTrace trace.toList]
+        let implicitsAttach : List Psychopomp.Attachment :=
+          match implicits with
+          | some (surface, ii) =>
+            if ii.isEmpty then [] else [Soma.Attach.implicits surface ii.toList]
+          | none => []
+        [mismatchAttach] ++ defEqAttach ++ unfoldAttach ++ implicitsAttach ++ [traceAttach]
+      | .rigidMismatch n1 n2 _ _ =>
+        [Soma.Attach.typeMismatch (npp n1) (npp n2), traceAttach]
+      | .levelMismatch l1 l2 _ _ =>
         [Soma.Attach.universeMismatch (toString l1) (toString l2), traceAttach]
       | _ => [traceAttach]
-    { (mkDiag ctx "E1001" msg span failure.message
+    { (mkDiag ctx "E1001" msg span (failure.message pp)
         (secondary := secondaryLabels)
-        (notes := [failure.detailedMessage])
+        (notes := [failure.detailedMessage pp])
         (help := some "add type annotations to help the compiler infer types")) with
       attachments }
 
@@ -567,22 +593,20 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
       then "type mismatch"
       else s!"type mismatch {purposeStr}"
     let baseLabels := #[mkSupport ctx expectedSpan "expected type from here"]
-    let stepLabels := chainToLabels ctx steps
+    let stepLabels := chainToLabels ctx pp steps
     let help : Option String := match purpose with
       | .functionBody fn =>
         some s!"change `{fn}`'s return type or the body to match"
       | .functionArg fn idx =>
         some s!"pass a value of type `{expected}` as argument #{idx + 1} to `{fn}`"
       | .ifCondition => some "`if` conditions must have type `Bool`"
-      | .ifBranches => some "both branches of an `if` must have the same type"
-      | .caseArms => some "every arm of a `case` must produce the same type"
       | .patternMatch => some "the pattern doesn't match the scrutinee's type"
       | .letBinding nm => some s!"the value bound to `{nm}` doesn't match its annotation"
       | .typeAnnotation => some "the expression doesn't match its type annotation"
       | _ => none
     let mismatchAttach := Soma.Attach.typeMismatch (toString expected) (toString actual)
     let traceSteps : List Soma.Attach.UnifyStep := steps.toList.map fun info =>
-      { origin := info.origin.describe, description := info.description }
+      { origin := info.origin.describeWith pp, description := info.description }
     let traceAttach := Soma.Attach.unifyTrace traceSteps
     let attachments :=
       if steps.isEmpty then [mismatchAttach] else [mismatchAttach, traceAttach]
@@ -592,10 +616,29 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
         (help := help)) with
       attachments }
 
+  | .branchTypeMismatch kind branches span =>
+    let group := "branches-must-agree"
+    let labels : Array Label := branches.mapIdx fun i (bspan, btype) =>
+      let msg := s!"branch {i + 1}: `{toString btype}`"
+      if i == 0 then
+        mkLinkedPrimary ctx bspan msg group
+      else
+        mkLinkedSupport ctx bspan msg group
+    let primary := labels[0]?.getD (mkPrimary ctx span "branches must agree")
+    let secondary := if labels.size <= 1 then #[] else labels.extract 1 labels.size
+    let kindStr := kind.describe
+    { (mkDiag ctx "E1042"
+        s!"types of {kindStr} disagree" span
+        (primaryMsg := "branches must produce the same type")
+        (secondary := secondary)
+        (notes := ["every branch contributes to the result type; they have to unify"])
+        (help := some "make the branches agree, or annotate the construct's result type"))
+      with primary }
+
   | .expectedFunction actual span origin =>
     let originNote := match origin with
-      | some o => [s!"type was inferred from: {o.describe}"]
-      | none => []
+      | .unknown => []
+      | o => [s!"type was inferred from: {o.describeWith pp}"]
     mkDiag ctx "E1003" "expected function type" span
       (primaryMsg := s!"`{actual}` is not a function")
       (notes := "function application requires a function type (Π-type)" :: originNote)
@@ -645,8 +688,8 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
     let fieldsNote := if availableFields.isEmpty then ""
       else s!"\navailable fields: {String.intercalate ", " availableFields.toList}"
     let originNote := match origin with
-      | some o => [s!"record type inferred from: {o.describe}"]
-      | none => []
+      | .unknown => []
+      | o => [s!"record type inferred from: {o.describeWith pp}"]
     let suggestions := Soma.Dependent.Suggest.suggestSimilar field availableFields
     let help := Soma.Dependent.Suggest.formatSuggestions suggestions
     mkDiag ctx "E1010" s!"field `{field}` not found" span
@@ -671,8 +714,13 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
       (help := some "use the variable or change its quantity to `0` or `ω`")
 
   | .linearUsedMultiple varName firstUse secondUse =>
-    let primary := mkLinkedPrimary ctx secondUse "used again here" "linear-uses"
-    let firstLabel := mkLinkedSupport ctx firstUse "first used here" "linear-uses"
+    let group := "linear-uses"
+    let primary : Label :=
+      ctx.label secondUse "used again here"
+        { Soma.LabelStyle.reference with weight := 100, color := .severity, linkGroup := some group }
+    let firstLabel : Label :=
+      ctx.label firstUse "first used here"
+        { Soma.LabelStyle.reference with linkGroup := some group }
     { (mkDiag ctx "E1015"
         s!"linear variable `{varName}` used multiple times"
         secondUse (primaryMsg := "used again here")
@@ -683,7 +731,9 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
 
   | .erasedUsedAtRuntime varName span declSpan =>
     let secondaryLabels := match declSpan with
-      | some ds => #[mkSupport ctx ds s!"`{varName}` declared as erased (quantity `0`) here"]
+      | some ds =>
+        #[mkDefinitionLabel ctx ds
+            s!"`{varName}` declared as erased (quantity `0`) here"]
       | none => #[]
     mkDiag ctx "E1016"
       s!"erased variable `{varName}` used at runtime"
@@ -692,11 +742,11 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
       (notes := ["variables with quantity `0` are erased and exist only for type checking"])
       (help := some "change the quantity to `ω` or `1` if runtime access is needed")
 
-  | .unsolvedMeta ty span relatedConstraints suggestedFix =>
+  | .unsolvedMeta ty span relatedConstraints suggestedFix _ctxLocals =>
     let originList : List Soma.Attach.MetaConstraint :=
       relatedConstraints.toList.map fun c =>
         { description := c.description
-          origin := c.origin.describe
+          origin := c.origin.describeWith pp
           blocked := c.isBlocked }
     let metaAttach := Soma.Attach.metavarOrigins originList
     let help := suggestedFix.getD "add a type annotation to help inference"
@@ -705,16 +755,11 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
         (help := some help))
       with attachments := [metaAttach] }
 
-  | .unsolvedHole name ty span =>
-    let nameStr := name.getD "_"
-    mkDiag ctx "E1018" s!"unsolved hole `?{nameStr}`" span
-      (primaryMsg := s!"has type `{ty}`")
-
   | .ambiguousImplicit paramName span relatedConstraints partialInfo =>
     let originList : List Soma.Attach.MetaConstraint :=
       relatedConstraints.toList.map fun c =>
         { description := c.description
-          origin := c.origin.describe
+          origin := c.origin.describeWith pp
           blocked := c.isBlocked }
     let metaAttach := Soma.Attach.metavarOrigins originList
     let partialNote := match partialInfo with
@@ -728,8 +773,8 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
 
   | .cannotInfer reason span context =>
     let contextNote := match context with
-      | some o => [s!"while {o.describe}"]
-      | none => []
+      | .unknown => []
+      | o => [s!"while {o.describeWith pp}"]
     mkDiag ctx "E1020" "cannot infer type" span
       (primaryMsg := reason)
       (notes := contextNote)
@@ -741,16 +786,6 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
       (help := some "please report this at https://github.com/SrGaabriel/soma/issues with the failing input")
       (audience := ["compilerDev"])
       (certainty := .suspected)
-
-  | .unhandledFeature feature span =>
-    mkDiag ctx "E1098" s!"unsupported: {feature}" span
-      (primaryMsg := s!"the compiler does not yet handle {feature} here")
-      (notes := ["this is a known limitation, not a bug"])
-      (help := some "track the relevant issue or open a feature request if none exists")
-
-  | .userTriggered message span =>
-    mkDiag ctx "E1097" message span
-      (notes := ["the input is well-formed but the elaborator cannot proceed"])
 
   | .noInstance classId _args span attemptedInstances availableInstances =>
     let className := classId.original
@@ -946,9 +981,77 @@ def toDiagnostic (ctx : DiagContext) : TCError → Diagnostic
 /-- The context-free headline string for a `TCError` -/
 def headline (e : TCError) : String :=
   let ctx : DiagContext := default
-  (toDiagnostic ctx e).message
+  (toDiagnostic ctx Soma.Core.PpContext.empty e).message
 
 instance : ToString TCError := ⟨TCError.headline⟩
+
+/-- Build a diagnostic for `e` and decorate it with value-substrate snippet blocks where applicable -/
+def toDiagnosticDecorated (ctx : DiagContext) (pp : Soma.Core.PpContext)
+    (e : TCError) : DiagContext × Diagnostic :=
+  let baseDiag := toDiagnostic ctx pp e
+  let attachUnary (ctx : DiagContext) (v : Soma.Core.Value)
+      (name : String) (msg : String) (d : Diagnostic)
+      : DiagContext × Diagnostic :=
+    let (ctx', _, lbl) :=
+      ctx.putValueSubstrate pp v name msg Psychopomp.LabelStyle.support
+    (ctx', { d with secondary := d.secondary ++ [lbl] })
+  let decorateWithRoots (ctx : DiagContext) (path : Path)
+      (roots : Option (Soma.Core.Value × Soma.Core.Value))
+      (fallback : Soma.Core.Value × Soma.Core.Value)
+      (src : String) (d : Diagnostic) : DiagContext × Diagnostic :=
+    let (v1, v2) := roots.getD fallback
+    Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx pp v1 v2 src d (path := path)
+  match e with
+  | .unificationFailed (.headMismatch v1 v2 path _ _ _) _ span _ _ =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx pp v1 v2 src baseDiag (path := path)
+  | .unificationFailed (.rigidMismatch n1 n2 path roots) _ span _ _ =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    decorateWithRoots ctx path roots
+      (.vNeutral .type0 n1, .vNeutral .type0 n2) src baseDiag
+  | .unificationFailed (.occursCheck _ v path roots) _ span _ _ =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    decorateWithRoots ctx path roots (v, v) src baseDiag
+  | .unificationFailed (.escapingVariable _ _ _ path roots) _ span _ _ =>
+    match roots with
+    | some _ =>
+      let src := s!"{span.start.line}:{span.start.column}"
+      decorateWithRoots ctx path roots (.vRowSort, .vRowSort) src baseDiag
+    | none => (ctx, baseDiag)
+  | .unificationFailed (.levelMismatch _ _ path (some (v1, v2))) _ span _ _ =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx pp v1 v2 src baseDiag (path := path)
+  | .unificationFailed (.rowLabelNotFound _ _ path (some (v1, v2))) _ span _ _ =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx pp v1 v2 src baseDiag (path := path)
+  | .unificationFailed (.spineLengthMismatch _ _ path (some (v1, v2))) _ span _ _ =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx pp v1 v2 src baseDiag (path := path)
+  | .typeMismatch expected actual _ _ actualSpan _ =>
+    let src := s!"{actualSpan.start.line}:{actualSpan.start.column}"
+    Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx pp expected actual src baseDiag
+  | .expectedFunction actual span _ =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    attachUnary ctx actual s!"<actual at {src}>" "not a function" baseDiag
+  | .fieldNotFound _field recordTy span _ _ =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    attachUnary ctx recordTy s!"<record at {src}>" "this record type" baseDiag
+  | .unsolvedMeta ty span _ _ ctxLocals =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    if ctxLocals.isEmpty then
+      attachUnary ctx ty s!"<expected at {src}>" "expected type" baseDiag
+    else
+      let hyps : List Soma.Diagnostic.Pretty.Substrate.GoalHyp :=
+        ctxLocals.map fun (n, t) =>
+          { name := n, type := Soma.Core.Value.pp pp t }
+      let (ctx', _, lbl) :=
+        ctx.putGoalSubstrate pp hyps ty s!"<goal at {src}>"
+          "this goal is unsolved" Psychopomp.LabelStyle.support
+      (ctx', { baseDiag with secondary := baseDiag.secondary ++ [lbl] })
+  | .impossiblePattern _ctor ctorTy scrutTy span =>
+    let src := s!"{span.start.line}:{span.start.column}"
+    Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx pp scrutTy ctorTy src baseDiag
+  | _ => (ctx, baseDiag)
 
 end TCError
 
@@ -958,8 +1061,20 @@ abbrev TCErrors := Array TCError
 namespace TCErrors
 
 /-- Convert all errors to diagnostics -/
-def toDiagnostics (ctx : DiagContext) (errs : TCErrors) : Array Diagnostic :=
-  errs.map (TCError.toDiagnostic ctx)
+def toDiagnostics (ctx : DiagContext) (pp : Soma.Core.PpContext)
+    (errs : TCErrors) : Array Diagnostic :=
+  errs.map (TCError.toDiagnostic ctx pp)
+
+/-- Convert all errors to diagnostics with substrate decoration -/
+def toDiagnosticsDecorated (ctx : DiagContext) (pp : Soma.Core.PpContext)
+    (errs : TCErrors) : DiagContext × Array Diagnostic := Id.run do
+  let mut c := ctx
+  let mut diags : Array Diagnostic := #[]
+  for e in errs do
+    let (c', d) := TCError.toDiagnosticDecorated c pp e
+    c := c'
+    diags := diags.push d
+  return (c, diags)
 
 /-- Check if there are any errors -/
 def hasErrors (errs : TCErrors) : Bool :=

@@ -1,0 +1,17 @@
+// Fixture: branchTypeMismatch (E1042)
+
+@[wired_in "type.bool"]
+inductive Bool where
+    | False
+    | True
+
+@[wired_in "type.int"]
+inductive Int32 where
+    | MkInt32
+
+@[wired_in "type.string"]
+record String where
+    data : Type
+    len  : Type
+
+def x := if Bool::True then "hello" else Int32::MkInt32

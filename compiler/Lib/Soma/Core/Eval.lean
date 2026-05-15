@@ -18,6 +18,10 @@ structure GlobalEnv where
   recordCtorInfo : Std.HashMap Unique (Value × Array String) := {}
   /-- Map from wired-in primitive type kinds to their underlying inductive data-type unique IDs -/
   primTyToInductiveId : Std.HashMap PrimType Unique := {}
+  /-- The id of the wired-in `Eq` inductive -/
+  eqInductiveId : Option Unique := none
+  /-- The refl constructor -/
+  reflConstructor : Option (QualifiedName × Nat) := none
   deriving Inhabited
 
 namespace GlobalEnv
@@ -319,18 +323,6 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   | .labelLit name => .vLabelLit name
   | .dataTy id params => .vDataType id (params.toList.map (evalCoreExpr ctx))
 
-  | .eqTy tyLevel ty lhs rhs =>
-    .vEq tyLevel (evalCoreExpr ctx ty) (evalCoreExpr ctx lhs) (evalCoreExpr ctx rhs)
-  | .refl ty x => .vRefl (evalCoreExpr ctx ty) (evalCoreExpr ctx x)
-  | .transport tyLevel ty motive lhs rhs eq body =>
-    let eqVal := evalCoreExpr ctx eq
-    match eqVal with
-    | .vRefl _ _ => evalCoreExpr ctx body
-    | _ =>
-      .vTransport tyLevel (evalCoreExpr ctx ty) (evalCoreExpr ctx motive)
-                  (evalCoreExpr ctx lhs) (evalCoreExpr ctx rhs)
-                  eqVal (evalCoreExpr ctx body)
-
   | .if_ cond then_ else_ =>
     match evalCoreExpr ctx cond with
     | .vConstructor _ 0 _ _ => evalCoreExpr ctx then_
@@ -598,7 +590,6 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
   | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
-  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
   | .proj _ _ _ | .tyvar _ _ => .vType .zero
 
   | .mvar _ | .recordUpdate _ _ | .panic _ => .vType .zero

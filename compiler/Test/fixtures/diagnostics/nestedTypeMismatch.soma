@@ -1,0 +1,18 @@
+// Fixture: nested type mismatch
+
+inductive Bool where
+    | False
+    | True
+
+inductive Int32 where
+    | MkInt32
+
+inductive Pair (a : Type) (b : Type) where
+    | MkPair (fst : a) (snd : b)
+
+def f : Pair Int32 Int32 -> Int32
+    | Pair::MkPair x _ => x
+
+def y : Pair Int32 Bool := Pair::MkPair Int32::MkInt32 Bool::True
+
+def z : Int32 := f y

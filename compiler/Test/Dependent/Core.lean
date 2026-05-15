@@ -386,9 +386,11 @@ def testEqualityType : IO TestResult := do
   let ty := testIntTy
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 1
-  let eq := Value.vEq Level.zero ty lhs rhs
+  let eqId : Soma.Unique := ⟨2000, "test", "Eq"⟩
+  let eq := Value.vDataType eqId [ty, lhs, rhs]
   match eq with
-  | .vEq (.lit 0) (.vDataType ⟨1001, "test", "Int32"⟩ []) (.vIntLit 1) (.vIntLit 1) =>
+  | .vDataType ⟨2000, "test", "Eq"⟩
+      [.vDataType ⟨1001, "test", "Int32"⟩ [], .vIntLit 1, .vIntLit 1] =>
     return .passed
   | _ => return .failed "equality type should be constructed correctly"
 
@@ -396,9 +398,15 @@ def testEqualityType : IO TestResult := do
 def testRefl : IO TestResult := do
   let ty := testIntTy
   let x := Value.vIntLit 42
-  let refl := Value.vRefl ty x
+  let eqId : Soma.Unique := ⟨2000, "test", "Eq"⟩
+  let reflName : QualifiedName := ⟨⟨2001, "test", "refl"⟩⟩
+  let resultTy : Value := .vDataType eqId [ty, x, x]
+  let refl : Value := .vConstructor reflName 0 [ty, x] resultTy
   match refl with
-  | .vRefl (.vDataType ⟨1001, "test", "Int32"⟩ []) (.vIntLit 42) => return .passed
+  | .vConstructor name 0
+      [.vDataType ⟨1001, "test", "Int32"⟩ [], .vIntLit 42] _ =>
+    if name == reflName then return .passed
+    else return .failed s!"unexpected refl name: {name.display}"
   | _ => return .failed "refl should be constructed correctly"
 
 def run : IO TestRunner := do

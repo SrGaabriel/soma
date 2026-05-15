@@ -1,0 +1,9 @@
+// Fixture: wrongConstructorArity (E1012)
+
+@[wired_in "type.pair"]
+inductive Pair (a : Type) (b : Type) where
+    @[wired_in "pair"]
+    | MkPair (fst : a) (snd : b)
+
+def fst : Pair Type Type -> Type
+    | Pair::MkPair x => x

@@ -34,10 +34,22 @@ structure ClosureInfo where
   capturedVars : Array (Soma.Unique × String)
   deriving BEq
 
+/-- A single parameter slot on an untyped function -/
+structure FunctionParam where
+  name : String
+  typeSyntax : Option Soma.Syntax.Expr := none
+  deriving Repr, Inhabited
+
+namespace FunctionParam
+
+def ofName (n : String) : FunctionParam := { name := n }
+
+end FunctionParam
+
 /-- A function produced by lowering (body is raw syntax, elaborated by type checker) -/
 structure Function where
   name : QualifiedName
-  params : Array String
+  params : Array FunctionParam
   body : Soma.Syntax.Expr
   span : Soma.Syntax.Span
   declaredTypeSyntax : Option Soma.Syntax.Expr
@@ -52,6 +64,8 @@ def qualifiedName (f : Function) : QualifiedName :=
   f.name
 
 def arity (f : Function) : Nat := f.params.size
+
+def paramNames (f : Function) : Array String := f.params.map (·.name)
 
 def isClosure (f : Function) : Bool := f.closureInfo.isSome
 

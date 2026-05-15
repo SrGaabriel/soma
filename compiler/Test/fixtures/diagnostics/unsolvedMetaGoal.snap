@@ -1,0 +1,16 @@
+error[E1017]: could not infer a type here
+  ,-> Test/fixtures/diagnostics/unsolvedMetaGoal.soma:9:1
+  |
+8 |
+9 | def f (x : Int32) := id id
+  | -------------------------- expected a value of type `(x : Int32) -> Type`
+  |
+  ,-> <goal at 9:1>:2:3
+  |
+1 | x : Int32
+2 | ⊢ (x : Int32) -> Type
+  |   ------------------- this goal is unsolved
+  |
+  = help: add a type annotation to help inference
+  = metavar origins:
+      (no related constraints)

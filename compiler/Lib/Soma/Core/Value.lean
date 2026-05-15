@@ -63,23 +63,8 @@ inductive Value where
   /-- Constructor application -/
   | vConstructor (name : QualifiedName) (tag : Nat) (args : List Value) (resultTy : Value)
 
-  /-- Equality type: a = b -/
-  | vEq (tyLevel : Level) (ty : Value) (lhs rhs : Value)
 
-  /-- Reflexivity proof -/
-  | vRefl (ty : Value) (x : Value)
-
-  /-- Transport along equality: transporting a value from P x to P y via equality proof x = y -/
-  | vTransport (tyLevel : Level) (ty : Value) (motive : Value) (lhs rhs : Value)
-               (eq : Value) (body : Value)
-
-
-/-- Closure: represents a function waiting for an argument.
-    We support two representations:
-    1. term: An Expr with its environment, for closures created during evaluation
-    2. const: A constant Value, for non-dependent closures (like arrow type codomains)
-
-    The const variant is for non-dependent types where the result doesn't depend on the argument. -/
+/-- Represents a function waiting for an argument -/
 inductive Closure where
   /-- Expr-based closure: evaluates body under extended environment -/
   | term (name : String) (env : Env) (body : Soma.Core.Expr) : Closure
@@ -414,12 +399,6 @@ mutual
       params.foldl (fun acc p => acc ++ Value.collectMetas p) #[]
     | .vConstructor _ _ args _ =>
       args.foldl (fun acc a => acc ++ Value.collectMetas a) #[]
-    | .vEq _ ty lhs rhs =>
-      Value.collectMetas ty ++ Value.collectMetas lhs ++ Value.collectMetas rhs
-    | .vRefl ty x => Value.collectMetas ty ++ Value.collectMetas x
-    | .vTransport _ ty motive lhs rhs eq body =>
-      Value.collectMetas ty ++ Value.collectMetas motive ++ Value.collectMetas lhs ++
-      Value.collectMetas rhs ++ Value.collectMetas eq ++ Value.collectMetas body
 
   partial def Neutral.collectMetas (n : Neutral) : Array MetaId :=
     Head.collectMetas n.head ++ n.spine.foldl (fun acc e => acc ++ Elim.collectMetas e) #[]
@@ -449,6 +428,8 @@ inductive MetaOrigin where
   | user
   /-- Synthesized during error recovery -/
   | errorRecovery
+  /-- A pattern variable -/
+  | patternVar
   deriving Repr, BEq, Inhabited
 
 /-- Information about a metavariable -/
@@ -468,6 +449,8 @@ structure MetaInfo where
   piLevel : Option Nat := none
   /-- Why this meta was created -/
   origin : MetaOrigin := .user
+  /-- Display hint for pretty-printing -/
+  displayHint : Option String := none
   deriving Inhabited
 
 /-- A constraint index for tracking which constraints involve which metas -/
@@ -583,9 +566,13 @@ structure MetaState where
 def MetaState.empty : MetaState := ⟨{}, 0, {}⟩
 
 def MetaState.fresh (state : MetaState) (ty : Value) (ctx : List (String × Value × Quantity))
-    (piLevel : Option Nat := none) (origin : MetaOrigin := .user) : MetaId × MetaState :=
+    (piLevel : Option Nat := none) (origin : MetaOrigin := .user)
+    (displayHint : Option String := none) : MetaId × MetaState :=
   let id := state.nextId
-  let info : MetaInfo := { type := ty, context := ctx, piLevel := piLevel, origin := origin }
+  let info : MetaInfo := {
+    type := ty, context := ctx, piLevel := piLevel, origin := origin
+    displayHint := displayHint
+  }
   let metas := state.metas.insert id info
   (⟨id⟩, { state with metas := metas, nextId := id + 1 })
 

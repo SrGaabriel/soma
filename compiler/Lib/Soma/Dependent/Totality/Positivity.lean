@@ -103,35 +103,6 @@ partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value)
 
   | .vNeutral _ _ => .ok
 
-  | .vEq _ eqTy lhs rhs =>
-    match checkPositivityValue unique pol eqTy with
-    | .violated reason span => .violated reason span
-    | .ok =>
-      match checkPositivityValue unique pol lhs with
-      | .violated reason span => .violated reason span
-      | .ok => checkPositivityValue unique pol rhs
-
-  | .vRefl reflTy x =>
-    match checkPositivityValue unique pol reflTy with
-    | .violated reason span => .violated reason span
-    | .ok => checkPositivityValue unique pol x
-
-  | .vTransport _ transTy motive lhs rhs eq body =>
-    match checkPositivityValue unique pol transTy with
-    | .violated reason span => .violated reason span
-    | .ok =>
-      match checkPositivityValue unique pol motive with
-      | .violated reason span => .violated reason span
-      | .ok =>
-        match checkPositivityValue unique pol lhs with
-        | .violated reason span => .violated reason span
-        | .ok =>
-          match checkPositivityValue unique pol rhs with
-          | .violated reason span => .violated reason span
-          | .ok =>
-            match checkPositivityValue unique pol eq with
-            | .violated reason span => .violated reason span
-            | .ok => checkPositivityValue unique pol body
 
   | .vRecordVal fields => checkPositivityFields unique pol fields
 
@@ -178,8 +149,6 @@ private partial def checkIndexValue (v : Value) (reg : TotalityRegistry) : List 
       checkIndexValue label reg ++ checkIndexValue ty reg ++ checkIndexValue tail reg
   | .vRecord row => checkIndexValue row reg
   | .vVariant row => checkIndexValue row reg
-  | .vEq _ ty lhs rhs =>
-      checkIndexValue ty reg ++ checkIndexValue lhs reg ++ checkIndexValue rhs reg
   | _ => []
 where
   checkHead (h : Head) (reg : TotalityRegistry) : List String :=

@@ -1,0 +1,7 @@
+error[E1012]: wrong number of arguments to `MkPair`
+  ,-> Test/fixtures/diagnostics/wrongConstructorArity.soma:9:7
+  |
+8 | def fst : Pair Type Type -> Type
+9 |     | Pair::MkPair x => x
+  |       -------------- expected 2 arguments, found 1
+  |

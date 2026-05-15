@@ -2,9 +2,11 @@ import Soma.Core.Value
 import Soma.Core.Level
 import Soma.Core.Eval
 import Soma.Core.Quote
+import Soma.Core.Pp
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
 import Soma.Dependent.Error
+import Soma.Dependent.Zonk
 
 open Soma.Syntax (Span)
 
@@ -74,13 +76,6 @@ partial def occursIn (m : MetaId) (v : Value) : Bool :=
     params.any (occursIn m)
   | .vConstructor _ _ args _ =>
     args.any (occursIn m)
-  | .vEq _ ty lhs rhs =>
-    occursIn m ty || occursIn m lhs || occursIn m rhs
-  | .vRefl ty x =>
-    occursIn m ty || occursIn m x
-  | .vTransport _ ty motive lhs rhs eq body =>
-    occursIn m ty || occursIn m motive || occursIn m lhs ||
-    occursIn m rhs || occursIn m eq || occursIn m body
 
 partial def occursInNeutral (m : MetaId) (n : Neutral) : Bool :=
   occursInHead m n.head || n.spine.any (occursInElim m)
@@ -119,11 +114,6 @@ where
     | .«case» scruts motive arms =>
         scruts.any (occursInExpr m) || occursInExpr m motive ||
         arms.any fun arm => occursInExpr m arm.body
-    | .eqTy _ ty l r => occursInExpr m ty || occursInExpr m l || occursInExpr m r
-    | .refl ty x => occursInExpr m ty || occursInExpr m x
-    | .transport _ ty mot l r eq b =>
-        occursInExpr m ty || occursInExpr m mot || occursInExpr m l ||
-        occursInExpr m r || occursInExpr m eq || occursInExpr m b
     | .rowExtend l t tail => occursInExpr m l || occursInExpr m t || occursInExpr m tail
     | .recordTy r => occursInExpr m r
     | .variantTy r => occursInExpr m r
@@ -168,14 +158,6 @@ partial def inScope (allowedLevels : List DeBruijnLvl) (v : Value) : Bool :=
     params.all (inScope allowedLevels)
   | .vConstructor _ _ args _ =>
     args.all (inScope allowedLevels)
-  | .vEq _ ty lhs rhs =>
-    inScope allowedLevels ty && inScope allowedLevels lhs && inScope allowedLevels rhs
-  | .vRefl ty x =>
-    inScope allowedLevels ty && inScope allowedLevels x
-  | .vTransport _ ty motive lhs rhs eq body =>
-    inScope allowedLevels ty && inScope allowedLevels motive &&
-    inScope allowedLevels lhs && inScope allowedLevels rhs &&
-    inScope allowedLevels eq && inScope allowedLevels body
 
 partial def inScopeNeutral (allowedLevels : List DeBruijnLvl) (n : Neutral) : Bool :=
   inScopeHead allowedLevels n.head && n.spine.all (inScopeElim allowedLevels)
@@ -226,13 +208,6 @@ partial def collectFreeVars (v : Value) : Array DeBruijnLvl :=
     params.foldl (fun acc p => acc ++ collectFreeVars p) #[]
   | .vConstructor _ _ args _ =>
     args.foldl (fun acc a => acc ++ collectFreeVars a) #[]
-  | .vEq _ ty lhs rhs =>
-    collectFreeVars ty ++ collectFreeVars lhs ++ collectFreeVars rhs
-  | .vRefl ty x =>
-    collectFreeVars ty ++ collectFreeVars x
-  | .vTransport _ ty motive lhs rhs eq body =>
-    collectFreeVars ty ++ collectFreeVars motive ++ collectFreeVars lhs ++
-    collectFreeVars rhs ++ collectFreeVars eq ++ collectFreeVars body
 
 partial def collectFreeVarsNeutral (n : Neutral) : Array DeBruijnLvl :=
   collectFreeVarsHead n.head ++
@@ -328,9 +303,6 @@ def getValueKind : Value → String
   | .vLabelSort => "vLabelSort"
   | .vDataType id _ => s!"vDataType({id.original})"
   | .vConstructor n _ _ _ => s!"vConstructor({n})"
-  | .vEq _ _ _ _ => "vEq"
-  | .vRefl _ _ => "vRefl"
-  | .vTransport _ _ _ _ _ _ _ => "vTransport"
 where
   getNeutralKind (n : Neutral) : String :=
     let headKind : String := match n.head with
@@ -344,16 +316,124 @@ where
       | .eField f => s!"field({f})")
     if elimsStr.isEmpty then headKind else s!"{headKind}[{elimsStr}]"
 
+/-- Build a `PpContext` for rendering values -/
+private def diagnosticPpContext : TCM Soma.Core.PpContext := do
+  let s ← TCM.getState
+  let ctx ← TCM.getCtx
+  let eqId := (ctx.globals.wiredIn.getUnique? .typeEq).map (·.name.id)
+  return { Soma.Core.PpContext.ofMetas s.metas with eqInductiveId := eqId }
+
+/-- Convert an `Array (MetaId × Value × String)` -/
+private def renderInsertedImplicits
+    (pp : Soma.Core.PpContext)
+    (impls : Array (MetaId × Value × String))
+    : TCM (Array Soma.Attach.InsertedImplicit) := do
+  let mut out : Array Soma.Attach.InsertedImplicit := #[]
+  for (mid, _ty, name) in impls do
+    let info? ← TCM.lookupMeta mid
+    let valueStr :=
+      match info? with
+      | some info =>
+        match info.solution with
+        | some sol => Soma.Core.Value.pp pp sol
+        | none => s!"?{name}"
+      | none => s!"?{name}"
+    out := out.push { name, value := valueStr }
+  return out
+
+/-- Build a δ-reduction trace for a value by abbreviation -/
+private partial def buildUnfoldTrace
+    (pp : Soma.Core.PpContext) (v : Value)
+    : TCM (Array Soma.Attach.UnfoldStep × Value) := do
+  let initial : Soma.Attach.UnfoldStep :=
+    { term := Soma.Core.Value.pp pp v, rule := none, stuck := false }
+  let mut acc := #[initial]
+  let mut cur := v
+  let mut fuel := 32
+  while fuel > 0 do
+    fuel := fuel - 1
+    match ← tryUnfoldOneStep cur with
+    | some (cur', rule) =>
+      let step : Soma.Attach.UnfoldStep :=
+        { term := Soma.Core.Value.pp pp cur', rule := some rule, stuck := false }
+      acc := acc.push step
+      cur := cur'
+    | none => fuel := 0
+  return (acc, cur)
+
+/-- Mark the last step in a trace as stuck -/
+private def markTraceStuck (trace : Array Soma.Attach.UnfoldStep)
+    : Array Soma.Attach.UnfoldStep :=
+  if trace.isEmpty then trace
+  else
+    let last := trace.back!
+    trace.set! (trace.size - 1) { last with stuck := true }
+
+/-- Build a `headMismatch` failure from the current unify root + path -/
+private def buildHeadMismatch (vLeaf1 vLeaf2 : Value) : TCM UnifyFailure := do
+  let path ← TCM.getPath
+  let (v1, v2) ←
+    match ← TCM.getUnifyRoot with
+    | some (root1, root2) => pure (root1, root2)
+    | none => pure (vLeaf1, vLeaf2)
+  let pp ← diagnosticPpContext
+  let (trace1, v1Reduced) ← buildUnfoldTrace pp v1
+  let (trace2, v2Reduced) ← buildUnfoldTrace pp v2
+  let nonTrivial (t : Array Soma.Attach.UnfoldStep) : Bool := t.size > 1
+  let trace : Array Soma.Attach.UnfoldStep :=
+    if nonTrivial trace1 && nonTrivial trace2 then
+      markTraceStuck trace1 ++ markTraceStuck trace2
+    else if nonTrivial trace1 then markTraceStuck trace1
+    else if nonTrivial trace2 then markTraceStuck trace2
+    else #[]
+  let s1 := Soma.Core.Value.pp pp v1
+  let s2 := Soma.Core.Value.pp pp v2
+  let rs1 := Soma.Core.Value.pp pp v1Reduced
+  let rs2 := Soma.Core.Value.pp pp v2Reduced
+  let reduced : Option (Value × Value) :=
+    if s1 == rs1 && s2 == rs2 then none else some (v1Reduced, v2Reduced)
+  let implicits : Option (String × Array Soma.Attach.InsertedImplicit) ←
+    match ← TCM.getImplicits with
+    | some (surface, impls) =>
+      let rendered ← renderInsertedImplicits pp impls
+      pure (some (surface, rendered))
+    | none => pure none
+  return UnifyFailure.headMismatch v1 v2 path reduced trace implicits
+
 def throwUnifyError (v1 v2 : Value) (_msg : String := "") : TCM Unit := do
   let span ← TCM.getSpan
-  let failure := UnifyFailure.headMismatch v1 v2
+  let failure ← buildHeadMismatch v1 v2
   TCM.throw (.unificationFailed failure .general span #[] #[])
+
+/-- Throw a rigid-rigid mismatch while preserving the current structural path and the roots -/
+def throwRigidMismatch (n1 n2 : Neutral) : TCM Unit := do
+  let span ← TCM.getSpan
+  let path ← TCM.getPath
+  let roots ← TCM.getUnifyRoot
+  TCM.throw (.unificationFailed
+    (.rigidMismatch n1 n2 path roots) .general span #[] #[])
+
+/-- Throw a level-mismatch failure preserving path + roots -/
+def throwLevelMismatch (l1 l2 : Level) : TCM Unit := do
+  let span ← TCM.getSpan
+  let path ← TCM.getPath
+  let roots ← TCM.getUnifyRoot
+  TCM.throw (.unificationFailed
+    (.levelMismatch l1 l2 path roots) .general span #[] #[])
+
+/-- Throw a row-label-not-found failure preserving path + roots -/
+def throwRowLabelNotFound (label : String) (row : Value) : TCM Unit := do
+  let span ← TCM.getSpan
+  let path ← TCM.getPath
+  let roots ← TCM.getUnifyRoot
+  TCM.throw (.unificationFailed
+    (.rowLabelNotFound label row path roots) .general span #[] #[])
 
 /-- Throw a unification error with constraint chain context -/
 def throwUnifyErrorWithContext (v1 v2 : Value) (chain : Array ConstraintInfo)
     (metas : Array MetaId) (purpose : CheckPurpose := .general) : TCM Unit := do
   let span ← TCM.getSpan
-  let failure := UnifyFailure.headMismatch v1 v2
+  let failure ← buildHeadMismatch v1 v2
   TCM.throw (.unificationFailed failure purpose span chain metas)
 
 end Soma.Dependent

@@ -363,20 +363,6 @@ partial def collectMetaOccurrences (m : MetaId) (v : Value) (depth : Nat)
   | .vConstructor _ _ args _ =>
     args.foldl (fun acc a =>
       acc ++ collectMetaOccurrences m a (depth + 1) scope) #[]
-  | .vEq _ ty lhs rhs =>
-    collectMetaOccurrences m ty depth scope ++
-    collectMetaOccurrences m lhs (depth + 1) scope ++
-    collectMetaOccurrences m rhs (depth + 1) scope
-  | .vRefl ty x =>
-    collectMetaOccurrences m ty depth scope ++
-    collectMetaOccurrences m x (depth + 1) scope
-  | .vTransport _ ty motive lhs rhs eq body =>
-    collectMetaOccurrences m ty depth scope ++
-    collectMetaOccurrences m motive (depth + 1) scope ++
-    collectMetaOccurrences m lhs (depth + 1) scope ++
-    collectMetaOccurrences m rhs (depth + 1) scope ++
-    collectMetaOccurrences m eq (depth + 1) scope ++
-    collectMetaOccurrences m body (depth + 1) scope
   | _ => #[]
 
 partial def collectMetaOccurrencesNeutral (m : MetaId) (n : Neutral) (depth : Nat)

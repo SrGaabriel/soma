@@ -1,0 +1,10 @@
+error[E1032]: bodiless definition 'absurd' is not derivable
+  ,-> Test/fixtures/diagnostics/bodilessNotDerivable.soma:6:1
+  |
+5 |
+6 | def absurd : Int32 -> Int32
+  | --------------------------- no explicit parameter with an uninhabited type
+  |
+  = note: after reduction, the declared type is `(_ : Int32) -> Int32`
+  = note: a bodiless def is a proof-by-absurdity
+  = help: if you meant to prove that the declared type is unprovable, rewrite as `T -> Never`; otherwise provide a body (`:=` or `|` clauses) or mark as @[intrinsic]/@[extern]

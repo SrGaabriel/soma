@@ -144,9 +144,6 @@ partial def valueContainsMetaHead (v : Soma.Core.Value) : Bool :=
   | .vDataType _ params => params.any valueContainsMetaHead
   | .vConstructor _ _ args rty =>
     args.any valueContainsMetaHead || valueContainsMetaHead rty
-  | .vEq _ ty l r =>
-    valueContainsMetaHead ty || valueContainsMetaHead l || valueContainsMetaHead r
-  | .vRefl ty x => valueContainsMetaHead ty || valueContainsMetaHead x
   | _ => false
 
 /-- Verify that the stored type of `defName` in `result` is concrete -/

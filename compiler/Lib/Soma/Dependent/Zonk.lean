@@ -42,11 +42,6 @@ partial def collectMvarIds (e : Expr) (acc : Std.HashSet MetaId := {}) : Std.Has
   | .recordTy r => collectMvarIds r acc
   | .variantTy r => collectMvarIds r acc
   | .dataTy _ ps => ps.foldl (fun a e => collectMvarIds e a) acc
-  | .eqTy _ t l r => collectMvarIds r (collectMvarIds l (collectMvarIds t acc))
-  | .refl t x => collectMvarIds x (collectMvarIds t acc)
-  | .transport _ t m l r ep b =>
-    collectMvarIds b (collectMvarIds ep (collectMvarIds r (collectMvarIds l
-      (collectMvarIds m (collectMvarIds t acc)))))
   | .ann x t => collectMvarIds t (collectMvarIds x acc)
 
 /-- Apply a metavariable substitution map to an expression -/
@@ -91,13 +86,6 @@ partial def applyMvarSubst (e : Expr) (subst : Std.HashMap MetaId Expr) (depth :
   | .recordTy r => .recordTy (applyMvarSubst r subst depth)
   | .variantTy r => .variantTy (applyMvarSubst r subst depth)
   | .dataTy id ps => .dataTy id (ps.map (applyMvarSubst · subst depth))
-  | .eqTy lv t l r =>
-    .eqTy lv (applyMvarSubst t subst depth) (applyMvarSubst l subst depth) (applyMvarSubst r subst depth)
-  | .refl t x => .refl (applyMvarSubst t subst depth) (applyMvarSubst x subst depth)
-  | .transport lv t m l r ep b =>
-    .transport lv (applyMvarSubst t subst depth) (applyMvarSubst m subst depth)
-      (applyMvarSubst l subst depth) (applyMvarSubst r subst depth)
-      (applyMvarSubst ep subst depth) (applyMvarSubst b subst depth)
   | .ann x t => .ann (applyMvarSubst x subst depth) (applyMvarSubst t subst depth)
 
 /-- Substitute all solved metavariables in an expression -/
@@ -191,27 +179,6 @@ partial def zonkValue (v : Value) : TCM Value := do
     let rty' ← zonkValue rty
     return .vConstructor name tag args' rty'
 
-  | .vEq tyLevel ty lhs rhs =>
-    let tyLevel' ← zonkLevel tyLevel
-    let ty' ← zonkValue ty
-    let lhs' ← zonkValue lhs
-    let rhs' ← zonkValue rhs
-    return .vEq tyLevel' ty' lhs' rhs'
-
-  | .vRefl ty x =>
-    let ty' ← zonkValue ty
-    let x' ← zonkValue x
-    return .vRefl ty' x'
-
-  | .vTransport tyLevel ty motive lhs rhs eq body =>
-    let tyLevel' ← zonkLevel tyLevel
-    let ty' ← zonkValue ty
-    let motive' ← zonkValue motive
-    let lhs' ← zonkValue lhs
-    let rhs' ← zonkValue rhs
-    let eq' ← zonkValue eq
-    let body' ← zonkValue body
-    return .vTransport tyLevel' ty' motive' lhs' rhs' eq' body'
 
 /-- Zonk a neutral head -/
 partial def zonkHead (h : Head) : TCM Head := do
@@ -303,20 +270,6 @@ partial def hasUnsolvedMetas (v : Value) : TCM Bool := do
     for a in args do
       if ← hasUnsolvedMetas a then return true
     return false
-  | .vEq _ ty lhs rhs =>
-    if ← hasUnsolvedMetas ty then return true
-    if ← hasUnsolvedMetas lhs then return true
-    hasUnsolvedMetas rhs
-  | .vRefl ty x =>
-    if ← hasUnsolvedMetas ty then return true
-    hasUnsolvedMetas x
-  | .vTransport _ ty motive lhs rhs eq body =>
-    if ← hasUnsolvedMetas ty then return true
-    if ← hasUnsolvedMetas motive then return true
-    if ← hasUnsolvedMetas lhs then return true
-    if ← hasUnsolvedMetas rhs then return true
-    if ← hasUnsolvedMetas eq then return true
-    hasUnsolvedMetas body
   | _ => return false
 
 partial def hasUnsolvedMetasNeutral (n : Neutral) : TCM Bool := do
@@ -349,75 +302,80 @@ end
 
 mutual
 
-partial def collectUnsolvedMetas (v : Value) (span : Span) : TCM Unit := do
+partial def gatherUnsolvedMetaIds (v : Value)
+    (acc : Std.HashSet Nat) : TCM (Std.HashSet Nat) := do
   match v with
-  | .vPi _ _ _ dom _ => collectUnsolvedMetas dom span
-  | .vLam _ _ => pure ()
+  | .vPi _ _ _ dom _ => gatherUnsolvedMetaIds dom acc
+  | .vLam _ _ => return acc
   | .vNeutral ty neu =>
-    collectUnsolvedMetas ty span
-    collectUnsolvedMetasNeutral neu span
+    let acc ← gatherUnsolvedMetaIds ty acc
+    gatherUnsolvedMetaIdsNeutral neu acc
   | .vRowExtend label ty tail =>
-    collectUnsolvedMetas label span
-    collectUnsolvedMetas ty span
-    collectUnsolvedMetas tail span
-  | .vRecord row => collectUnsolvedMetas row span
-  | .vVariant row => collectUnsolvedMetas row span
+    let acc ← gatherUnsolvedMetaIds label acc
+    let acc ← gatherUnsolvedMetaIds ty acc
+    gatherUnsolvedMetaIds tail acc
+  | .vRecord row => gatherUnsolvedMetaIds row acc
+  | .vVariant row => gatherUnsolvedMetaIds row acc
   | .vRecordVal fields =>
-    for (_, val) in fields do
-      collectUnsolvedMetas val span
+    fields.foldlM (init := acc) fun a (_, val) => gatherUnsolvedMetaIds val a
   | .vDataType _ params =>
-    for p in params do
-      collectUnsolvedMetas p span
+    params.foldlM (init := acc) fun a p => gatherUnsolvedMetaIds p a
   | .vConstructor _ _ args _ =>
-    for a in args do
-      collectUnsolvedMetas a span
-  | .vEq _ ty lhs rhs =>
-    collectUnsolvedMetas ty span
-    collectUnsolvedMetas lhs span
-    collectUnsolvedMetas rhs span
-  | .vRefl ty x =>
-    collectUnsolvedMetas ty span
-    collectUnsolvedMetas x span
-  | .vTransport _ ty motive lhs rhs eq body =>
-    collectUnsolvedMetas ty span
-    collectUnsolvedMetas motive span
-    collectUnsolvedMetas lhs span
-    collectUnsolvedMetas rhs span
-    collectUnsolvedMetas eq span
-    collectUnsolvedMetas body span
-  | _ => pure ()
+    args.foldlM (init := acc) fun a v => gatherUnsolvedMetaIds v a
+  | _ => return acc
 
-partial def collectUnsolvedMetasNeutral (n : Neutral) (span : Span) : TCM Unit := do
-  collectUnsolvedMetasHead n.head span
-  for e in n.spine do
-    collectUnsolvedMetasElim e span
+partial def gatherUnsolvedMetaIdsNeutral (n : Neutral)
+    (acc : Std.HashSet Nat) : TCM (Std.HashSet Nat) := do
+  let acc ← gatherUnsolvedMetaIdsHead n.head acc
+  n.spine.foldlM (init := acc) fun a e => gatherUnsolvedMetaIdsElim e a
 
-partial def collectUnsolvedMetasHead (h : Head) (span : Span) : TCM Unit := do
+partial def gatherUnsolvedMetaIdsHead (h : Head)
+    (acc : Std.HashSet Nat) : TCM (Std.HashSet Nat) := do
   match h with
   | .hMeta m =>
+    if acc.contains m.id then return acc
     match ← TCM.lookupMeta m with
     | some info =>
       if info.solution.isNone && info.origin != .errorRecovery then
-        TCM.addError (.unsolvedMeta info.type span #[] none)
-    | none => pure ()
-  | .hVar _ => pure ()
-  | .hConst _ _ => pure ()
-  | .hErrored => pure ()
+        return acc.insert m.id
+      else return acc
+    | none => return acc
+  | .hVar _ | .hConst _ _ | .hErrored => return acc
   | .hCase scrutinees motive _ =>
-    for s in scrutinees do
-      collectUnsolvedMetas s span
-    collectUnsolvedMetas motive span
+    let acc ← scrutinees.foldlM (init := acc) fun a s => gatherUnsolvedMetaIds s a
+    gatherUnsolvedMetaIds motive acc
 
-partial def collectUnsolvedMetasElim (e : Elim) (span : Span) : TCM Unit := do
+partial def gatherUnsolvedMetaIdsElim (e : Elim)
+    (acc : Std.HashSet Nat) : TCM (Std.HashSet Nat) := do
   match e with
-  | .eApp arg => collectUnsolvedMetas arg span
-  | .eField _ => pure ()
+  | .eApp arg => gatherUnsolvedMetaIds arg acc
+  | .eField _ => return acc
 
 end
 
-/-- Report all unsolved metavariables in a value -/
+/-- Collect every postponed `TrackedConstraint` that references the given meta -/
+private def relatedConstraintsFor (metaId : MetaId) : TCM (Array MetaConstraintInfo) := do
+  let state ← TCM.getState
+  let mut out : Array MetaConstraintInfo := #[]
+  for tracked in state.postponed do
+    if tracked.metas.any (· == metaId) then
+      out := out.push {
+        description := tracked.constraint.describe
+        origin := tracked.origin
+        isBlocked := true
+      }
+  return out
+
+/-- Report every unique unsolved metavariable reachable from `v` -/
 def reportUnsolvedMetas (v : Value) (span : Span) : TCM Unit := do
-  collectUnsolvedMetas v span
+  let ids ← gatherUnsolvedMetaIds v {}
+  for id in ids do
+    match ← TCM.lookupMeta ⟨id⟩ with
+    | some info =>
+      let ctx := info.context.map fun (n, t, _) => (n, t)
+      let related ← relatedConstraintsFor ⟨id⟩
+      TCM.addError (.unsolvedMeta info.type span related none ctx)
+    | none => pure ()
 
 /-- Eagerly expand all parameterized type abbreviation DataTypes in a Value -/
 partial def expandAbbrevValue (v : Value) : TCM Value := do
@@ -476,11 +434,6 @@ partial def expandAbbrevValue (v : Value) : TCM Value := do
     let args' ← args.mapM expandAbbrevValue
     let rty' ← expandAbbrevValue rty
     return .vConstructor name tag args' rty'
-  | .vEq l ty lhs rhs =>
-    let ty' ← expandAbbrevValue ty
-    let lhs' ← expandAbbrevValue lhs
-    let rhs' ← expandAbbrevValue rhs
-    return .vEq l ty' lhs' rhs'
   | _ => return v
 where
   /-- Expand abbreviations inside a closure -/

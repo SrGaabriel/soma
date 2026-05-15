@@ -355,7 +355,7 @@ def testPairExampleFull : IO TestResult := do
   let witness := checkRecursiveCallStructural args ctx''
 
   match witness with
-  | .arg 0 reason =>
+  | .arg 0 _reason =>
     -- We expect this to terminate because 'a' is smaller
     return .passed
   | .notFound reason =>

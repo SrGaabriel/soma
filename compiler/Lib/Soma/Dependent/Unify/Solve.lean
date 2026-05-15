@@ -66,6 +66,13 @@ mutual
 
 /-- Cumulative value subtyping -/
 partial def subtypeUnify (v1 v2 : Value) : TCM Unit := do
+  match ← TCM.getUnifyRoot with
+  | some _ => subtypeUnifyCore v1 v2
+  | none =>
+    TCM.withUnifyRoot v1 v2 <| TCM.withFreshPath <| subtypeUnifyCore v1 v2
+
+/-- Recursive worker for cumulative value subtyping -/
+partial def subtypeUnifyCore (v1 v2 : Value) : TCM Unit := do
   let v1' ← force v1
   let v2' ← force v2
 
@@ -82,24 +89,31 @@ partial def subtypeUnify (v1 v2 : Value) : TCM Unit := do
   match v1', v2' with
   | .vType l1, .vType l2 =>
     let ok ← subtypeLevel l1 l2
-    if !ok then throwUnifyError v1' v2' "level mismatch"
+    if !ok then throwLevelMismatch l1 l2
 
   | .vPi q1 b1 n1 d1 c1, .vPi q2 b2 _ d2 c2 =>
     if q1 != q2 then throwUnifyError v1' v2' "quantity mismatch"
     if b1 != b2 then throwUnifyError v1' v2' "binder mismatch"
-    subtypeUnify d2 d1
+    TCM.withPathStep .piDomain do subtypeUnifyCore d2 d1
     let lvl ← TCM.currentLevel
     let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
     let cod1 ← applyClosure c1 x
     let cod2 ← applyClosure c2 x
     let bindingId ← TCM.freshLocalId n1
     TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
-      subtypeUnify cod1 cod2
+      TCM.withPathStep .piCodomain do subtypeUnifyCore cod1 cod2
 
   | _, _ => unify v1 v2
 
 /-- Unify two values. May solve metavariables or postpone constraints -/
 partial def unify (v1 v2 : Value) : TCM Unit := do
+  match ← TCM.getUnifyRoot with
+  | some _ => unifyCore v1 v2
+  | none =>
+    TCM.withUnifyRoot v1 v2 <| TCM.withFreshPath <| unifyCore v1 v2
+
+/-- The recursive worker -/
+partial def unifyCore (v1 v2 : Value) : TCM Unit := do
   -- Force both values first
   let v1' ← force v1
   let v2' ← force v2
@@ -136,7 +150,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
       throwUnifyError v1' v2' "quantity mismatch"
     if b1 != b2 then
       throwUnifyError v1' v2' "binder mismatch"
-    unify d1 d2
+    TCM.withPathStep .piDomain do unifyCore d1 d2
     -- Unify codomains under a fresh variable
     let lvl ← TCM.currentLevel
     let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
@@ -144,7 +158,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let cod2 ← applyClosure c2 x
     let bindingId ← TCM.freshLocalId n1
     TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
-      unify cod1 cod2
+      TCM.withPathStep .piCodomain do unifyCore cod1 cod2
 
   | .vLam n1 body1, .vLam _ body2 =>
     let lvl ← TCM.currentLevel
@@ -153,7 +167,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let b2Val ← applyClosure body2 x
     let bindingId ← TCM.freshLocalId n1
     TCM.withBinding n1 bindingId .type0 .omega .explicit defaultSpan do
-      unify b1Val b2Val
+      TCM.withPathStep .lamBody do unifyCore b1Val b2Val
 
   | .vIntLit n1, .vIntLit n2 =>
     if n1 != n2 then throwUnifyError v1' v2' "integer mismatch"
@@ -175,9 +189,11 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
   | .vRowExtend l1 t1 r1, .vRowExtend l2 t2 r2 =>
     unifyRows l1 t1 r1 l2 t2 r2
 
-  | .vRecord r1, .vRecord r2 => unify r1 r2
+  | .vRecord r1, .vRecord r2 =>
+    TCM.withPathStep .recordRow do unifyCore r1 r2
 
-  | .vVariant r1, .vVariant r2 => unify r1 r2
+  | .vVariant r1, .vVariant r2 =>
+    TCM.withPathStep .variantRow do unifyCore r1 r2
 
   | .vRecordVal fs1, .vRecordVal fs2 =>
     unifyRecordFields fs1 fs2
@@ -185,58 +201,21 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
   | .vDataType id1 ps1, .vDataType id2 ps2 =>
     if id1 != id2 then
       throwUnifyError v1' v2' "data type mismatch"
-    unifyList ps1 ps2
+    TCM.withInjectiveDescent do
+      match (← TCM.lookupWiredIn .typeEq) with
+      | some info =>
+        if info.name.id == id1 ∧ ps1.length == 3 ∧ ps2.length == 3 then
+          TCM.withPathStep (.dataTypeParam 1) do unifyCore ps1[1]! ps2[1]!
+          TCM.withPathStep (.dataTypeParam 2) do unifyCore ps1[2]! ps2[2]!
+        else
+          unifyList ps1 ps2 PathStep.dataTypeParam
+      | none => unifyList ps1 ps2 PathStep.dataTypeParam
 
   | .vConstructor n1 t1 as1 _, .vConstructor n2 t2 as2 _ =>
     if n1 != n2 || t1 != t2 then throwUnifyError v1' v2' "constructor mismatch"
-    unifyList as1 as2
+    TCM.withInjectiveDescent do
+      unifyList as1 as2 PathStep.constructorArg
 
-  | .vEq l1 t1 a1 b1, .vEq l2 t2 a2 b2 =>
-    unifyLevel l1 l2
-    unify t1 t2
-    unify a1 a2
-    unify b1 b2
-
-  | .vEq _ t1 a1 b1, .vDataType id2 ps2 =>
-    match ← TCM.lookupWiredIn .typeEq with
-    | some info =>
-      if info.name.id == id2 then
-        match ps2 with
-        | [t2, a2, b2] =>
-          unify t1 t2
-          unify a1 a2
-          unify b1 b2
-        | _ => throwUnifyError v1' v2' "Eq arity mismatch"
-      else
-        throwUnifyError v1' v2' "head mismatch"
-    | none => throwUnifyError v1' v2' "head mismatch"
-
-  | .vDataType id1 ps1, .vEq _ t2 a2 b2 =>
-    match ← TCM.lookupWiredIn .typeEq with
-    | some info =>
-      if info.name.id == id1 then
-        match ps1 with
-        | [t1, a1, b1] =>
-          unify t1 t2
-          unify a1 a2
-          unify b1 b2
-        | _ => throwUnifyError v1' v2' "Eq arity mismatch"
-      else
-        throwUnifyError v1' v2' "head mismatch"
-    | none => throwUnifyError v1' v2' "head mismatch"
-
-  | .vRefl t1 x1, .vRefl t2 x2 =>
-    unify t1 t2
-    unify x1 x2
-
-  | .vTransport l1 t1 m1 lhs1 rhs1 eq1 b1, .vTransport l2 t2 m2 lhs2 rhs2 eq2 b2 =>
-    unifyLevel l1 l2
-    unify t1 t2
-    unify m1 m2
-    unify lhs1 lhs2
-    unify rhs1 rhs2
-    unify eq1 eq2
-    unify b1 b2
 
   | .vLam n body, .vNeutral _ otherNeu =>
     let lvl ← TCM.currentLevel
@@ -245,7 +224,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let otherApp := Value.vNeutral .type0 (.nApp otherNeu x)
     let bindingId ← TCM.freshLocalId n
     TCM.withBinding n bindingId .type0 .omega .explicit defaultSpan do
-      unify bodyVal otherApp
+      TCM.withPathStep .lamBody do unifyCore bodyVal otherApp
 
   | .vNeutral _ otherNeu, .vLam n body =>
     let lvl ← TCM.currentLevel
@@ -254,7 +233,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let otherApp := Value.vNeutral .type0 (.nApp otherNeu x)
     let bindingId ← TCM.freshLocalId n
     TCM.withBinding n bindingId .type0 .omega .explicit defaultSpan do
-      unify otherApp bodyVal
+      TCM.withPathStep .lamBody do unifyCore otherApp bodyVal
 
   -- Metavariable on the left
   | .vNeutral _ (.nMeta m), rhs =>
@@ -315,8 +294,10 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
 partial def unifyScrutPrefix (ss1 ss2 : Array Value) (count : Nat) : TCM Unit := do
   if ss1.size < count || ss2.size < count then
     let span ← TCM.getSpan
+    let path ← TCM.getPath
+    let roots ← TCM.getUnifyRoot
     TCM.throw (.unificationFailed
-      (.spineLengthMismatch ss1.size ss2.size) .general span #[] #[])
+      (.spineLengthMismatch ss1.size ss2.size path roots) .general span #[] #[])
   for _h : i in [:count] do
     unify ss1[i]! ss2[i]!
 
@@ -333,9 +314,7 @@ partial def unifyHead (h1 h2 : Head) : TCM Unit := do
   | _, .hErrored => pure ()
   | .hVar v1, .hVar v2 =>
     if v1.level != v2.level then
-      let span ← TCM.getSpan
-      TCM.throw (.unificationFailed
-        (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+      throwRigidMismatch (.ofHead h1) (.ofHead h2)
   | .hMeta m1, .hMeta m2 =>
     if m1 != m2 then
       let (younger, older) := if m1.id > m2.id then (m1, m2) else (m2, m1)
@@ -346,19 +325,13 @@ partial def unifyHead (h1 h2 : Head) : TCM Unit := do
     solveMeta m [] (.vNeutral .type0 (.nVar v))
   | .hConst c1 _, .hConst c2 _ =>
     if c1 != c2 then
-      let span ← TCM.getSpan
-      TCM.throw (.unificationFailed
-        (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+      throwRigidMismatch (.ofHead h1) (.ofHead h2)
   | .hCase ss1 _m1 as1, .hCase ss2 _m2 as2 =>
     let ok ← unifyHCase ss1 as1 ss2 as2
     if !ok then
-      let span ← TCM.getSpan
-      TCM.throw (.unificationFailed
-        (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+      throwRigidMismatch (.ofHead h1) (.ofHead h2)
   | _, _ =>
-    let span ← TCM.getSpan
-    TCM.throw (.unificationFailed
-      (.rigidMismatch (.ofHead h1) (.ofHead h2)) .general span #[] #[])
+    throwRigidMismatch (.ofHead h1) (.ofHead h2)
 
 
 /-- Unify two eliminators -/
@@ -367,16 +340,13 @@ partial def unifyElim (e1 e2 : Elim) : TCM Unit := do
   | .eApp a1, .eApp a2 => unify a1 a2
   | .eField f1, .eField f2 =>
     if f1 != f2 then
-      let span ← TCM.getSpan
-      TCM.throw (.unificationFailed
-        (.rigidMismatch (.nFieldAccess (.ofHead (.hVar ⟨"_", ⟨0⟩⟩)) f1)
-                        (.nFieldAccess (.ofHead (.hVar ⟨"_", ⟨0⟩⟩)) f2))
-        .general span #[] #[])
+      throwRigidMismatch
+        (.nFieldAccess (.ofHead (.hVar ⟨"_", ⟨0⟩⟩)) f1)
+        (.nFieldAccess (.ofHead (.hVar ⟨"_", ⟨0⟩⟩)) f2)
   | _, _ =>
-    let span ← TCM.getSpan
-    TCM.throw (.unificationFailed
-      (.rigidMismatch (.ofHead (.hVar ⟨"_", ⟨0⟩⟩))
-                      (.ofHead (.hVar ⟨"_", ⟨0⟩⟩))) .general span #[] #[])
+    throwRigidMismatch
+      (.ofHead (.hVar ⟨"_", ⟨0⟩⟩))
+      (.ofHead (.hVar ⟨"_", ⟨0⟩⟩))
 
 /-- Unify two neutral terms -/
 partial def unifyNeutral (n1 n2 : Neutral) : TCM Unit := do
@@ -394,13 +364,42 @@ partial def unifyNeutral (n1 n2 : Neutral) : TCM Unit := do
       return
     | none => pure ()
   | _, _ => pure ()
+  if n1.isBareHead ∧ n2.isBareHead
+    ∧ (← TCM.isPatternUnifyMode) ∧ (← TCM.isInInjectiveDescent) then
+    match n1.head, n2.head with
+    | .hVar v1, .hVar v2 =>
+      if v1.level != v2.level then
+        let ctx ← TCM.getCtx
+        let (tgtLvl, replHead) :=
+          if v1.level.lvl > v2.level.lvl then (v1.level, n2.head)
+          else (v2.level, n1.head)
+        match ctx.lookupLevel tgtLvl with
+        | some entry =>
+          let replVal := Value.vNeutral entry.type (.ofHead replHead)
+          TCM.recordPatternRefinement tgtLvl replVal
+          return
+        | none => pure ()
+    | _, _ => pure ()
   unifyHead n1.head n2.head
   if n1.spine.size != n2.spine.size then
     let span ← TCM.getSpan
+    let path ← TCM.getPath
+    let roots ← TCM.getUnifyRoot
     TCM.throw (.unificationFailed
-      (.spineLengthMismatch n1.spine.size n2.spine.size) .general span #[] #[])
-  for (e1, e2) in n1.spine.zip n2.spine do
-    unifyElim e1 e2
+      (.spineLengthMismatch n1.spine.size n2.spine.size path roots) .general span #[] #[])
+  let zipped := n1.spine.zip n2.spine
+  TCM.withoutInjectiveDescent do
+    for i in [:zipped.size] do
+      let (e1, e2) := zipped[i]!
+      match e1, e2 with
+      | .eApp _, .eApp _ =>
+        TCM.withPathStep (.spineArg i) do unifyElim e1 e2
+      | .eField f1, .eField _ =>
+        TCM.withPathStep (.spineField f1) do unifyElim e1 e2
+      | .eField f1, _ =>
+        TCM.withPathStep (.spineField f1) do unifyElim e1 e2
+      | _, _ =>
+        TCM.withPathStep (.spineArg i) do unifyElim e1 e2
 
 /-- Unify row types with rewriting -/
 partial def unifyRows (l1 : Value) (t1 : Value) (r1 : Value)
@@ -409,18 +408,18 @@ partial def unifyRows (l1 : Value) (t1 : Value) (r1 : Value)
   | .vLabelLit name1, .vLabelLit name2 =>
     if name1 == name2 then
       -- Same label: unify types and tails
-      unify t1 t2
-      unify r1 r2
+      TCM.withPathStep .rowField do unifyCore t1 t2
+      TCM.withPathStep .rowTail do unifyCore r1 r2
     else
       match ← splitRowAtExtending name1 (.vRowExtend l2 t2 r2) with
       | some (foundTy, restRow) =>
-        unify t1 foundTy
-        unify r1 restRow
+        TCM.withPathStep .rowField do unifyCore t1 foundTy
+        TCM.withPathStep .rowTail do unifyCore r1 restRow
       | none =>
         match ← splitRowAtExtending name2 (.vRowExtend l1 t1 r1) with
         | some (foundTy, restRow) =>
-          unify t2 foundTy
-          unify r2 restRow
+          TCM.withPathStep .rowField do unifyCore t2 foundTy
+          TCM.withPathStep .rowTail do unifyCore r2 restRow
         | none =>
           throwUnifyError (.vRowExtend l1 t1 r1) (.vRowExtend l2 t2 r2)
             s!"labels '{name1}' and '{name2}' cannot be reconciled \
@@ -429,27 +428,27 @@ partial def unifyRows (l1 : Value) (t1 : Value) (r1 : Value)
   -- Label polymorphism: metavariable label
   | .vNeutral _ (.nMeta m), .vLabelLit _ =>
     solveMeta m [] l2
-    unify t1 t2
-    unify r1 r2
+    TCM.withPathStep .rowField do unifyCore t1 t2
+    TCM.withPathStep .rowTail do unifyCore r1 r2
 
   | .vLabelLit _, .vNeutral _ (.nMeta m) =>
     solveMeta m [] l1
-    unify t1 t2
-    unify r1 r2
+    TCM.withPathStep .rowField do unifyCore t1 t2
+    TCM.withPathStep .rowTail do unifyCore r1 r2
 
   | .vNeutral _ (.nMeta m1), .vNeutral _ (.nMeta m2) =>
     -- Both labels are metavariables
     if m1 == m2 then
-      unify t1 t2
-      unify r1 r2
+      TCM.withPathStep .rowField do unifyCore t1 t2
+      TCM.withPathStep .rowTail do unifyCore r1 r2
     else
       TCM.markStuck #[m1, m2] #[]
 
   | _, _ =>
     -- Try to unify labels directly
-    unify l1 l2
-    unify t1 t2
-    unify r1 r2
+    TCM.withPathStep .rowLabel do unifyCore l1 l2
+    TCM.withPathStep .rowField do unifyCore t1 t2
+    TCM.withPathStep .rowTail do unifyCore r1 r2
 
 /-- Unify record fields (order-independent) -/
 partial def unifyRecordFields (fs1 fs2 : List (String × Value)) : TCM Unit := do
@@ -458,7 +457,8 @@ partial def unifyRecordFields (fs1 fs2 : List (String × Value)) : TCM Unit := d
 
   for (name, val1) in fs1 do
     match fs2.find? (·.1 == name) with
-    | some (_, val2) => unify val1 val2
+    | some (_, val2) =>
+      TCM.withPathStep (.recordField name) do unifyCore val1 val2
     | none =>
       throwUnifyError (.vRecordVal fs1) (.vRecordVal fs2) s!"field '{name}' not found"
 
@@ -475,20 +475,27 @@ partial def recordEtaUnify
   if ctorArgs.length != indMeta.fieldNames.size then return false
   let projections := recordEtaProjections neu indMeta.fieldNames
   let argsArr := ctorArgs.toArray
-  for _h : i in [:argsArr.size] do
+  for i in [:argsArr.size] do
     let arg := argsArr[i]!
     let proj := projections[i]!
-    if ctorOnLeft then unify arg proj else unify proj arg
+    let fieldName := indMeta.fieldNames[i]?.getD s!"field#{i}"
+    TCM.withPathStep (.recordField fieldName) do
+      if ctorOnLeft then unifyCore arg proj else unifyCore proj arg
   return true
 
 /-- Unify a list of values pairwise -/
-partial def unifyList (vs1 vs2 : List Value) : TCM Unit := do
+partial def unifyList (vs1 vs2 : List Value)
+    (step : Nat → PathStep := PathStep.spineArg) : TCM Unit := do
   if vs1.length != vs2.length then
     let span ← TCM.getSpan
+    let path ← TCM.getPath
+    let roots ← TCM.getUnifyRoot
     TCM.throw (.unificationFailed
-      (.spineLengthMismatch vs1.length vs2.length) .general span #[] #[])
-  for (v1, v2) in vs1.zip vs2 do
-    unify v1 v2
+      (.spineLengthMismatch vs1.length vs2.length path roots) .general span #[] #[])
+  for i in [:vs1.length] do
+    let v1 := vs1[i]!
+    let v2 := vs2[i]!
+    TCM.withPathStep (step i) do unifyCore v1 v2
 
 /-- Cumulative level subtyping -/
 partial def subtypeLevel (l1 l2 : Level) : TCM Bool := do
@@ -515,26 +522,26 @@ partial def unifyLevel (l1 l2 : Level) : TCM Unit := do
   match l1n, l2n with
   | .var v, rhs =>
     if rhs.freeVars.any (·.id == v.id) then
-      throwUnifyError (.vType l1n) (.vType l2n) s!"occurs check: level {v} occurs in {rhs}"
+      throwLevelMismatch l1n l2n
     else
       TCM.solveLevelVar v rhs
   | lhs, .var v =>
     if lhs.freeVars.any (·.id == v.id) then
-      throwUnifyError (.vType l1n) (.vType l2n) s!"occurs check: level {v} occurs in {lhs}"
+      throwLevelMismatch l1n l2n
     else
       TCM.solveLevelVar v lhs
 
-  | .lit n1, .lit n2 =>
-    throwUnifyError (.vType (.lit n1)) (.vType (.lit n2)) s!"level mismatch: {n1} ≠ {n2}"
+  | .lit _, .lit _ =>
+    throwLevelMismatch l1n l2n
 
   | .succ a, .succ b => unifyLevel a b
   | .succ a, .lit (n+1) => unifyLevel a (.lit n)
   | .lit (n+1), .succ a => unifyLevel a (.lit n)
   | .succ _, .lit 0 | .lit 0, .succ _ =>
-    throwUnifyError (.vType l1n) (.vType l2n) "level mismatch: successor cannot equal 0"
+    throwLevelMismatch l1n l2n
 
   | .prop, _ | _, .prop =>
-    throwUnifyError (.vType l1n) (.vType l2n) "level mismatch: Prop is distinct from Type universes (use a coercion or subtype check if cumulativity is intended)"
+    throwLevelMismatch l1n l2n
 
   | .max a b, .max c d =>
     if (a == c && b == d) || (a == d && b == c) then return
@@ -674,7 +681,7 @@ partial def decomposeRecordMeta (m : MetaId) (fieldName : String)
       | some fields =>
         if !fields.any (·.1 == fieldName) then
           let span ← TCM.getSpan
-          TCM.throw (.fieldNotFound fieldName mTy span #[] none)
+          TCM.throw (.fieldNotFound fieldName mTy span #[] .unknown)
         else
           let mut fieldMetas : List (String × Value) := []
           let mut chosenId? : Option MetaId := none
@@ -707,6 +714,24 @@ partial def solveMeta (m : MetaId) (spine : List Value) (rhs : Value) : TCM Unit
       let rhs' ← force rhs
       if valueEq applied rhs' then
         return
+      if info.origin == .patternVar ∧ (← TCM.isPatternUnifyMode) then
+        match applied, rhs' with
+        | .vNeutral _ neu1, .vNeutral _ neu2 =>
+          if neu1.isBareHead ∧ neu2.isBareHead then
+            match neu1.head, neu2.head with
+            | .hVar v1, .hVar v2 =>
+              if v1.level != v2.level then
+                let ctx ← TCM.getCtx
+                let (tgtLvl, replVal) :=
+                  if v1.level.lvl > v2.level.lvl then (v1.level, rhs')
+                  else (v2.level, applied)
+                match ctx.lookupLevel tgtLvl with
+                | some _ =>
+                  TCM.recordPatternRefinement tgtLvl replVal
+                  return
+                | none => pure ()
+            | _, _ => pure ()
+        | _, _ => pure ()
       unify applied rhs'
     | none =>
       -- Not yet solved: try pattern unification
@@ -737,7 +762,7 @@ partial def applyToSpine (v : Value) (spine : List Value) : TCM Value := do
       applyToSpine applied rest
     | _ =>
       let span ← TCM.getSpan
-      TCM.throw (.expectedFunction v' span none)
+      TCM.throw (.expectedFunction v' span .unknown)
 
 /-- Pattern unification: solve ?m x₁...xₙ = rhs
     1. Standard Miller pattern unification
@@ -749,6 +774,17 @@ partial def applyToSpine (v : Value) (spine : List Value) : TCM Value := do
     7. Occurs check with pruning recovery -/
 partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy : Value)
     : TCM Unit := do
+  if spine.isEmpty then
+    match ← TCM.lookupMeta m with
+    | some info =>
+      if info.origin == .patternVar then
+        let rhs' ← force rhs
+        let ctxSize := info.context.length
+        if (collectFreeVars rhs').all (fun l => l.lvl < ctxSize) then
+          TCM.solveMeta m rhs' (callerTag := "Pattern.installPatternVar")
+          return
+    | none => pure ()
+
   -- First, check if the meta's type involves unsolved metas (heterogeneous case)
   let shouldDefer ← shouldDeferMeta m
   if shouldDefer then
@@ -817,7 +853,10 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
         if resolved then pure ()
         else
           let span ← TCM.getSpan
-          TCM.throw (.unificationFailed (.occursCheck m rhs) .general span #[] #[m])
+          let path ← TCM.getPath
+          let roots ← TCM.getUnifyRoot
+          TCM.throw (.unificationFailed
+            (.occursCheck m rhs path roots) .general span #[] #[m])
     | .error .escapeCheck =>
       let _ ← tryPrune m spine rhs
       -- If RHS is itself a pattern flex-flex, intersection may still solve it

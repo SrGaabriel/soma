@@ -1,0 +1,15 @@
+error[E1003]: expected function type
+  ,-> Test/fixtures/diagnostics/expectedFunction.soma:8:18
+  |
+7 | def n : Int32 := Int32::MkInt32
+8 | def x : Int32 := n n
+  |                  --- `Int32` is not a function
+  |
+  ,-> <actual at 8:18>:1:1
+  |
+1 | Int32
+  | ----- not a function
+  |
+  = note: function application requires a function type (Π-type)
+  = note: type was inferred from: checking `app` against `Int32`
+  = help: did you mean field access (`.x`) or forget parentheses?

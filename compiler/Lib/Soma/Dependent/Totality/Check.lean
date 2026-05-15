@@ -228,22 +228,6 @@ where
         | none =>
           checkTerm armBody
 
-    | .eqTy _ ty lhs rhs =>
-      checkTerm ty
-      checkTerm lhs
-      checkTerm rhs
-
-    | .refl ty x =>
-      checkTerm ty
-      checkTerm x
-
-    | .transport _ ty motive lhs rhs eq body =>
-      checkTerm ty
-      checkTerm motive
-      checkTerm lhs
-      checkTerm rhs
-      checkTerm eq
-      checkTerm body
 
     | .closure _ caps _ =>
       for cap in caps do

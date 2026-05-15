@@ -168,16 +168,16 @@ private def reportStuckDrainConstraint (tc : TrackedConstraint) : TCM Unit := do
         String.intercalate ", " (forcedArgs.toList.map Soma.Core.valueToString)
       TCM.addError (.cannotInfer
         s!"could not resolve instance `{classId.original} {renderedArgs}` because its type arguments remain unsolved"
-        span (some tc.origin))
+        span tc.origin)
   | .deferredInstance _ domTy span =>
     let forcedDom ← deepForceValue domTy
     TCM.addError (.cannotInfer
       s!"could not resolve deferred instance `{Soma.Core.valueToString forcedDom}`"
-      span (some tc.origin))
+      span tc.origin)
   | other =>
     TCM.addError (.cannotInfer
       s!"unsolved constraint after final solver drain: {other.describe}"
-      other.span (some tc.origin))
+      other.span tc.origin)
 
 /-- Incremental driver -/
 def solveConstraints : TCM Nat := do

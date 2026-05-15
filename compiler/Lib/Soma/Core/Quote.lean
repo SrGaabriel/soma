@@ -12,7 +12,7 @@ mutual
 /-- Format a neutral head -/
 partial def headToString : Head → String
   | .hVar v => v.name
-  | .hMeta _ => "{unknown}"
+  | .hMeta id => s!"?m{id.id}"
   | .hConst name _ => name.display
   | .hCase scrutinees _ _ =>
     let scrutsStr := scrutinees.toList.map valueToString |> String.intercalate ", "
@@ -92,14 +92,6 @@ partial def valueToString (v : Value) : String :=
       let argsStr := args.map valueToString
       s!"{name.display} {" ".intercalate argsStr}"
 
-  | .vEq _ _ty lhs rhs =>
-    s!"{valueToString lhs} = {valueToString rhs}"
-
-  | .vRefl _ _ => "refl"
-
-  | .vTransport _ _ motive _ _ eq body =>
-    s!"transport {valueToString motive} {valueToString eq} {valueToString body}"
-
 end
 
 instance : ToString Value := ⟨valueToString⟩
@@ -129,13 +121,6 @@ partial def valueEq (v1 v2 : Value) : Bool :=
   | .vConstructor n1 t1 as1 _, .vConstructor n2 t2 as2 _ =>
     n1 == n2 && t1 == t2 && as1.length == as2.length &&
     (as1.zip as2).all (fun (a, b) => valueEq a b)
-  | .vEq l1 t1 a1 b1, .vEq l2 t2 a2 b2 =>
-    l1 == l2 && valueEq t1 t2 && valueEq a1 a2 && valueEq b1 b2
-  | .vRefl t1 x1, .vRefl t2 x2 =>
-    valueEq t1 t2 && valueEq x1 x2
-  | .vTransport l1 t1 m1 lhs1 rhs1 eq1 b1, .vTransport l2 t2 m2 lhs2 rhs2 eq2 b2 =>
-    l1 == l2 && valueEq t1 t2 && valueEq m1 m2 && valueEq lhs1 lhs2 &&
-    valueEq rhs1 rhs2 && valueEq eq1 eq2 && valueEq b1 b2
   | .vLam _ b1, .vLam _ b2 => closureEq b1 b2
   | _, _ => false
 
@@ -221,16 +206,6 @@ partial def valueMaxBoundLvl? (v : Value) : Option Nat :=
     let argsMax := args.foldl (init := none) fun acc a =>
       maxOpt? acc (valueMaxBoundLvl? a)
     maxOpt? argsMax (valueMaxBoundLvl? rty)
-  | .vEq _ ty lhs rhs =>
-    maxOpt? (valueMaxBoundLvl? ty)
-      (maxOpt? (valueMaxBoundLvl? lhs) (valueMaxBoundLvl? rhs))
-  | .vRefl ty x =>
-    maxOpt? (valueMaxBoundLvl? ty) (valueMaxBoundLvl? x)
-  | .vTransport _ ty motive lhs rhs eq body =>
-    let m1 := maxOpt? (valueMaxBoundLvl? ty) (valueMaxBoundLvl? motive)
-    let m2 := maxOpt? (valueMaxBoundLvl? lhs) (valueMaxBoundLvl? rhs)
-    let m3 := maxOpt? (valueMaxBoundLvl? eq) (valueMaxBoundLvl? body)
-    maxOpt? m1 (maxOpt? m2 m3)
   | .vNeutral ty neu =>
     maxOpt? (valueMaxBoundLvl? ty) (neutralMaxBoundLvl? neu)
 
@@ -310,10 +285,6 @@ where
     | .recordTy r => .recordTy (go r d)
     | .variantTy r => .variantTy (go r d)
     | .dataTy id ps => .dataTy id (ps.map (go · d))
-    | .eqTy lv t l r => .eqTy lv (go t d) (go l d) (go r d)
-    | .refl t x => .refl (go t d) (go x d)
-    | .transport lv t m l r ep b =>
-      .transport lv (go t d) (go m d) (go l d) (go r d) (go ep d) (go b d)
     | .ann x t => .ann (go x d) (go t d)
 
 mutual
@@ -356,13 +327,6 @@ partial def quoteExpr (depth : DeBruijnLvl) (v : Value) : Expr :=
     .dataTy id (params.map (quoteExpr depth) |>.toArray)
   | .vConstructor name tag args resultTy =>
     .construct name tag (args.map (quoteExpr depth) |>.toArray) (quoteExpr depth resultTy)
-  | .vEq lv ty lhs rhs =>
-    .eqTy lv (quoteExpr depth ty) (quoteExpr depth lhs) (quoteExpr depth rhs)
-  | .vRefl ty x => .refl (quoteExpr depth ty) (quoteExpr depth x)
-  | .vTransport lv ty mot lhs rhs eq body =>
-    .transport lv (quoteExpr depth ty) (quoteExpr depth mot)
-               (quoteExpr depth lhs) (quoteExpr depth rhs)
-               (quoteExpr depth eq) (quoteExpr depth body)
 
 /-- Quote a neutral head to an Expr at a given depth -/
 partial def quoteHeadExpr (depth : DeBruijnLvl) : Head → Expr

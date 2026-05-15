@@ -1,0 +1,11 @@
+error[E1042]: types of branches of `if/else` disagree
+   ,-> Test/fixtures/diagnostics/branchTypeMismatch.soma:17:29
+   |
+16 |
+17 |+ def x := if Bool::True then "hello" else Int32::MkInt32
+   |                              +------      +-------------
+   |                              |            +-- branch 2: `Int32`
+   |                              +-- branch 1: `String`
+   |
+   = note: every branch contributes to the result type; they have to unify
+   = help: make the branches agree, or annotate the construct's result type

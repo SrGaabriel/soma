@@ -138,25 +138,6 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
     let rtyE ← rename ren rty
     .ok (.construct name tag argExprs.toArray rtyE)
 
-  | .vEq tyLevel ty lhs rhs => do
-    let tyE ← rename ren ty
-    let lhsE ← rename ren lhs
-    let rhsE ← rename ren rhs
-    .ok (.eqTy tyLevel tyE lhsE rhsE)
-
-  | .vRefl ty x => do
-    let tyE ← rename ren ty
-    let xE ← rename ren x
-    .ok (.refl tyE xE)
-
-  | .vTransport tyLevel ty motive lhs rhs eq body => do
-    let tyE ← rename ren ty
-    let motiveE ← rename ren motive
-    let lhsE ← rename ren lhs
-    let rhsE ← rename ren rhs
-    let eqE ← rename ren eq
-    let bodyE ← rename ren body
-    .ok (.transport tyLevel tyE motiveE lhsE rhsE eqE bodyE)
 
 partial def renameHead (ren : PartialRenaming) : Head → RenameResult
   | .hVar v =>

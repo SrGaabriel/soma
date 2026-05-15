@@ -8,3 +8,4 @@ error[E1008]: unknown variable `undefned_variable`
   = help: did you mean `undefined_variable`?
   = available fixes:
     ⌖ #1: rename to `undefined_variable`
+        def x : Type := undefined_variable

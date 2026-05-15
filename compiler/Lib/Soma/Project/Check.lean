@@ -481,6 +481,8 @@ def checkFunctionsCore
         errors := errors ++ newState.errors
 
         if isTheorem then
+          if fn.attrs.partial_ then
+            errors := errors.push (.partialTheorem fnName fn.span)
           let propCheck :=
             (Soma.Dependent.isTheoremType fnType).run
               ({ ctx with globals := currentGlobals }) newState
@@ -490,7 +492,7 @@ def checkFunctionsCore
             errors := errors.push
               (.cannotInfer
                 s!"theorem `{fnName}` result type must be a proposition (Prop-valued), but the signature lives in Type"
-                fn.span none)
+                fn.span .unknown)
           | .error e => errors := errors.push e
 
         let typedFn : Soma.Core.TypedFunction := {
@@ -1227,7 +1229,7 @@ def checkModule
     (packageName : String)
     (supply : UniqueSupply)
     (preludeSymbols : Array String := #[])
-    : Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
+    : DiagContext × Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
   let modName := info.name.toString
   let diag := diagBuilderFor diagCtx info
 
@@ -1254,12 +1256,16 @@ def checkModule
   -- Lower AST to Core untyped module
   let elabRes := elaborateWithExternals info.ast diag
   if elabRes.diagnostics.hasErrors then
-    return (elabRes.diagnostics ++ importDiags, none, supply)
+    return (diagCtx, elabRes.diagnostics ++ importDiags, none, supply)
 
   -- Use the shared type checking pipeline (fresh check, no previous state)
   let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none (some elabRes.uniqueSupply)
 
-  let allDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic diagCtx)
+  let pp : Soma.Core.PpContext :=
+    (Soma.Core.PpContext.ofMetas tcResult.metas).withEqInductive
+      ((tcResult.globals.wiredIn.getUnique? .typeEq).map (·.name.id))
+  let (diagCtx, allDiags) :=
+    Soma.Dependent.TCErrors.toDiagnosticsDecorated diagCtx pp tcResult.errors
 
   let unusedImportDiags := if allDiags.isEmpty then
     detectUnusedImports info.ast diag tcResult.globals tcResult.allUsedGlobals
@@ -1307,10 +1313,9 @@ def checkModule
     localTypes := tcResult.localTypes
   }
 
-  (elabRes.diagnostics ++ importDiags ++ allDiags ++ unusedImportDiags, some checkedModule, supply'')
+  (diagCtx, elabRes.diagnostics ++ importDiags ++ allDiags ++ unusedImportDiags, some checkedModule, supply'')
 
-/-- Check a single module incrementally, reusing cached results for unchanged definitions.
-    This is the main entry point for incremental type checking in the LSP. -/
+/-- Check a single module incrementally -/
 def checkModuleIncremental
     (diagCtx : DiagContext)
     (info : ModuleInfo)
@@ -1323,7 +1328,7 @@ def checkModuleIncremental
     (packageName : String)
     (supply : UniqueSupply)
     (preludeSymbols : Array String := #[])
-    : Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
+    : DiagContext × Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
   let modName := info.name.toString
   let diag := diagBuilderFor diagCtx info
 
@@ -1346,7 +1351,7 @@ def checkModuleIncremental
   -- Lower AST to Core untyped module
   let elabRes := elaborateWithExternals info.ast diag
   if elabRes.diagnostics.hasErrors then
-    return (elabRes.diagnostics ++ importDiags, none, supply)
+    return (diagCtx, elabRes.diagnostics ++ importDiags, none, supply)
 
   -- Use the shared type checking pipeline with previous state for incremental checking
   let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState) (some elabRes.uniqueSupply)
@@ -1354,7 +1359,11 @@ def checkModuleIncremental
   -- If nothing changed (empty errors and same state), we could reuse previous result
   -- But for correctness, we rebuild anyway since the lowered module might have changed
 
-  let allDiags := tcResult.errors.map (Soma.Dependent.TCError.toDiagnostic diagCtx)
+  let pp : Soma.Core.PpContext :=
+    (Soma.Core.PpContext.ofMetas tcResult.metas).withEqInductive
+      ((tcResult.globals.wiredIn.getUnique? .typeEq).map (·.name.id))
+  let (diagCtx, allDiags) :=
+    Soma.Dependent.TCErrors.toDiagnosticsDecorated diagCtx pp tcResult.errors
 
   let unusedImportDiags := if allDiags.isEmpty then
     detectUnusedImports info.ast diag tcResult.globals tcResult.allUsedGlobals
@@ -1400,7 +1409,7 @@ def checkModuleIncremental
     localTypes := tcResult.localTypes
   }
 
-  (elabRes.diagnostics ++ importDiags ++ allDiags ++ unusedImportDiags, some checkedModule, supply'')
+  (diagCtx, elabRes.diagnostics ++ importDiags ++ allDiags ++ unusedImportDiags, some checkedModule, supply'')
 
 /-- Check all modules in topological order -/
 def checkModulesInOrder
@@ -1414,19 +1423,20 @@ def checkModulesInOrder
     (packageName : String)
     (supply : UniqueSupply)
     (preludeSymbols : Array String := #[])
-    : Diagnostics × Array CheckedModule × UniqueSupply :=
-  let (allDiags, _, results, finalSupply) := sortedNames.foldl
-    (init := (#[], ({} : Std.HashMap String CheckedModule), #[], supply))
-    fun (diags, checked, results, sup) modName =>
+    : DiagContext × Diagnostics × Array CheckedModule × UniqueSupply :=
+  let (finalCtx, allDiags, _, results, finalSupply) := sortedNames.foldl
+    (init := (diagCtx, (#[] : Diagnostics), ({} : Std.HashMap String CheckedModule), #[], supply))
+    fun (ctx, diags, checked, results, sup) modName =>
       match graph.get? modName with
-      | none => (diags, checked, results, sup)
+      | none => (ctx, diags, checked, results, sup)
       | some info =>
         let modulePrelude := if modName == preludeModuleName then #[] else preludeSymbols
-        let (moduleDiags, cmOpt, sup') := checkModule diagCtx info checked externalGlobals externalInstanceEnv externalAbbrevEnv externalSymbols packageName sup modulePrelude
+        let (ctx', moduleDiags, cmOpt, sup') :=
+          checkModule ctx info checked externalGlobals externalInstanceEnv externalAbbrevEnv externalSymbols packageName sup modulePrelude
         match cmOpt with
-        | some cm => (diags ++ moduleDiags, checked.insert modName cm, results.push cm, sup')
-        | none => (diags ++ moduleDiags, checked, results, sup')
-  (allDiags, results, finalSupply)
+        | some cm => (ctx', diags ++ moduleDiags, checked.insert modName cm, results.push cm, sup')
+        | none => (ctx', diags ++ moduleDiags, checked, results, sup')
+  (finalCtx, allDiags, results, finalSupply)
 
 /-- Parse a single source file into a ModuleInfo -/
 def parseModuleFile (ctx : DiagContext) (moduleName : String) (path : System.FilePath)
@@ -1510,7 +1520,7 @@ def checkSingleFile
           env.fold (init := acc) fun e sym ty => e.insert sym ty
         let supply := UniqueSupply.initial name
 
-        let (checkDiags, checkedModules, _) := checkModulesInOrder
+        let (diagCtx, checkDiags, checkedModules, _) := checkModulesInOrder
           diagCtx sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols name supply preludeSymbols
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
@@ -1577,7 +1587,7 @@ def checkDirectory
 
         let supply := UniqueSupply.initial packageName
 
-        let (checkDiags, checkedModules, _) := checkModulesInOrder
+        let (diagCtx, checkDiags, checkedModules, _) := checkModulesInOrder
           diagCtx sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols packageName supply preludeSymbols
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
