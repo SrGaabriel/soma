@@ -81,11 +81,12 @@ partial def normKey (v : Value) (depth : Nat) (m : NormMap)
     let codV ← applyClosure cod dummy
     let (cs, m₂) ← normKey codV (depth + 1) m₁
     return (s!"Π{toString qty}{toString binder}({ds}→{cs})", m₂)
-  | .vLam _ body =>
-    let dummy := Value.vNeutral (.vType .zero) (.nVar ⟨"_λ", ⟨depth⟩⟩)
+  | .vLam _ dom body =>
+    let (ds, m₀) ← normKey dom depth m
+    let dummy := Value.vNeutral dom (.nVar ⟨"_λ", ⟨depth⟩⟩)
     let bV ← applyClosure body dummy
-    let (bs, m') ← normKey bV (depth + 1) m
-    return (s!"λ.{bs}", m')
+    let (bs, m') ← normKey bV (depth + 1) m₀
+    return (s!"λ{ds}.{bs}", m')
   | .vNeutral _ neu =>
     normNeuKey neu depth m
 
@@ -401,7 +402,7 @@ private partial def refreshStaleMetas (v : Value) (mapping : Std.HashMap Nat Met
   | .vVariant row =>
     let (row', mapping') ← refreshStaleMetas row mapping
     return (.vVariant row', mapping')
-  | .vLam name body => return (.vLam name body, mapping)
+  | .vLam name dom body => return (.vLam name dom body, mapping)
   | .vRecordVal fields =>
     let mut mapping' := mapping
     let mut fields' : List (String × Value) := []
@@ -547,7 +548,7 @@ private def applyConstraintDicts (instValue : Value) (constraintDicts : Array Va
   let mut result := instValue
   for dict in constraintDicts do
     result ← match result with
-      | .vLam _ body => applyClosure body dict
+      | .vLam _ _ body => applyClosure body dict
       | .vNeutral ty neu => pure (.vNeutral ty (.nApp neu dict))
       | other => pure other
   return result

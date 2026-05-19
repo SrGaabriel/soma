@@ -160,13 +160,14 @@ partial def unifyCore (v1 v2 : Value) : TCM Unit := do
     TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
       TCM.withPathStep .piCodomain do unifyCore cod1 cod2
 
-  | .vLam n1 body1, .vLam _ body2 =>
+  | .vLam n1 d1 body1, .vLam _ d2 body2 =>
+    unifyCore d1 d2
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral .type0 (.nVar ⟨n1, lvl⟩)
+    let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
     let b1Val ← applyClosure body1 x
     let b2Val ← applyClosure body2 x
     let bindingId ← TCM.freshLocalId n1
-    TCM.withBinding n1 bindingId .type0 .omega .explicit defaultSpan do
+    TCM.withBinding n1 bindingId d1 .omega .explicit defaultSpan do
       TCM.withPathStep .lamBody do unifyCore b1Val b2Val
 
   | .vIntLit n1, .vIntLit n2 =>
@@ -216,22 +217,22 @@ partial def unifyCore (v1 v2 : Value) : TCM Unit := do
     TCM.withInjectiveDescent do
       unifyList as1 as2 PathStep.constructorArg
 
-  | .vLam n body, .vNeutral _ otherNeu =>
+  | .vLam n dom body, .vNeutral _ otherNeu =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral .type0 (.nVar ⟨n, lvl⟩)
+    let x := Value.vNeutral dom (.nVar ⟨n, lvl⟩)
     let bodyVal ← applyClosure body x
-    let otherApp := Value.vNeutral .type0 (.nApp otherNeu x)
+    let otherApp := Value.vNeutral dom (.nApp otherNeu x)
     let bindingId ← TCM.freshLocalId n
-    TCM.withBinding n bindingId .type0 .omega .explicit defaultSpan do
+    TCM.withBinding n bindingId dom .omega .explicit defaultSpan do
       TCM.withPathStep .lamBody do unifyCore bodyVal otherApp
 
-  | .vNeutral _ otherNeu, .vLam n body =>
+  | .vNeutral _ otherNeu, .vLam n dom body =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral .type0 (.nVar ⟨n, lvl⟩)
+    let x := Value.vNeutral dom (.nVar ⟨n, lvl⟩)
     let bodyVal ← applyClosure body x
-    let otherApp := Value.vNeutral .type0 (.nApp otherNeu x)
+    let otherApp := Value.vNeutral dom (.nApp otherNeu x)
     let bindingId ← TCM.freshLocalId n
-    TCM.withBinding n bindingId .type0 .omega .explicit defaultSpan do
+    TCM.withBinding n bindingId dom .omega .explicit defaultSpan do
       TCM.withPathStep .lamBody do unifyCore otherApp bodyVal
 
   -- Metavariable on the left
@@ -747,7 +748,7 @@ partial def applyToSpine (v : Value) (spine : List Value) : TCM Value := do
     -- Force the argument too, so we work with resolved values
     let arg' ← force arg
     match v' with
-    | .vLam _ body =>
+    | .vLam _ _ body =>
       let result ← applyClosure body arg'
       applyToSpine result rest
     | .vNeutral _ty neu =>

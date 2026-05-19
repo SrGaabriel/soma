@@ -136,11 +136,13 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :
     .callPoly newFuncId typeArgs (remapOps args) retTy
   | .callIndirect ptr args retTy => .callIndirect (remapOp ptr) (remapOps args) retTy
   | .callClosure closure args retTy => .callClosure (remapOp closure) (remapOps args) retTy
-  | .makeClosure funcRef env => .makeClosure (remapRef funcRef) (remapOp env)
-  | .makeClosurePoly funcRef typeArgs env => .makeClosurePoly (remapRef funcRef) typeArgs (remapOp env)
-  | .makeClosureDyn fn env ty => .makeClosureDyn (remapOp fn) (remapOp env) ty
-  | .stackClosure funcRef env => .stackClosure (remapRef funcRef) (remapOp env)
-  | .stackClosurePoly funcRef typeArgs env => .stackClosurePoly (remapRef funcRef) typeArgs (remapOp env)
+  | .makeClosure funcRef cc env => .makeClosure (remapRef funcRef) cc (remapOp env)
+  | .makeClosurePoly funcRef typeArgs cc env =>
+      .makeClosurePoly (remapRef funcRef) typeArgs cc (remapOp env)
+  | .makeClosureDyn fn cc env ty => .makeClosureDyn (remapOp fn) cc (remapOp env) ty
+  | .stackClosure funcRef cc env => .stackClosure (remapRef funcRef) cc (remapOp env)
+  | .stackClosurePoly funcRef typeArgs cc env =>
+      .stackClosurePoly (remapRef funcRef) typeArgs cc (remapOp env)
   | .closureFunc closure => .closureFunc (remapOp closure)
   | .closureEnv closure => .closureEnv (remapOp closure)
   | .phi incoming ty =>
@@ -360,8 +362,8 @@ def collectUnresolvedRefs (mod : Module) : Std.HashSet WrapperNeeded := Id.run d
       for block in cfg.allBlocks do
         for stmt in block.stmts do
           match stmt.inst with
-          | .makeClosure ref _ | .makeClosurePoly ref _ _
-          | .stackClosure ref _ | .stackClosurePoly ref _ _ =>
+          | .makeClosure ref _ _ | .makeClosurePoly ref _ _ _
+          | .stackClosure ref _ _ | .stackClosurePoly ref _ _ _ =>
             match ref with
             | .primOp op => result := result.insert (.primOp op)
             | .intrinsic op => result := result.insert (.intrinsicOp op)
@@ -380,11 +382,13 @@ def buildNameTable (mod : Module) : Std.HashMap String FuncId := Id.run do
 /-- Resolve FuncRef in an instruction using the resolver -/
 def resolveInstFuncRefs (resolver : FuncRefResolver) (inst : Inst n) : Inst n :=
   match inst with
-  | .makeClosure ref env => .makeClosure (resolver.resolveToLocal ref) env
-  | .makeClosurePoly ref typeArgs env => .makeClosurePoly (resolver.resolveToLocal ref) typeArgs env
-  | .makeClosureDyn fn env ty => .makeClosureDyn fn env ty
-  | .stackClosure ref env => .stackClosure (resolver.resolveToLocal ref) env
-  | .stackClosurePoly ref typeArgs env => .stackClosurePoly (resolver.resolveToLocal ref) typeArgs env
+  | .makeClosure ref cc env => .makeClosure (resolver.resolveToLocal ref) cc env
+  | .makeClosurePoly ref typeArgs cc env =>
+      .makeClosurePoly (resolver.resolveToLocal ref) typeArgs cc env
+  | .makeClosureDyn fn cc env ty => .makeClosureDyn fn cc env ty
+  | .stackClosure ref cc env => .stackClosure (resolver.resolveToLocal ref) cc env
+  | .stackClosurePoly ref typeArgs cc env =>
+      .stackClosurePoly (resolver.resolveToLocal ref) typeArgs cc env
   | .callExtern name args retTy =>
     -- Check if the extern function is now available as a local function in the merged module
     match resolver.nameToFuncId.get? name with

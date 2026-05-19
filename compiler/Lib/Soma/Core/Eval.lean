@@ -226,8 +226,9 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     let fnVal := evalCoreExpr ctx fn
     vApp fnVal (evalCoreExpr ctx arg) ctx
 
-  | .lam _info name _domain body =>
-    .vLam name (Closure.mkWithBody name ctx.env body)
+  | .lam _info name domain body =>
+    let domainVal := evalCoreExpr ctx domain
+    .vLam name domainVal (Closure.mkWithBody name ctx.env body)
 
   | .let_ _name _ty val body =>
     let valV := evalCoreExpr ctx val
@@ -343,7 +344,7 @@ partial def applyClosure (clos : Closure) (arg : Value) (ctx : EvalCtx) : Value 
 /-- Apply a value to an argument -/
 partial def vApp (fn : Value) (arg : Value) (ctx : EvalCtx) : Value :=
   match fn with
-  | .vLam _ body =>
+  | .vLam _ _ body =>
     applyClosure body arg ctx
   | .vNeutral ty neu =>
     .vNeutral ty (.nApp neu arg)

@@ -81,8 +81,8 @@ partial def traverseValue (action : TraversalAction α) (v : Value) : α :=
     | .vPi _ _ _ dom cod =>
       inst.combine (traverseValue action dom) (traverseClosure action cod)
 
-    | .vLam _ body =>
-      traverseClosure action body
+    | .vLam _ dom body =>
+      inst.combine (traverseValue action dom) (traverseClosure action body)
 
     | .vNeutral ty neu =>
       inst.combine (traverseValue action ty) (traverseNeutral action neu)
@@ -242,8 +242,10 @@ partial def traverseValueM
       let r2 ← traverseClosureM action cod
       return inst.combine r1 r2
 
-    | .vLam _ body =>
-      traverseClosureM action body
+    | .vLam _ dom body =>
+      let r1 ← traverseValueM action dom
+      let r2 ← traverseClosureM action body
+      return inst.combine r1 r2
 
     | .vNeutral ty neu =>
       let r1 ← traverseValueM action ty
@@ -390,9 +392,10 @@ partial def transformValueM (t : ValueTransformer M) (v : Value) : M Value := do
       let cod' ← transformClosureM t cod
       return .vPi qty binder name dom' cod'
 
-    | .vLam name body =>
+    | .vLam name dom body =>
+      let dom' ← transformValueM t dom
       let body' ← transformClosureM t body
-      return .vLam name body'
+      return .vLam name dom' body'
 
     | .vNeutral ty neu =>
       let ty' ← transformValueM t ty

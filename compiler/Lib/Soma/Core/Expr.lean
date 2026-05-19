@@ -599,13 +599,35 @@ partial def countBVar (e : Expr) (depth : Nat := 0) : Nat :=
   | .const _ _ => 0
   | _ => 0
 
-/-- Exhaustive beta-reduction: reduces `app (lam ...) arg` redexes.
-    When `stripTypeArgs` is true, type-level arguments applied to non-lambda
-    heads are dropped (useful after dictionary specialization)
+/-- Count occurrences of bvar(depth) in runtime-relevant positions only -/
+partial def countRuntimeBVar (e : Expr) (depth : Nat := 0) : Nat :=
+  match e with
+  | .bvar i => if i == depth then 1 else 0
+  | .app f a => countRuntimeBVar f depth + countRuntimeBVar a depth
+  | .lam _ _ _ b => countRuntimeBVar b (depth + 1)
+  | .pi _ _ _ _ _ => 0
+  | .let_ _ _ v b => countRuntimeBVar v depth + countRuntimeBVar b (depth + 1)
+  | .«case» scruts _motive arms =>
+    let s := scruts.foldl (fun acc e => acc + countRuntimeBVar e depth) 0
+    let a := arms.foldl (fun acc arm =>
+      acc + countRuntimeBVar arm.body (depth + arm.patterns.foldl (fun n p => n + p.bindingCount) 0)) 0
+    s + a
+  | .if_ c t el => countRuntimeBVar c depth + countRuntimeBVar t depth + countRuntimeBVar el depth
+  | .construct _ _ args _ => args.foldl (fun acc e => acc + countRuntimeBVar e depth) 0
+  | .fieldAccess x _ _ => countRuntimeBVar x depth
+  | .closure _ caps _ => caps.foldl (fun acc e => acc + countRuntimeBVar e depth) 0
+  | .array es _ => es.foldl (fun acc e => acc + countRuntimeBVar e depth) 0
+  | .tuple es => es.foldl (fun acc e => acc + countRuntimeBVar e depth) 0
+  | .record fs => fs.foldl (fun acc (_, e) => acc + countRuntimeBVar e depth) 0
+  | .recordUpdate b us =>
+    countRuntimeBVar b depth + us.foldl (fun acc (_, e) => acc + countRuntimeBVar e depth) 0
+  | .inject _ args _ => args.foldl (fun acc e => acc + countRuntimeBVar e depth) 0
+  | .ann x _ => countRuntimeBVar x depth
+  | .fvar _ _ => 0
+  | .const _ _ => 0
+  | _ => 0
 
-    Sharing-preserving: if the binder is `.explicit` and the bound variable
-    is used more than once in the body, we emit `.let_` rather than
-    substitute `arg'` at every use site -/
+/-- Reduces `app (lam ...) arg` redexes -/
 partial def betaReduce (e : Expr) (stripTypeArgs : Bool := false) : Expr :=
   match e with
   | .app fn arg =>
@@ -613,7 +635,7 @@ partial def betaReduce (e : Expr) (stripTypeArgs : Bool := false) : Expr :=
     let arg' := betaReduce arg stripTypeArgs
     match fn' with
     | .lam info name domain body =>
-      let uses := body.countBVar 0
+      let uses := body.countRuntimeBVar 0
       if uses <= 1 || info != .explicit then
         betaReduce (body.instantiate arg') stripTypeArgs
       else

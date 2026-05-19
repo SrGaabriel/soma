@@ -423,7 +423,7 @@ structure MethodElabResult where
   /-- Parameter bindings: (Unique, name) pairs -/
   params : Array (Unique × String)
   /-- Full NbE value telescope, including erased implicit and instance binders -/
-  valueParams : Array (Unique × String × BinderInfo) := #[]
+  valueParams : Array Soma.Core.ValueParam := #[]
 
 /-- Extract the part of a method signature needed to check the source body -/
 private partial def extractMethodSignaturePrefix (ty : Value) (explicitCount : Nat)
@@ -453,9 +453,9 @@ private def withMethodSignaturePrefix
     (explicitNames : Array String)
     (span : Span)
     (action : TCM α)
-    : TCM (Array (Unique × String) × Array (Unique × String × BinderInfo) × α) := do
+    : TCM (Array (Unique × String) × Array Soma.Core.ValueParam × α) := do
   let mut runtimeParams : Array (Unique × String) := #[]
-  let mut valueParams : Array (Unique × String × BinderInfo) := #[]
+  let mut valueParams : Array Soma.Core.ValueParam := #[]
   let mut binders : Array (Unique × String × Value × BinderInfo × Quantity) := #[]
   let mut explicitIdx : Nat := 0
   for (sigName, ty, binder, qty) in sigPrefix do
@@ -465,7 +465,7 @@ private def withMethodSignaturePrefix
       explicitIdx := explicitIdx + 1
     let uid ← TCM.freshLocalId name
     binders := binders.push (uid, name, ty, binder, qty)
-    valueParams := valueParams.push (uid, name, binder)
+    valueParams := valueParams.push { uid, name, binder, type := ty }
     if !binder.isImplicit then
       runtimeParams := runtimeParams.push (uid, name)
 
@@ -503,16 +503,19 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
       Soma.Dependent.drainConstraints
       pure checked
 
-  let coreBody' ← zonkExpr coreBody
+  let coreBody' := (← zonkExpr coreBody).betaReduce
   let expectedType' ← zonkValue expectedType
 
   -- Build the unfoldable method value over the full semantic telescope
   let mut lambdaExpr := coreBody'
   for i in [:valueParams.size] do
     let idx := valueParams.size - 1 - i
-    let (paramId, paramName, binderInfo) := valueParams[idx]!
-    lambdaExpr := lambdaExpr.abstractFVar paramId
-    lambdaExpr := .lam binderInfo paramName (Expr.sort Level.zero) lambdaExpr
+    let vp := valueParams[idx]!
+    let domExpr ← do
+      let zonkedTy ← zonkValue vp.type
+      pure (Soma.Core.quoteExpr0 zonkedTy)
+    lambdaExpr := lambdaExpr.abstractFVar vp.uid
+    lambdaExpr := .lam vp.binder vp.name domExpr lambdaExpr
   let methodVal ← TCM.evalExpr lambdaExpr
 
   return {
@@ -968,9 +971,7 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl)
 private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
     (fieldIdx : Nat) : TCM (Option TypedFunction) := do
   let mut runtimeParams : Array (Soma.Unique × String) := #[]
-  let mut allValueParams : Array (Soma.Unique × String × Soma.Core.BinderInfo) := #[]
-  let mut paramTyExprs : Array Soma.Core.Expr := #[]
-  let mut paramIsExplicit : Array Bool := #[]
+  let mut allValueParams : Array Soma.Core.ValueParam := #[]
   let mut walkTy := info.type
   let mut dictUnique : Soma.Unique := ⟨0, "", "$dict"⟩
   let mut foundInstance := false
@@ -979,9 +980,8 @@ private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
     match walkTy with
     | .vPi _qty binder name dom cod =>
       let paramUnique ← TCM.freshUnique name
-      let domExpr := Soma.Core.quoteExpr0 dom
-      paramTyExprs := paramTyExprs.push domExpr
-      allValueParams := allValueParams.push (paramUnique, name, binder)
+      allValueParams := allValueParams.push
+        { uid := paramUnique, name, binder, type := dom }
       let isErasedImplicitTyParam : Bool :=
         match binder with
         | .implicit | .strictImplicit =>
@@ -989,7 +989,6 @@ private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
           | .vType _ | .vRowSort | .vLabelSort => true
           | _ => false
         | _ => false
-      paramIsExplicit := paramIsExplicit.push (binder == .explicit)
       if binder == .instance_ then
         dictUnique := paramUnique
         foundInstance := true
@@ -1000,8 +999,8 @@ private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
   if !foundInstance then return none
 
   -- Locate the `$dict` parameter inside the all-binders array
-  let allDictIdx := allValueParams.findIdx? (fun (u, _, _) => u == dictUnique) |>.getD 0
-  let dictTyExpr := paramTyExprs[allDictIdx]?.getD (Soma.Core.Expr.sort .zero)
+  let allDictIdx := allValueParams.findIdx? (fun vp => vp.uid == dictUnique) |>.getD 0
+  let dictTyExpr := Soma.Core.quoteExpr0 allValueParams[allDictIdx]!.type
 
   let mut body : Soma.Core.Expr :=
     Soma.Core.Expr.fieldAccess
@@ -1009,10 +1008,10 @@ private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
       methodNameStr
       fieldIdx
   for i in [allDictIdx + 1 : allValueParams.size] do
-    if paramIsExplicit[i]? == some true then
-      let (u, _, _) := allValueParams[i]!
-      let tyExpr := paramTyExprs[i]?.getD (Soma.Core.Expr.sort .zero)
-      body := Soma.Core.Expr.app body (Soma.Core.Expr.fvar u tyExpr)
+    let vp := allValueParams[i]!
+    if vp.binder == .explicit then
+      let tyExpr := Soma.Core.quoteExpr0 vp.type
+      body := Soma.Core.Expr.app body (Soma.Core.Expr.fvar vp.uid tyExpr)
 
   return some {
     name := info.name

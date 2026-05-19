@@ -177,18 +177,18 @@ def ppInst (cfg : Config) : Inst n → String
   | .callClosure closure args retTy =>
     let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
     s!"{colorKeyword cfg "call.closure"} {ppTy cfg retTy} {ppOperand cfg closure}({as})"
-  | .makeClosure func env =>
-    s!"{colorKeyword cfg "makeclosure"} {ppFuncRef cfg func}, {ppOperand cfg env}"
-  | .makeClosureDyn fnClosure env ty =>
-    s!"{colorKeyword cfg "makeclosure.dyn"} {ppOperand cfg fnClosure}, {ppOperand cfg env} : {ppTy cfg ty}"
-  | .makeClosurePoly func typeArgs env =>
+  | .makeClosure func captureCount env =>
+    s!"{colorKeyword cfg "makeclosure"} {ppFuncRef cfg func}[caps={captureCount}], {ppOperand cfg env}"
+  | .makeClosureDyn fnClosure captureCount env ty =>
+    s!"{colorKeyword cfg "makeclosure.dyn"} {ppOperand cfg fnClosure}[caps={captureCount}], {ppOperand cfg env} : {ppTy cfg ty}"
+  | .makeClosurePoly func typeArgs captureCount env =>
     let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
-    s!"{colorKeyword cfg "makeclosure.poly"} {ppFuncRef cfg func}<{tyArgsStr}>, {ppOperand cfg env}"
-  | .stackClosure func env =>
-    s!"{colorKeyword cfg "stackclosure"} {ppFuncRef cfg func}, {ppOperand cfg env}"
-  | .stackClosurePoly func typeArgs env =>
+    s!"{colorKeyword cfg "makeclosure.poly"} {ppFuncRef cfg func}<{tyArgsStr}>[caps={captureCount}], {ppOperand cfg env}"
+  | .stackClosure func captureCount env =>
+    s!"{colorKeyword cfg "stackclosure"} {ppFuncRef cfg func}[caps={captureCount}], {ppOperand cfg env}"
+  | .stackClosurePoly func typeArgs captureCount env =>
     let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
-    s!"{colorKeyword cfg "stackclosure.poly"} {ppFuncRef cfg func}<{tyArgsStr}>, {ppOperand cfg env}"
+    s!"{colorKeyword cfg "stackclosure.poly"} {ppFuncRef cfg func}<{tyArgsStr}>[caps={captureCount}], {ppOperand cfg env}"
   | .callPoly func typeArgs args retTy =>
     let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
     let argsStr := String.intercalate ", " (args.toList.map (ppOperand cfg))

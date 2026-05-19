@@ -387,45 +387,6 @@ def unboxApplyResult (ref : LocalRef) (retTy : ClosedTy) : CodegenM LocalRef := 
 def runtimeParams (sig : ClosedSignature) : Array ClosedParam :=
   sig.params.filter fun p => !isZeroWidthLLVM p.ty
 
-def sameRuntimeRepr (a b : ClosedTy) : Bool :=
-  a == b || (!isZeroWidthLLVM a && !isZeroWidthLLVM b && convertTy a == convertTy b)
-
-/-- Number of source-level runtime parameters represented by a closure env operand -/
-def capturedParamCount (params : Array ClosedParam) (envTy : ClosedTy) : Nat :=
-  if isZeroWidthLLVM envTy then
-    0
-  else
-    match params[0]? with
-    | some p =>
-      if sameRuntimeRepr p.ty envTy then
-        1
-      else
-        match envTy with
-        | .struct fields =>
-          if fields.size <= params.size &&
-             Id.run (do
-               let mut ok := true
-               for h : i in [:fields.size] do
-                 if hi : i < params.size then
-                   ok := ok && sameRuntimeRepr params[i].ty fields[i].2
-               pure ok) then
-            fields.size
-          else
-            panic! s!"CODEGEN BUG: closure env type {envTy} does not match the callee parameter prefix"
-        | _ =>
-          panic! s!"CODEGEN BUG: closure env type {envTy} does not match the first callee parameter"
-    | none =>
-      panic! s!"CODEGEN BUG: non-empty closure env {envTy} for nullary function"
-
-def closureEnvSlotCountFor (funcRef : FuncRef) (envTy : ClosedTy) : CodegenM Nat := do
-  let funcId ← match FuncRef.toFuncId? funcRef with
-    | some id => pure id
-    | none => panic! s!"CODEGEN BUG: unresolved closure target {funcRef}"
-  let sig ← match ← CodegenM.getFuncSig funcId.id with
-    | some sig => pure sig
-    | none => panic! s!"CODEGEN BUG: missing signature for closure target {funcId}"
-  pure (capturedParamCount (runtimeParams sig) envTy)
-
 /-- Coerce an LLVM value from one type to another, handling all valid conversions -/
 def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue := do
   if srcTy == dstTy then pure val
@@ -1364,7 +1325,8 @@ def getOrCreateTrampoline (arity : Nat) : CodegenM String := do
   return name
 
 /-- Write the closure header and env slots into an already-allocated buffer -/
-private def initClosureBuffer (closurePtr : LocalRef) (funcRef : FuncRef) (env : Operand)
+private def initClosureBuffer (closurePtr : LocalRef) (funcRef : FuncRef)
+    (captureCount : Nat) (env : Operand)
     : CodegenM (ClosedTy × Nat) := do
   let funcId ← match FuncRef.toFuncId? funcRef with
     | some id => pure id
@@ -1376,7 +1338,7 @@ private def initClosureBuffer (closurePtr : LocalRef) (funcRef : FuncRef) (env :
     | some sig => pure sig
     | none => panic! s!"CODEGEN BUG: missing signature for closure target {funcId}"
   let rtParams := runtimeParams sig
-  let envSlotCount := capturedParamCount rtParams envAlloTy
+  let envSlotCount := captureCount
   let closureArity : Nat ← do
     if rtParams.size < envSlotCount then
       panic! s!"CODEGEN BUG: closure env captures {envSlotCount} parameter(s), but {funcId} has only {rtParams.size}"
@@ -1428,29 +1390,25 @@ private def initClosureBuffer (closurePtr : LocalRef) (funcRef : FuncRef) (env :
   pure (closureTyAlloy, envSlotCount)
 
 /-- Heap closure allocation -/
-private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
+private def emitMakeClosureImpl (funcRef : FuncRef) (captureCount : Nat) (env : Operand)
     : CodegenM (Option (LocalRef × ClosedTy)) := do
-  let envAlloTy ← operandTy env
-  let envSlots ← closureEnvSlotCountFor funcRef envAlloTy
-  let totalSlots : Nat := envSlots + 2
+  let totalSlots : Nat := captureCount + 2
   let ps := (← get).ptrSize
   let closureByteSize : Int := Int.ofNat (totalSlots * ps)
   let closurePtr ← CodegenM.withFuncBuilder do
     FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int closureByteSize 64))]
-  let (closureTyAlloy, _) ← initClosureBuffer closurePtr funcRef env
+  let (closureTyAlloy, _) ← initClosureBuffer closurePtr funcRef captureCount env
   pure (some (closurePtr, closureTyAlloy))
 
 /-- Stack closure allocation -/
-private def emitStackClosureImpl (funcRef : FuncRef) (env : Operand)
+private def emitStackClosureImpl (funcRef : FuncRef) (captureCount : Nat) (env : Operand)
     : CodegenM (Option (LocalRef × ClosedTy)) := do
-  let envAlloTy ← operandTy env
-  let envSlots ← closureEnvSlotCountFor funcRef envAlloTy
-  let totalSlots : Nat := envSlots + 2
+  let totalSlots : Nat := captureCount + 2
   let ps := (← get).ptrSize
   let bufferTy : LLVMType := .array totalSlots .ptr
   let closurePtr ← CodegenM.withFuncBuilder do
     FuncBuilder.entryAlloca bufferTy (some ps)
-  let (closureTyAlloy, _) ← initClosureBuffer closurePtr funcRef env
+  let (closureTyAlloy, _) ← initClosureBuffer closurePtr funcRef captureCount env
   pure (some (closurePtr, closureTyAlloy))
 
 /-- Stack-allocated deep copy of a closure -/
@@ -1505,11 +1463,25 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
   if runtimeDirectArgs.size < runtimeParamCount then
     match runtimeDirectArgs.size with
     | 0 =>
-      return (← emitMakeClosureImpl (.local (FuncId.mk funcId)) (.const .unit))
+      return (← emitMakeClosureImpl (.local (FuncId.mk funcId)) 0 (.const .unit))
     | 1 =>
-      return (← emitMakeClosureImpl (.local (FuncId.mk funcId)) runtimeDirectArgs[0]!.1)
+      return (← emitMakeClosureImpl (.local (FuncId.mk funcId)) 1 runtimeDirectArgs[0]!.1)
     | _ =>
-      panic! s!"CODEGEN BUG: multi-argument under-application of function {funcId} reached direct-call lowering; package the closure environment before LLVM lowering"
+      let initial ← emitMakeClosureImpl (.local (FuncId.mk funcId)) 0 (.const .unit)
+      match initial with
+      | none => return none
+      | some (closureRef, _) =>
+        let mut ref : LocalRef := closureRef
+        for (arg, _) in runtimeDirectArgs do
+          let (argTy, argVal) ← convertOperandWithTy arg
+          let argPtr ← if argTy == .ptr then pure argVal
+                        else if argTy.isInt then do
+                          let converted ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr argTy argVal)
+                          pure (.local converted)
+                        else ensurePtr argTy argVal
+          ref ← CodegenM.withFuncBuilder do
+            FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, .local ref), (.ptr, argPtr)]
+        return (some (ref, .rawPtr))
   let mut llvmArgs : Array (LLVMType × LLVMValue) := #[]
   for (arg, expectedTy) in runtimeDirectArgs do
     let actualTy ← operandTy arg
@@ -1522,9 +1494,17 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
   let callRetTy := if extraArgs.isEmpty then llvmRetTy else .ptr
   let isTailCall := extraArgs.isEmpty && (← get).emitAsTailCall
   modify fun s => { s with emitAsTailCall := false }
-  let mut ref ← CodegenM.withFuncBuilder do
-    FuncBuilder.callNamed callRetTy funcName llvmArgs
-      (tailcall := isTailCall) (callconv := some .fast)
+  let initialRef : LocalRef ←
+    if callRetTy == .void then do
+      CodegenM.withFuncBuilder do
+        FuncBuilder.callNamedVoid funcName llvmArgs
+          (tailcall := isTailCall) (callconv := some .fast)
+      CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
+    else
+      CodegenM.withFuncBuilder do
+        FuncBuilder.callNamed callRetTy funcName llvmArgs
+          (tailcall := isTailCall) (callconv := some .fast)
+  let mut ref : LocalRef := initialRef
   for extraArg in extraArgs do
     let (extraArgTy, extraArgVal) ← convertOperandWithTy extraArg
     let argPtr ← if extraArgTy == .ptr then pure extraArgVal
@@ -1987,15 +1967,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       let ref ← unboxApplyResult ref retTy
       pure (some (ref, retTy))
 
-  | .makeClosure funcRef env => emitMakeClosureImpl funcRef env
-  | .makeClosurePoly funcRef _typeArgs env => emitMakeClosureImpl funcRef env
+  | .makeClosure funcRef captureCount env => emitMakeClosureImpl funcRef captureCount env
+  | .makeClosurePoly funcRef _typeArgs captureCount env =>
+      emitMakeClosureImpl funcRef captureCount env
 
-  | .stackClosure funcRef env => emitStackClosureImpl funcRef env
-  | .stackClosurePoly funcRef _typeArgs env => emitStackClosureImpl funcRef env
+  | .stackClosure funcRef captureCount env => emitStackClosureImpl funcRef captureCount env
+  | .stackClosurePoly funcRef _typeArgs captureCount env =>
+      emitStackClosureImpl funcRef captureCount env
 
   | .stackClone src ty slots => emitStackCloneImpl src ty slots
 
-  | .makeClosureDyn fnClosure env resultTy =>
+  | .makeClosureDyn fnClosure captureCount env resultTy =>
     -- The trampoline unpacks both from a composite env buffer and forwards the call
     let (fnClosureLLVMTy, fnClosureRaw) ← convertOperandWithTy fnClosure
     let fnClosureVal ← if fnClosureLLVMTy == .ptr then pure fnClosureRaw
@@ -2026,13 +2008,15 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let dynPad0Addr ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1, 0]
     CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal nodeClosureTag 8) (.local dynPad0Addr))
-    -- Store env_size=1 in _pad[1..2]
+    -- Store env_size = captureCount in _pad[1..2]
     let dynPad1Addr ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1, 1]
-    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal 1 8) (.local dynPad1Addr))
+    CodegenM.withFuncBuilder
+      (FuncBuilder.store .i8 (intVal (Int.ofNat (captureCount % 256)) 8) (.local dynPad1Addr))
     let dynPad2Addr ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1, 2]
-    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal 0 8) (.local dynPad2Addr))
+    CodegenM.withFuncBuilder
+      (FuncBuilder.store .i8 (intVal (Int.ofNat (captureCount / 256)) 8) (.local dynPad2Addr))
     -- Store trampoline as the function pointer (field 2 = ptr in headerless layout)
     let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
     CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal trampolineName) (.local funcFieldAddr))

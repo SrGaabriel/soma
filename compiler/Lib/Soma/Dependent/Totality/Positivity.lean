@@ -83,8 +83,10 @@ partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value)
     | .violated reason span => .violated reason span
     | .ok => checkPositivityClosure unique pol cod dom
 
-  | .vLam _ body =>
-    checkPositivityClosure unique pol body (.vType .zero)
+  | .vLam _ dom body =>
+    match checkPositivityValue unique pol dom with
+    | .violated reason span => .violated reason span
+    | .ok => checkPositivityClosure unique pol body dom
 
   | .vRowEmpty => .ok
 

@@ -270,7 +270,8 @@ partial def collectMetaOccurrences (m : MetaId) (v : Value) (depth : Nat)
   | .vPi _ _ _ dom cod =>
     collectMetaOccurrences m dom depth scope ++
     collectMetaOccurrencesClosure m cod (depth + 1) scope
-  | .vLam _ body =>
+  | .vLam _ dom body =>
+    collectMetaOccurrences m dom depth scope ++
     collectMetaOccurrencesClosure m body (depth + 1) scope
   | .vNeutral _ neu => collectMetaOccurrencesNeutral m neu depth scope
   | .vRowExtend label ty tail =>
@@ -360,10 +361,10 @@ def tryMakePatternViaEta (m : MetaId) (spine : List Value) (rhs : Value)
     : TCM (Option (List Value × Value)) := do
   -- First check: is the RHS a lambda?
   match rhs with
-  | .vLam name body =>
+  | .vLam name dom body =>
     -- Create a fresh variable to extend the spine
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral .type0 (.nVar ⟨name, lvl⟩)
+    let x := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
     -- Apply the closure to get the body
     let bodyVal ← applyClosure body x
     -- Check if adding x to spine makes it a pattern

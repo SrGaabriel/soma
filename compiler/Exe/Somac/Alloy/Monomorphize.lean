@@ -73,7 +73,7 @@ def collectInstRequests : ClosedInst → Array SpecKey
   | .callPoly funcId typeArgs _ _ => #[⟨funcId, typeArgs⟩]
   | .callExternPoly _ _ _ _ =>
       #[]
-  | .makeClosurePoly funcRef typeArgs _ =>
+  | .makeClosurePoly funcRef typeArgs _ _ =>
       match funcRef with
       | .local funcId => #[⟨funcId, typeArgs⟩]
       | _ => #[]
@@ -109,12 +109,12 @@ def rewriteInst (inst : ClosedInst) (specMap : Std.HashMap SpecKey FuncId) : Clo
       | none => inst
   | .callExternPoly _ _ _ _ =>
       inst
-  | .makeClosurePoly funcRef typeArgs env =>
+  | .makeClosurePoly funcRef typeArgs cc env =>
       match funcRef with
       | .local funcId =>
         let key : SpecKey := ⟨funcId, typeArgs⟩
         match specMap.get? key with
-        | some newFuncId => .makeClosure (.local newFuncId) env
+        | some newFuncId => .makeClosure (.local newFuncId) cc env
         | none => inst
       | _ => inst
   | _ => inst
@@ -311,11 +311,13 @@ def remapInstRefs (inst : ClosedInst) (idMap : Std.HashMap Nat Nat) : ClosedInst
   | .call fid args retTy => .call (remapFuncId fid idMap) args retTy
   | .callPoly fid tyArgs args retTy => .callPoly (remapFuncId fid idMap) tyArgs args retTy
   | .callExternPoly _ _ _ _ => inst
-  | .makeClosure ref env => .makeClosure (remapFuncRefId ref idMap) env
-  | .makeClosurePoly ref tyArgs env => .makeClosurePoly (remapFuncRefId ref idMap) tyArgs env
-  | .makeClosureDyn _ _ _ => inst
-  | .stackClosure ref env => .stackClosure (remapFuncRefId ref idMap) env
-  | .stackClosurePoly ref tyArgs env => .stackClosurePoly (remapFuncRefId ref idMap) tyArgs env
+  | .makeClosure ref cc env => .makeClosure (remapFuncRefId ref idMap) cc env
+  | .makeClosurePoly ref tyArgs cc env =>
+      .makeClosurePoly (remapFuncRefId ref idMap) tyArgs cc env
+  | .makeClosureDyn _ _ _ _ => inst
+  | .stackClosure ref cc env => .stackClosure (remapFuncRefId ref idMap) cc env
+  | .stackClosurePoly ref tyArgs cc env =>
+      .stackClosurePoly (remapFuncRefId ref idMap) tyArgs cc env
   | _ => inst
 
 def remapFuncRefs (f : ClosedFunc) (idMap : Std.HashMap Nat Nat) : ClosedFunc :=
@@ -353,11 +355,11 @@ private def collectFuncRefsInst (inst : Inst n) (acc : Array FuncId) : Array Fun
   | .call fid args _ => fromOperands args (acc.push fid)
   | .callPoly fid _ args _ => fromOperands args (acc.push fid)
   | .callExternPoly _ _ args _ => fromOperands args acc
-  | .makeClosure ref env => fromFuncRef ref (fromOperand env acc)
-  | .makeClosurePoly ref _ env => fromFuncRef ref (fromOperand env acc)
-  | .makeClosureDyn fnClo env _ => fromOperand env (fromOperand fnClo acc)
-  | .stackClosure ref env => fromFuncRef ref (fromOperand env acc)
-  | .stackClosurePoly ref _ env => fromFuncRef ref (fromOperand env acc)
+  | .makeClosure ref _ env => fromFuncRef ref (fromOperand env acc)
+  | .makeClosurePoly ref _ _ env => fromFuncRef ref (fromOperand env acc)
+  | .makeClosureDyn fnClo _ env _ => fromOperand env (fromOperand fnClo acc)
+  | .stackClosure ref _ env => fromFuncRef ref (fromOperand env acc)
+  | .stackClosurePoly ref _ _ env => fromFuncRef ref (fromOperand env acc)
   | .phi pairs _ => pairs.foldl (fun a (op, _) => fromOperand op a) acc
   | .select c t e => fromOperand e (fromOperand t (fromOperand c acc))
   | .callClosure clo args _ => fromOperands args (fromOperand clo acc)
@@ -474,8 +476,8 @@ def isFullyMonomorphic (m : Module) : Bool :=
             match stmt.inst with
             | .callPoly _ _ _ _ => false
             | .callExternPoly _ _ _ _ => false
-            | .makeClosurePoly _ _ _ => false
-            | .stackClosurePoly _ _ _ => false
+            | .makeClosurePoly _ _ _ _ => false
+            | .stackClosurePoly _ _ _ _ => false
             | _ => true
 
 /-- Report remaining polymorphism -/
@@ -497,9 +499,9 @@ def reportPolymorphism (m : Module) : Array String :=
                     issues := issues.push s!"Function {f.sig.name} has callPoly to {funcId} with {typeArgs.size} type args"
                 | .callExternPoly name typeArgs _ _ =>
                     issues := issues.push s!"Function {f.sig.name} has callExternPoly to \"{name}\" with {typeArgs.size} type args"
-                | .makeClosurePoly funcRef typeArgs _ =>
+                | .makeClosurePoly funcRef typeArgs _ _ =>
                     issues := issues.push s!"Function {f.sig.name} has makeClosurePoly to {funcRef} with {typeArgs.size} type args"
-                | .stackClosurePoly funcRef typeArgs _ =>
+                | .stackClosurePoly funcRef typeArgs _ _ =>
                     issues := issues.push s!"Function {f.sig.name} has stackClosurePoly to {funcRef} with {typeArgs.size} type args"
                 | _ => pure ()
           pure issues

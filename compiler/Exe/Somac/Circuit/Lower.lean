@@ -222,7 +222,7 @@ private partial def applyArgs (v : Value) : List Value → Option Value
   | [] => some v
   | arg :: rest =>
     match v with
-    | .vLam _ body => applyArgs (body.applyPure arg) rest
+    | .vLam _ _ body => applyArgs (body.applyPure arg) rest
     | .vPi _ _ _ _ cod => applyArgs (cod.applyPure arg) rest
     | _ => none
 
@@ -286,9 +286,9 @@ partial def mentionsWorldTy (ctx : LowerCtx) (v : Value) : Bool :=
     ctx.mentionsWorldTy dom ||
       let neutral := Value.vNeutral dom (.nVar ⟨name, cod.level?.getD ⟨0⟩⟩)
       ctx.mentionsWorldTy (cod.applyPure neutral)
-  | .vLam _ body =>
-    let argTy := Value.vType .zero
-    ctx.mentionsWorldTy (body.applyPure (Value.vNeutral argTy (.nVar ⟨"_", body.level?.getD ⟨0⟩⟩)))
+  | .vLam _ dom body =>
+    ctx.mentionsWorldTy dom ||
+      ctx.mentionsWorldTy (body.applyPure (Value.vNeutral dom (.nVar ⟨"_", body.level?.getD ⟨0⟩⟩)))
   | .vNeutral ty _ => ctx.mentionsWorldTy ty
   | .vRowExtend label fieldTy tail =>
     ctx.mentionsWorldTy label || ctx.mentionsWorldTy fieldTy || ctx.mentionsWorldTy tail

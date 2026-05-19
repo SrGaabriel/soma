@@ -129,9 +129,10 @@ partial def valueContainsMetaHead (v : Soma.Core.Value) : Bool :=
     valueContainsMetaHead dom || match cod with
       | .const _ v => valueContainsMetaHead v
       | .term _ _ _ => false
-  | .vLam _ body => match body with
-    | .const _ v => valueContainsMetaHead v
-    | .term _ _ _ => false
+  | .vLam _ dom body =>
+    valueContainsMetaHead dom || match body with
+      | .const _ v => valueContainsMetaHead v
+      | .term _ _ _ => false
   | .vRowExtend l ft t =>
     valueContainsMetaHead l || valueContainsMetaHead ft || valueContainsMetaHead t
   | .vRecord row => valueContainsMetaHead row

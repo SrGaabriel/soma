@@ -73,11 +73,11 @@ private def escapeTransfer (state : AbsState Escape) (stmt : ClosedStmt)
   | .callIntrinsic _ args _ => markOps state args
 
   -- Closure construction: env is captured into the closure.
-  | .makeClosure _ env
-  | .makeClosurePoly _ _ env
-  | .stackClosure _ env
-  | .stackClosurePoly _ _ env => markOp state env
-  | .makeClosureDyn fn env _  => markOp (markOp state fn) env
+  | .makeClosure _ _ env
+  | .makeClosurePoly _ _ _ env
+  | .stackClosure _ _ env
+  | .stackClosurePoly _ _ _ env => markOp state env
+  | .makeClosureDyn fn _ env _  => markOp (markOp state fn) env
 
   -- Aggregate construction: every field is captured.
   | .taggedLit _ fields _
@@ -206,8 +206,8 @@ private def rewriteFunc (f : ClosedFunc) : ClosedFunc × EscapeStats := Id.run d
     let some block := cfg.getBlock bid | continue
     for stmt in block.stmts do
       match stmt.inst, stmt.result with
-      | .makeClosure _ env, some rid
-      | .makeClosurePoly _ _ env, some rid =>
+      | .makeClosure _ _ env, some rid
+      | .makeClosurePoly _ _ _ env, some rid =>
         if !escaped.contains rid.id then
           -- Need the env's Alloy type to compute slot count.
           let envTy : Option ClosedTy :=
@@ -246,17 +246,17 @@ private def rewriteFunc (f : ClosedFunc) : ClosedFunc × EscapeStats := Id.run d
     let mut newStmts : Array ClosedStmt := Array.mkEmpty block.stmts.size
     for stmt in block.stmts do
       match stmt.inst, stmt.result with
-      | .makeClosure ref env, some rid =>
+      | .makeClosure ref cc env, some rid =>
         if escaped.contains rid.id then
           newStmts := newStmts.push stmt
         else
-          newStmts := newStmts.push { stmt with inst := .stackClosure ref env }
+          newStmts := newStmts.push { stmt with inst := .stackClosure ref cc env }
           stats := { stats with promotedClosures := stats.promotedClosures + 1 }
-      | .makeClosurePoly ref tys env, some rid =>
+      | .makeClosurePoly ref tys cc env, some rid =>
         if escaped.contains rid.id then
           newStmts := newStmts.push stmt
         else
-          newStmts := newStmts.push { stmt with inst := .stackClosurePoly ref tys env }
+          newStmts := newStmts.push { stmt with inst := .stackClosurePoly ref tys cc env }
           stats := { stats with promotedClosures := stats.promotedClosures + 1 }
       | .clone (.local srcId) ty _label, some rid =>
         if !escaped.contains rid.id && ty.isStackCloneable

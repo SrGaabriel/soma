@@ -78,19 +78,19 @@ inductive Inst : Nat → Type where
   | callClosure : Operand → Array Operand → Ty n → Inst n
 
   /-- Create closure from polymorphic function -/
-  | makeClosurePoly : FuncRef → Array (Ty n) → Operand → Inst n
+  | makeClosurePoly : FuncRef → Array (Ty n) → Nat → Operand → Inst n
 
   /-- Create closure (monomorphic) -/
-  | makeClosure : FuncRef → Operand → Inst n
+  | makeClosure : FuncRef → Nat → Operand → Inst n
 
   /-- Create closure from a dynamically-resolved function (itself a closure) -/
-  | makeClosureDyn : Operand → Operand → Ty n → Inst n
+  | makeClosureDyn : Operand → Nat → Operand → Ty n → Inst n
 
   /-- Create a stack-allocated closure (monomorphic) -/
-  | stackClosure : FuncRef → Operand → Inst n
+  | stackClosure : FuncRef → Nat → Operand → Inst n
 
   /-- Stack-allocated polymorphic closure counterpart to makeClosurePoly -/
-  | stackClosurePoly : FuncRef → Array (Ty n) → Operand → Inst n
+  | stackClosurePoly : FuncRef → Array (Ty n) → Nat → Operand → Inst n
 
   /-- Get function pointer from closure -/
   | closureFunc : Operand → Inst n
@@ -173,13 +173,14 @@ def instantiate : Inst n → TyEnv n → ClosedInst
       .callPoly func (tyArgs.map (Somac.Alloy.instantiate · env)) args (Somac.Alloy.instantiate retTy env)
   | .callIndirect ptr args retTy, env => .callIndirect ptr args (Somac.Alloy.instantiate retTy env)
   | .callClosure closure args retTy, env => .callClosure closure args (Somac.Alloy.instantiate retTy env)
-  | .makeClosurePoly func tyArgs envOp, env =>
-      .makeClosurePoly func (tyArgs.map (Somac.Alloy.instantiate · env)) envOp
-  | .makeClosure func envOp, _ => .makeClosure func envOp
-  | .makeClosureDyn fnClosure envOp ty, env => .makeClosureDyn fnClosure envOp (Somac.Alloy.instantiate ty env)
-  | .stackClosure func envOp, _ => .stackClosure func envOp
-  | .stackClosurePoly func tyArgs envOp, env =>
-      .stackClosurePoly func (tyArgs.map (Somac.Alloy.instantiate · env)) envOp
+  | .makeClosurePoly func tyArgs captureCount envOp, env =>
+      .makeClosurePoly func (tyArgs.map (Somac.Alloy.instantiate · env)) captureCount envOp
+  | .makeClosure func captureCount envOp, _ => .makeClosure func captureCount envOp
+  | .makeClosureDyn fnClosure captureCount envOp ty, env =>
+      .makeClosureDyn fnClosure captureCount envOp (Somac.Alloy.instantiate ty env)
+  | .stackClosure func captureCount envOp, _ => .stackClosure func captureCount envOp
+  | .stackClosurePoly func tyArgs captureCount envOp, env =>
+      .stackClosurePoly func (tyArgs.map (Somac.Alloy.instantiate · env)) captureCount envOp
   | .closureFunc closure, _ => .closureFunc closure
   | .closureEnv closure, _ => .closureEnv closure
   | .phi incoming ty, env => .phi incoming (Somac.Alloy.instantiate ty env)
@@ -232,11 +233,11 @@ def resultTy : ClosedInst → Option ClosedTy
   | .callPoly _ _ _ retTy => some retTy
   | .callIndirect _ _ retTy => some retTy
   | .callClosure _ _ retTy => some retTy
-  | .makeClosurePoly _ _ _ => none
-  | .makeClosure _ _ => none
-  | .makeClosureDyn _ _ ty => some ty
-  | .stackClosure _ _ => none
-  | .stackClosurePoly _ _ _ => none
+  | .makeClosurePoly _ _ _ _ => none
+  | .makeClosure _ _ _ => none
+  | .makeClosureDyn _ _ _ ty => some ty
+  | .stackClosure _ _ _ => none
+  | .stackClosurePoly _ _ _ _ => none
   | .closureFunc _ => none
   | .closureEnv _ => some .rawPtr
   | .phi _ ty => some ty
@@ -296,15 +297,18 @@ private def toStringAux : Inst n → String
   | .callClosure closure args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.closure {closure}({as})"
-  | .makeClosurePoly funcRef typeArgs env =>
+  | .makeClosurePoly funcRef typeArgs captureCount env =>
       let ts := String.intercalate ", " (typeArgs.toList.map Ty.toString)
-      s!"makeclosure.poly {funcRef}<{ts}>, {env}"
-  | .makeClosure funcRef env => s!"makeclosure {funcRef}, {env}"
-  | .makeClosureDyn fnClosure env ty => s!"makeclosure.dyn {fnClosure}, {env} : {ty}"
-  | .stackClosure funcRef env => s!"stackclosure {funcRef}, {env}"
-  | .stackClosurePoly funcRef typeArgs env =>
+      s!"makeclosure.poly {funcRef}<{ts}>[caps={captureCount}], {env}"
+  | .makeClosure funcRef captureCount env =>
+      s!"makeclosure {funcRef}[caps={captureCount}], {env}"
+  | .makeClosureDyn fnClosure captureCount env ty =>
+      s!"makeclosure.dyn {fnClosure}[caps={captureCount}], {env} : {ty}"
+  | .stackClosure funcRef captureCount env =>
+      s!"stackclosure {funcRef}[caps={captureCount}], {env}"
+  | .stackClosurePoly funcRef typeArgs captureCount env =>
       let ts := String.intercalate ", " (typeArgs.toList.map Ty.toString)
-      s!"stackclosure.poly {funcRef}<{ts}>, {env}"
+      s!"stackclosure.poly {funcRef}<{ts}>[caps={captureCount}], {env}"
   | .closureFunc closure => s!"closure.func {closure}"
   | .closureEnv closure => s!"closure.env {closure}"
   | .phi incoming _ =>
@@ -354,11 +358,11 @@ def operands : Inst n → Array (Operand)
   | .callExtern _ args _ => args
   | .callExternPoly _ _ args _ => args
   | .callIntrinsic _ args _ => args
-  | .makeClosure _ env => #[env]
-  | .makeClosurePoly _ _ env => #[env]
-  | .makeClosureDyn f env _ => #[f, env]
-  | .stackClosure _ env => #[env]
-  | .stackClosurePoly _ _ env => #[env]
+  | .makeClosure _ _ env => #[env]
+  | .makeClosurePoly _ _ _ env => #[env]
+  | .makeClosureDyn f _ env _ => #[f, env]
+  | .stackClosure _ _ env => #[env]
+  | .stackClosurePoly _ _ _ env => #[env]
   | .taggedLit _ fields _ => fields
   | .reuseTaggedLit _ fields r _ => fields ++ #[r]
   | .structLit fields _ => fields
@@ -418,11 +422,11 @@ def mapOperands (inst : Inst 0) (f : Operand → Operand) : Inst 0 :=
   | .callExtern name args ty => .callExtern name (args.map f) ty
   | .callExternPoly name tys args ty => .callExternPoly name tys (args.map f) ty
   | .callIntrinsic op args ty => .callIntrinsic op (args.map f) ty
-  | .makeClosure ref env => .makeClosure ref (f env)
-  | .makeClosurePoly ref tys env => .makeClosurePoly ref tys (f env)
-  | .makeClosureDyn fn env ty => .makeClosureDyn (f fn) (f env) ty
-  | .stackClosure ref env => .stackClosure ref (f env)
-  | .stackClosurePoly ref tys env => .stackClosurePoly ref tys (f env)
+  | .makeClosure ref captureCount env => .makeClosure ref captureCount (f env)
+  | .makeClosurePoly ref tys captureCount env => .makeClosurePoly ref tys captureCount (f env)
+  | .makeClosureDyn fn captureCount env ty => .makeClosureDyn (f fn) captureCount (f env) ty
+  | .stackClosure ref captureCount env => .stackClosure ref captureCount (f env)
+  | .stackClosurePoly ref tys captureCount env => .stackClosurePoly ref tys captureCount (f env)
   | .closureFunc o => .closureFunc (f o)
   | .closureEnv o => .closureEnv (f o)
   | .phi incoming ty => .phi (incoming.map fun (op, bid) => (f op, bid)) ty

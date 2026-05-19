@@ -300,21 +300,22 @@ def withSignaturePrefixBindingsFull
     (explicitParams : Array String)
     (span : Span) (action : TCM α)
     : TCM (Array (Soma.Unique × String)
-        × Array (Soma.Unique × String × Soma.Core.BinderInfo) × α) := do
+        × Array Soma.Core.ValueParam × α) := do
   let mut explicitBindings : Array (Soma.Unique × String) := #[]
   let mut allBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo × Soma.Core.Quantity) := #[]
-  let mut valueBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo) := #[]
+  let mut valueBindings : Array Soma.Core.ValueParam := #[]
   let mut eIdx : Nat := 0
-  for (name, _, binder, qty) in allParams do
+  for (name, ty, binder, qty) in allParams do
     if binder.isImplicit then
       let bindingId ← TCM.freshLocalId name
       allBindings := allBindings.push (bindingId, name, binder, qty)
-      valueBindings := valueBindings.push (bindingId, name, binder)
+      valueBindings := valueBindings.push { uid := bindingId, name, binder, type := ty }
     else
       let paramName := if h : eIdx < explicitParams.size then explicitParams[eIdx] else name
       let bindingId ← TCM.freshLocalId paramName
       allBindings := allBindings.push (bindingId, paramName, .explicit, qty)
-      valueBindings := valueBindings.push (bindingId, paramName, .explicit)
+      valueBindings := valueBindings.push
+        { uid := bindingId, name := paramName, binder := .explicit, type := ty }
       explicitBindings := explicitBindings.push (bindingId, paramName)
       eIdx := eIdx + 1
   let rec go (idx : Nat) : TCM α := do
@@ -403,7 +404,7 @@ def synthesizeExFalsoBody (k : Nat) (span : Span) : Soma.Syntax.Expr :=
 /-- Type check a single function returning the elaborated type, body, param ids, and whether errored -/
 def checkFunction (fn : Soma.Core.UntypedFunction)
   : TCM (Value × Soma.Core.Expr × Array (Soma.Unique × String)
-      × Array (Soma.Unique × String × Soma.Core.BinderInfo) × Bool) := do
+      × Array Soma.Core.ValueParam × Bool) := do
   let span := fn.span
   let storedType : Option Value ← match ← TCM.lookupGlobalByQN fn.name with
     | some info => pure (some info.type)
@@ -496,7 +497,10 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     Soma.Dependent.zonkLocalTypesInPlace
     -- Expand parameterized type abbreviations so downstream passes see real types
     let inferredType'' ← expandAbbrevValue inferredType'
-    let valueParams := generatedParams.map fun (u, n) => (u, n, Soma.Core.BinderInfo.explicit)
+    let zonkedParamTypes ← paramTypes.mapM zonkValue
+    let valueParams : Array Soma.Core.ValueParam ← generatedParams.mapIdxM fun idx (u, n) => do
+      let ty := if h : idx < zonkedParamTypes.size then zonkedParamTypes[idx] else .vType .zero
+      pure { uid := u, name := n, binder := .explicit, type := ty }
     return (inferredType'', typedBody', generatedParams, valueParams, false)
 
 /-- Elaborate a constructor type -/

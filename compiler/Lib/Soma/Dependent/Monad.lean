@@ -799,7 +799,7 @@ partial def ofValue : Value → DiscrKey
   | .vFloatLit _ => .floatLit
   | .vStringLit _ => .strLit
   | .vPi _ _ _ _ _ => .pi
-  | .vLam _ _ => .lam
+  | .vLam _ _ _ => .lam
   | .vRecord _ => .record
   | .vVariant _ => .variant
   | .vRowExtend _ _ _ => .rowExtend
@@ -1637,7 +1637,7 @@ where
     | .vType _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
     | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => return false
     | .vPi _ _ _ dom _ => goVal dom visited
-    | .vLam _ _ => return false
+    | .vLam _ _ _ => return false
     | .vRowExtend label ty tail =>
       if ← goVal label visited then return true
       if ← goVal ty visited then return true

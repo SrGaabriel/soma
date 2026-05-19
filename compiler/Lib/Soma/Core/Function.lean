@@ -63,11 +63,19 @@ end Function
 abbrev UntypedFunction := Function
 abbrev UntypedClosureInfo := ClosureInfo
 
+/-- A single entry in a typed function's full semantic telescope -/
+structure ValueParam where
+  uid : Soma.Unique
+  name : String
+  binder : BinderInfo
+  type : Value
+  deriving Inhabited
+
 /-- A typed function produced by type checking -/
 structure TypedFunction where
   name : QualifiedName
   params : Array (Soma.Unique × String)
-  valueParams : Array (Soma.Unique × String × BinderInfo) := #[]
+  valueParams : Array ValueParam := #[]
   body : Expr
   fnType : Value
   closureInfo : Option ClosureInfo

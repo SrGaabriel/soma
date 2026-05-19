@@ -47,7 +47,7 @@ private def vPiCodCase : Case :=
 private def vLamCase : Case :=
   let body : Closure := .const "_" stubLam
   { label := "lamBody"
-    value := .vLam "x" body
+    value := .vLam "x" stubDomTy body
     expected := #[.lamBody]
     expectedToken := some "PCLamBody" }
 

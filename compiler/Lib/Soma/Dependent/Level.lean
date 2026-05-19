@@ -37,8 +37,9 @@ partial def zonkValueLevels (v : Value) : TCM Value := do
     let dom' ← zonkValueLevels dom
     -- Closures contain terms, not values with levels, so skip
     return .vPi qty binder name dom' cod
-  | .vLam name body =>
-    return .vLam name body
+  | .vLam name dom body =>
+    let dom' ← zonkValueLevels dom
+    return .vLam name dom' body
   | .vNeutral ty neu =>
     let ty' ← zonkValueLevels ty
     return .vNeutral ty' neu

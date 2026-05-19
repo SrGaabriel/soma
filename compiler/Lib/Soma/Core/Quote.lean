@@ -45,7 +45,7 @@ partial def valueToString (v : Value) : String :=
     let domStr := valueToString domain
     s!"({binderStr}{name} : {domStr}) -> ..."
 
-  | .vLam name _body =>
+  | .vLam name _dom _body =>
     s!"fun({name}). ..."
 
   | .vNeutral _ neu =>
@@ -120,7 +120,7 @@ partial def valueEq (v1 v2 : Value) : Bool :=
   | .vConstructor n1 t1 as1 _, .vConstructor n2 t2 as2 _ =>
     n1 == n2 && t1 == t2 && as1.length == as2.length &&
     (as1.zip as2).all (fun (a, b) => valueEq a b)
-  | .vLam _ b1, .vLam _ b2 => closureEq b1 b2
+  | .vLam _ d1 b1, .vLam _ d2 b2 => valueEq d1 d2 && closureEq b1 b2
   | _, _ => false
 
 /-- Check if two heads are equal -/
@@ -189,7 +189,7 @@ partial def valueMaxBoundLvl? (v : Value) : Option Nat :=
   | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => none
   | .vPi _ _ _ dom cod =>
     maxOpt? (valueMaxBoundLvl? dom) (closureMaxBoundLvl? cod)
-  | .vLam _ body => closureMaxBoundLvl? body
+  | .vLam _ dom body => maxOpt? (valueMaxBoundLvl? dom) (closureMaxBoundLvl? body)
   | .vRowExtend l t tail =>
     maxOpt? (valueMaxBoundLvl? l)
       (maxOpt? (valueMaxBoundLvl? t) (valueMaxBoundLvl? tail))
@@ -302,11 +302,12 @@ partial def quoteExpr (depth : DeBruijnLvl) (v : Value) : Expr :=
     let codomainExpr := quoteExpr depth.succ codomainVal
     .pi qty binder name domainExpr codomainExpr
 
-  | .vLam name body =>
-    let argVal := Value.vNeutral Value.type0 (Neutral.nVar ⟨name, depth⟩)
+  | .vLam name domain body =>
+    let domainExpr := quoteExpr depth domain
+    let argVal := Value.vNeutral domain (Neutral.nVar ⟨name, depth⟩)
     let bodyVal := body.applyPure argVal
     let bodyExpr := quoteExpr depth.succ bodyVal
-    .lam .explicit name (.sort Level.zero) bodyExpr
+    .lam .explicit name domainExpr bodyExpr
 
   | .vNeutral _ neu => quoteNeutralExpr depth neu
   | .vRowSort => .rowSort

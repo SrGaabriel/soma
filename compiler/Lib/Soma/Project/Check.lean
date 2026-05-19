@@ -363,16 +363,18 @@ structure FunctionCheckResult where
 def buildTypedFnValue (fn : Soma.Core.TypedFunction) (globals : Globals)
     (instanceEnv : InstanceEnv) (metas : Soma.Core.MetaState) : Soma.Core.Value := Id.run do
   let mut lambdaExpr := fn.body
-  let valueParams :=
+  let valueParams : Array Soma.Core.ValueParam :=
     if fn.valueParams.isEmpty then
-      fn.params.map fun (u, n) => (u, n, Soma.Core.BinderInfo.explicit)
+      fn.params.map fun (u, n) =>
+        { uid := u, name := n, binder := .explicit, type := .vType .zero }
     else
       fn.valueParams
   for i in [:valueParams.size] do
     let idx := valueParams.size - 1 - i
-    let (paramId, paramName, binderInfo) := valueParams[idx]!
-    lambdaExpr := lambdaExpr.abstractFVar paramId
-    lambdaExpr := Soma.Core.Expr.lam binderInfo paramName (.sort .zero) lambdaExpr
+    let vp := valueParams[idx]!
+    let domExpr := Soma.Core.quoteExpr0 vp.type
+    lambdaExpr := lambdaExpr.abstractFVar vp.uid
+    lambdaExpr := Soma.Core.Expr.lam vp.binder vp.name domExpr lambdaExpr
   let evalCtx : Soma.Core.EvalCtx := {
     env := .empty
     globals := globals.toGlobalEnvWithClasses instanceEnv

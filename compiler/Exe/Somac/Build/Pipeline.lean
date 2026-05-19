@@ -139,7 +139,9 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
         reg.register typeQN.id ctor.tag
           (Soma.Core.LambdaLift.constructorTypeInfoFromElaboratedType ctor.type)
   let liveTypedFunctions := cm.typedFunctions.fold (init := {}) fun acc name fn =>
-    if fn.errored then acc else acc.insert name fn
+    if fn.errored then acc
+    else if Soma.Dependent.fnResultIsProp globals fn.fnType then acc
+    else acc.insert name fn
   let liftedTypedFunctions :=
     Soma.Core.LambdaLift.liftAll liveTypedFunctions cm.name
       cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv)
@@ -341,6 +343,8 @@ def compileModules
     optimized := reused
   else
     IO.println "  Skipping optimization passes (debug profile)"
+
+  dumpAlloyStageIf "SOMA_DUMP_FINAL_ALLOY" "Final Alloy module (pre-codegen)" optimized
 
   -- Generate LLVM IR
   IO.println "  Generating LLVM IR..."

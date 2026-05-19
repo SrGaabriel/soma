@@ -20,7 +20,7 @@ inductive Value where
   | vPi (qty : Quantity) (binder : BinderInfo) (name : String) (domain : Value) (codomain : Closure)
 
   /-- Lambda abstraction -/
-  | vLam (name : String) (body : Closure)
+  | vLam (name : String) (domain : Value) (body : Closure)
 
   /-- Neutral term (stuck computation) -/
   | vNeutral (ty : Value) (neu : Neutral)
@@ -346,7 +346,7 @@ mutual
     | .vType _ => #[]
     | .vPi _ _ _ dom cod =>
       Value.collectMetas dom ++ Closure.collectMetas cod
-    | .vLam _ body => Closure.collectMetas body
+    | .vLam _ dom body => Value.collectMetas dom ++ Closure.collectMetas body
     | .vNeutral ty neu => Value.collectMetas ty ++ Neutral.collectMetas neu
     | .vIntLit _ | .vFloatLit _ | .vStringLit _ => #[]
     | .vRowEmpty | .vLabelLit _ | .vRowSort | .vLabelSort => #[]

@@ -47,9 +47,10 @@ partial def valuePp (ctx : PpContext) : Value → String
     let domStr := valuePp ctx domain
     let codStr := valuePp ctx (instantiateClosureForPp name domain codomain)
     s!"({binderStr}{name} : {domStr}) -> {codStr}"
-  | .vLam name body =>
-    let bodyStr := valuePp ctx (instantiateClosureForPp name .type0 body)
-    s!"fun({name}) => {bodyStr}"
+  | .vLam name dom body =>
+    let domStr := valuePp ctx dom
+    let bodyStr := valuePp ctx (instantiateClosureForPp name dom body)
+    s!"fun({name} : {domStr}) => {bodyStr}"
   | .vNeutral _ neu => neutralPp ctx neu
   | .vRowSort => "Row"
   | .vLabelSort => "Label"
@@ -134,10 +135,12 @@ partial def valueDoc (ctx : PpContext) (path : Path) (v : Value) : Doc :=
       .text ")" ++
       .nest 2 (.softline ++ .text "-> " ++
         valueDoc ctx (path.push .piCodomain) codVal)
-  | .vLam name body =>
-    let bodyVal := instantiateClosureForPp name .type0 body
+  | .vLam name dom body =>
+    let bodyVal := instantiateClosureForPp name dom body
     .group <|
-      .text s!"fun({name}) => " ++
+      .text s!"fun({name} : " ++
+      .nest 2 (valueDoc ctx (path.push .lamBody) dom) ++
+      .text ") => " ++
       .nest 2 (valueDoc ctx (path.push .lamBody) bodyVal)
   | .vNeutral _ neu => neutralDoc ctx path neu
   | .vRowSort => .text "Row"

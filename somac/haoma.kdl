@@ -1,0 +1,7 @@
+name "somac"
+version "0.1.0"
+type "binary"
+
+dependencies {
+    stdlib path="../stdlib"
+}

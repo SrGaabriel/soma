@@ -126,9 +126,10 @@ partial def zonkValue (v : Value) : TCM Value := do
     let codomain' ← zonkClosure codomain
     return .vPi qty binder name domain' codomain'
 
-  | .vLam name body =>
+  | .vLam name dom body =>
+    let dom' ← zonkValue dom
     let body' ← zonkClosure body
-    return .vLam name body'
+    return .vLam name dom' body'
 
   | .vNeutral _ _ =>
     let forced ← force v
@@ -247,7 +248,7 @@ partial def hasUnsolvedMetas (v : Value) : TCM Bool := do
     | some info => return info.solution.isNone
     | none => return true
   | .vPi _ _ _ dom _ => hasUnsolvedMetas dom
-  | .vLam _ _ => return false
+  | .vLam _ dom _ => hasUnsolvedMetas dom
   | .vNeutral ty neu =>
     if ← hasUnsolvedMetas ty then return true
     hasUnsolvedMetasNeutral neu
@@ -305,7 +306,7 @@ partial def gatherUnsolvedMetaIds (v : Value)
     (acc : Std.HashSet Nat) : TCM (Std.HashSet Nat) := do
   match v with
   | .vPi _ _ _ dom _ => gatherUnsolvedMetaIds dom acc
-  | .vLam _ _ => return acc
+  | .vLam _ dom _ => gatherUnsolvedMetaIds dom acc
   | .vNeutral ty neu =>
     let acc ← gatherUnsolvedMetaIds ty acc
     gatherUnsolvedMetaIdsNeutral neu acc
@@ -391,7 +392,7 @@ partial def expandAbbrevValue (v : Value) : TCM Value := do
         let mut result := abbrevInfo.expansion
         for arg in params' do
           match result with
-          | .vLam _ body => result ← applyClosure body arg
+          | .vLam _ _ body => result ← applyClosure body arg
           | .vPi _ _ _ _ cod => result ← applyClosure cod arg
           | _ => return .vDataType dId params'
         -- Recursively expand the result (abbreviations may contain other abbreviations)
@@ -407,9 +408,10 @@ partial def expandAbbrevValue (v : Value) : TCM Value := do
     let dom' ← expandAbbrevValue dom
     let cod' ← expandAbbrevClosure cod
     return .vPi qty binder name dom' cod'
-  | .vLam name body =>
+  | .vLam name dom body =>
+    let dom' ← expandAbbrevValue dom
     let body' ← expandAbbrevClosure body
-    return .vLam name body'
+    return .vLam name dom' body'
   | .vNeutral ty neu =>
     let ty' ← expandAbbrevValue ty
     return .vNeutral ty' neu

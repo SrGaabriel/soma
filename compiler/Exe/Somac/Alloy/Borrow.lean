@@ -55,11 +55,11 @@ private def instEscapesLocal (inst : ClosedInst) (lid : LocalId) : Bool :=
   | .structLit fields _ => fields.any isOp
   | .arrayLit elems _ => elems.any isOp
   -- Criterion 2: captured in closure env
-  | .makeClosure _ env => isOp env
-  | .makeClosurePoly _ _ env => isOp env
-  | .makeClosureDyn _ env _ => isOp env
-  | .stackClosure _ env => isOp env
-  | .stackClosurePoly _ _ env => isOp env
+  | .makeClosure _ _ env => isOp env
+  | .makeClosurePoly _ _ _ env => isOp env
+  | .makeClosureDyn _ _ env _ => isOp env
+  | .stackClosure _ _ env => isOp env
+  | .stackClosurePoly _ _ _ env => isOp env
   -- Criterion 4: wrapped in SUP
   | .lazySup _ src _ => isOp src
   -- Storing to memory

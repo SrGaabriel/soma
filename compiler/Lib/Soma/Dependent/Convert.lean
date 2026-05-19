@@ -146,7 +146,7 @@ mutual
 /-- Apply a single eliminator to a value, performing canonical reduction -/
 partial def applyElim (v : Value) (e : Elim) : TCM Value := do
   match v, e with
-  | .vLam _ body, .eApp arg => applyClosure body arg
+  | .vLam _ _ body, .eApp arg => applyClosure body arg
   | .vDataType id params, .eApp arg =>
     return .vDataType id (params ++ [arg])
   | .vRecordVal fields, .eField name =>
@@ -249,7 +249,7 @@ partial def force (v : Value) : TCM Value := do
         let mut result := abbrevInfo.expansion
         for arg in params do
           match result with
-          | .vLam _ body => result ← applyClosure body arg
+          | .vLam _ _ body => result ← applyClosure body arg
           | .vPi _ _ _ _ cod => result ← applyClosure cod arg
           | _ => return v
         force result
@@ -286,7 +286,7 @@ partial def tryUnfoldOneStep (v : Value) : TCM (Option (Value × String)) := do
         let mut result := abbrevInfo.expansion
         for arg in params do
           match result with
-          | .vLam _ body => result ← applyClosure body arg
+          | .vLam _ _ body => result ← applyClosure body arg
           | .vPi _ _ _ _ cod => result ← applyClosure cod arg
           | _ => return none
         return some (result, s!"abbrev {dId.original}")
@@ -322,9 +322,10 @@ partial def substValue (σ : LevelSubst) (v : Value) : TCM Value := do
     let d' ← substValue σ d
     let c' ← substClosure σ c
     return .vPi q b n d' c'
-  | .vLam n c =>
+  | .vLam n dom c =>
+    let dom' ← substValue σ dom
     let c' ← substClosure σ c
-    return .vLam n c'
+    return .vLam n dom' c'
   | .vRowExtend l t tail =>
     let l' ← substValue σ l
     let t' ← substValue σ t
@@ -576,7 +577,7 @@ partial def applyValueArgsAsFunction? (v : Value) (args : Array Value) : TCM (Op
   for arg in args do
     let fn ← force result
     match fn with
-    | .vLam _ _ =>
+    | .vLam _ _ _ =>
       result ← applyElim fn (.eApp arg)
     | .vNeutral ty _ =>
       match ← force ty with
@@ -603,6 +604,32 @@ partial def findAndRemoveLabel (label : String) (row : Value) : TCM (Option (Val
     -- Can't search in a neutral row (would need unification)
     return none
   | _ => return none
+
+/-- Does a value live in the `Prop` universe, decided against the supplied globals -/
+partial def valueInPropUniversePure (globals : Soma.Dependent.Globals) (v : Value) : Bool :=
+  match v with
+  | .vType .prop => true
+  | .vDataType uid _ =>
+    let qn : Soma.Core.QualifiedName := ⟨uid⟩
+    match globals.lookupInductive qn with
+    | some info => info.headSort.isProp
+    | none => false
+  | .vPi _ _ name _ cod =>
+    let dummy := Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨0⟩⟩)
+    valueInPropUniversePure globals (cod.applyPure dummy)
+  | .vNeutral ty _ =>
+    match ty with
+    | .vType .prop => true
+    | _ => false
+  | _ => false
+
+/-- Walk a function type's Pi telescope and decide whether its Result is in Prop -/
+partial def fnResultIsProp (globals : Soma.Dependent.Globals) (v : Value) : Bool :=
+  match v with
+  | .vPi _ _ name _ cod =>
+    let dummy := Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨0⟩⟩)
+    fnResultIsProp globals (cod.applyPure dummy)
+  | _ => valueInPropUniversePure globals v
 
 mutual
 
@@ -715,9 +742,11 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     convert cod1 cod2
 
   -- Lambdas: compare bodies under a fresh variable
-  | .vLam n1 body1, .vLam _ body2 =>
+  | .vLam n1 d1 body1, .vLam _ d2 body2 =>
+    let domEq ← convert d1 d2
+    if !domEq then return false
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral .type0 (.nVar ⟨n1, lvl⟩)
+    let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
     let b1Val ← applyClosure body1 x
     let b2Val ← applyClosure body2 x
     convert b1Val b2Val
@@ -773,16 +802,16 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     convertNeutral n1 n2
 
   -- Eta rules for functions: v1 = λx. v2 x  iff  v1 x = v2 x for fresh x
-  | .vLam n1 b1, .vNeutral ty neu =>
+  | .vLam n1 d1 b1, .vNeutral ty neu =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral .type0 (.nVar ⟨n1, lvl⟩)
+    let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
     let body1 ← applyClosure b1 x
     let body2 := Value.vNeutral ty (.nApp neu x)
     convert body1 body2
 
-  | .vNeutral ty neu, .vLam n2 b2 =>
+  | .vNeutral ty neu, .vLam n2 d2 b2 =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral .type0 (.nVar ⟨n2, lvl⟩)
+    let x := Value.vNeutral d2 (.nVar ⟨n2, lvl⟩)
     let body1 := Value.vNeutral ty (.nApp neu x)
     let body2 ← applyClosure b2 x
     convert body1 body2

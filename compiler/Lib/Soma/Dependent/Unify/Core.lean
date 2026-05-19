@@ -48,8 +48,8 @@ partial def occursIn (m : MetaId) (v : Value) : Bool :=
   | .vType _ => false
   | .vPi _ _ _ dom cod =>
     occursIn m dom || occursInClosure m cod
-  | .vLam _ body =>
-    occursInClosure m body
+  | .vLam _ dom body =>
+    occursIn m dom || occursInClosure m body
   | .vNeutral _ neu => occursInNeutral m neu
   | .vIntLit _ => false
   | .vFloatLit _ => false
@@ -130,8 +130,8 @@ partial def inScope (allowedLevels : List DeBruijnLvl) (v : Value) : Bool :=
   | .vType _ => true
   | .vPi _ _ _ dom cod =>
     inScope allowedLevels dom && inScopeClosure allowedLevels cod
-  | .vLam _ body =>
-    inScopeClosure allowedLevels body
+  | .vLam _ dom body =>
+    inScope allowedLevels dom && inScopeClosure allowedLevels body
   | .vNeutral _ neu => inScopeNeutral allowedLevels neu
   | .vIntLit _ => true
   | .vFloatLit _ => true
@@ -180,8 +180,8 @@ partial def collectFreeVars (v : Value) : Array DeBruijnLvl :=
   | .vType _ => #[]
   | .vPi _ _ _ dom cod =>
     collectFreeVars dom ++ collectFreeVarsClosure cod
-  | .vLam _ body =>
-    collectFreeVarsClosure body
+  | .vLam _ dom body =>
+    collectFreeVars dom ++ collectFreeVarsClosure body
   | .vNeutral _ neu => collectFreeVarsNeutral neu
   | .vIntLit _ => #[]
   | .vFloatLit _ => #[]

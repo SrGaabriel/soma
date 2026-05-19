@@ -18,15 +18,6 @@ def getFuncParamCount (m : Module) (fid : FuncId) : Nat :=
   | some f => f.sig.params.size
   | none => 0
 
-/-- Check if an operand represents a zero-width value, using type info -/
-def isUnitEnv (op : Operand) (localTypes : Std.HashMap Nat ClosedTy) : Bool :=
-  match op with
-  | .const .unit => true
-  | .const (.undef ty) => Ty.isZeroWidth ty
-  | .local lid => match localTypes.get? lid.id with
-    | some ty => Ty.isZeroWidth ty
-    | _ => false
-  | _ => false
 
 /-- Remove element at index from an array -/
 private def removeAt [Inhabited α] (arr : Array α) (idx : Nat) : Array α := Id.run do
@@ -238,7 +229,7 @@ private def trampolineInner? (m : Module) (funcId : FuncId) : Option FuncId := d
   guard (f.sig.params.size == 1)
   let paramId := f.sig.params[0]!.id
   match stmt.inst with
-  | .makeClosure (.local innerId) (.local envId) =>
+  | .makeClosure (.local innerId) _ (.local envId) =>
     guard (envId == paramId)
     match entry.terminator with
     | .ret (.local retId) =>
@@ -257,7 +248,7 @@ private def isUnretargetableWrapper (m : Module) (funcId : FuncId) : Bool := Id.
   if entry.stmts.size != 1 then return false
   let stmt := entry.stmts[0]!
   match stmt.inst with
-  | .makeClosure _ _ | .makeClosurePoly _ _ _ =>
+  | .makeClosure _ _ _ | .makeClosurePoly _ _ _ _ =>
     match entry.terminator with
     | .ret _ => (trampolineInner? m funcId).isNone
     | _ => false
@@ -282,11 +273,11 @@ def findSpecRequests (m : Module)
               match args[cp.paramIdx] with
               | .local makeClosureId =>
                 match findMakeClosureInFunc cfg makeClosureId with
-                | some (targetFuncId, envOp) =>
+                | some (targetFuncId, captureCount, envOp) =>
                   let effectiveTargetFuncId :=
                     (trampolineInner? m targetFuncId).getD targetFuncId
                   if isUnretargetableWrapper m targetFuncId then continue
-                  let hasEnv := !isUnitEnv envOp f.localTypes
+                  let hasEnv := captureCount > 0
                   let req : SpecRequest := {
                     hofFuncId, paramIdx := cp.paramIdx,
                     targetFuncId := effectiveTargetFuncId,
@@ -300,14 +291,14 @@ def findSpecRequests (m : Module)
         | _ => pure ()
   return requests
 where
-  findMakeClosureInFunc (cfg : ClosedCFG) (lid : LocalId) : Option (FuncId × Operand) := do
+  findMakeClosureInFunc (cfg : ClosedCFG) (lid : LocalId) : Option (FuncId × Nat × Operand) := do
     for (_, block) in cfg.blocks.toArray do
       for stmt in block.stmts do
         match stmt.result with
         | some resultId =>
           if resultId == lid then
             match stmt.inst with
-            | .makeClosure (.local funcId) env => return (funcId, env)
+            | .makeClosure (.local funcId) cc env => return (funcId, cc, env)
             | _ => failure
         | none => pure ()
     none
@@ -333,9 +324,9 @@ private def resolveRecursiveEnv (cfg : ClosedCFG) (closureArg : Operand)
         | some resultId =>
           if resultId == lid then
             match stmt.inst with
-            | .makeClosure (.local funcId) env =>
+            | .makeClosure (.local funcId) _ env =>
               if funcId == targetFuncId then some env else none
-            | .makeClosurePoly (.local funcId) _ env =>
+            | .makeClosurePoly (.local funcId) _ _ env =>
               if funcId == targetFuncId then some env else none
             | _ => none
           else none
@@ -481,7 +472,8 @@ def specializeFunc (m : Module) (origFunc : ClosedFunc) (req : SpecRequest)
           cleanLocalTypes := cleanLocalTypes.insert rid.id bestRetTy
       | _, _ => pure ()
 
-  let specName := s!"{origFunc.sig.name}$cs_{req.targetFuncId.id}"
+  let envTag := if req.hasEnv then "e" else "ne"
+  let specName := s!"{origFunc.sig.name}$cs_{req.targetFuncId.id}_{envTag}"
   return {
     id := specFuncId
     sig := { origFunc.sig with name := specName, params := newParams }
@@ -730,13 +722,13 @@ private def closureDomain : Analysis.Domain ClosureVal where
   eq := ClosureVal.structEq
 
 /-- Build the transfer function for closure tracking -/
-private def closureTransfer (m : Module) (localTypes : Std.HashMap Nat ClosedTy)
+private def closureTransfer (m : Module)
     (state : Analysis.AbsState ClosureVal) (stmt : ClosedStmt)
     : Analysis.AbsState ClosureVal :=
   match stmt.inst, stmt.result with
-  | .makeClosure (.local funcId) env, some rid =>
+  | .makeClosure (.local funcId) captureCount env, some rid =>
     let arity := getFuncParamCount m funcId
-    let hasEnv := !isUnitEnv env localTypes
+    let hasEnv := captureCount > 0
     let envOp := if hasEnv then some env else none
     let accArgs : Array Operand := if hasEnv then #[env] else #[]
     state.set rid.id (.known funcId arity accArgs hasEnv envOp)
@@ -767,17 +759,16 @@ private def closureResolveOp (state : Analysis.AbsState ClosureVal) (op : Operan
   | _ => .unreached
 
 /-- Build the closure tracking analysis specification -/
-private def closureAnalysisSpec (m : Module) (localTypes : Std.HashMap Nat ClosedTy)
-    : Analysis.ForwardSpec ClosureVal where
+private def closureAnalysisSpec (m : Module) : Analysis.ForwardSpec ClosureVal where
   domain := closureDomain
-  transfer := closureTransfer m localTypes
+  transfer := closureTransfer m
   resolveOp := closureResolveOp
 
 /-- Rewrite a block's callClosure instructions using analysis results -/
-private def rewriteBlockWithAnalysis (m : Module) (localTypes : Std.HashMap Nat ClosedTy)
+private def rewriteBlockWithAnalysis (m : Module)
     (block : ClosedBlock) (entryState : Analysis.AbsState ClosureVal) (nextLocalId : Nat)
     : ClosedBlock × Nat × Std.HashMap Nat ClosedTy := Id.run do
-  let spec := closureAnalysisSpec m localTypes
+  let spec := closureAnalysisSpec m
   let mut state := entryState
   let mut newStmts : Array ClosedStmt := #[]
   let mut freshId := nextLocalId
@@ -841,7 +832,7 @@ private def rewriteBlockWithAnalysis (m : Module) (localTypes : Std.HashMap Nat 
 /-- Flatten makeClosure → callClosure chains across all blocks in a function -/
 def flattenClosureChains (m : Module) (f : ClosedFunc) : ClosedFunc := Id.run do
   let some cfg := f.body | return f
-  let spec := closureAnalysisSpec m f.localTypes
+  let spec := closureAnalysisSpec m
 
   -- Build initial state: function parameters are unknown closures
   let initState : Analysis.AbsState ClosureVal := {}
@@ -858,7 +849,7 @@ def flattenClosureChains (m : Module) (f : ClosedFunc) : ClosedFunc := Id.run do
   for bid in rpo do
     let some block := cfg.getBlock bid | continue
     let entryState := result.blockEntryState closureDomain predMap bid cfg.entry initState
-    let (newBlock, newFreshId, typeUpdates) := rewriteBlockWithAnalysis m f.localTypes block entryState freshId
+    let (newBlock, newFreshId, typeUpdates) := rewriteBlockWithAnalysis m block entryState freshId
     newBlocks := newBlocks.insert bid.id newBlock
     freshId := newFreshId
     for (lid, ty) in typeUpdates.toArray do
@@ -880,7 +871,7 @@ private def findMakeClosureForLocal (cfg : ClosedCFG) (op : Operand) (expectedTa
         | some resultId =>
           if resultId == lid then
             match stmt.inst with
-            | .makeClosure (.local funcId) env =>
+            | .makeClosure (.local funcId) _ env =>
               if funcId == expectedTarget then some env else none
             | _ => none
           else none

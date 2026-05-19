@@ -93,11 +93,12 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
     let codE ← rename ren.lift codVal
     .ok (.pi qty binder name domE codE)
 
-  | .vLam name body => do
-    let argVal := Value.vNeutral .type0 (.nVar ⟨name, ⟨ren.dom⟩⟩)
+  | .vLam name dom body => do
+    let domE ← rename ren dom
+    let argVal := Value.vNeutral dom (.nVar ⟨name, ⟨ren.dom⟩⟩)
     let bodyVal := Closure.applyPure body argVal
     let bodyE ← rename ren.lift bodyVal
-    .ok (.lam .explicit name (.sort Level.zero) bodyE)
+    .ok (.lam .explicit name domE bodyE)
 
   | .vNeutral _ neu => renameNeutral ren neu
   | .vIntLit n => .ok (.lit (.int n))

@@ -634,7 +634,6 @@ def fuseFunction (ctx : FusionCtx) (fn : TypedFunction) : TypedFunction :=
   let inlined := inlineProducerLets ctx fn.body
   let fused := fuseExpr ctx inlined
   let reduced := fused.betaReduce
-
   { fn with body := reduced }
 
 /-- Apply build/fold fusion to all typed functions in a module -/

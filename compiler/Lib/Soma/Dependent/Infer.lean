@@ -79,7 +79,7 @@ def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none
 /-- Apply a motive value to an argument -/
 def vAppMotive (motive : Value) (arg : Value) : TCM Value := do
   match motive with
-  | .vLam _ body =>
+  | .vLam _ _ body =>
     applyClosure body arg
   | .vPi _ _ _ _ cod =>
     -- If motive is a Pi type, apply the codomain closure
@@ -248,6 +248,58 @@ partial def quoteValueToExpr (v : Value) : TCM Soma.Core.Expr := do
 /-- Quote a `Value` as a type annotation -/
 partial def quoteTypeAnn (v : Value) : TCM Soma.Core.Expr := do
   return Soma.Core.quoteExpr0 v
+
+/-- Build the eta-expanded `Expr` form of a constructor reference -/
+partial def elaborateConstructorRef
+    (qn : Soma.Core.QualifiedName) (tag : Nat) (ctorType : Value)
+    : TCM (Value × Soma.Core.Expr) := do
+  let mut implicitDrained := ctorType
+  let mut walking := true
+  while walking do
+    let ty ← force implicitDrained
+    match ty with
+    | .vPi _qty binder name dom cod =>
+      if binder.isImplicit then
+        let metaVal ← TCM.freshMetaVal dom (displayHint := some name)
+        implicitDrained ← applyClosure cod metaVal
+      else
+        walking := false
+    | _ => walking := false
+
+  let instantiatedTy ← force implicitDrained
+
+  let mut explicitFields : Array (Soma.Unique × String × Soma.Core.Expr) := #[]
+  let mut chainTy := instantiatedTy
+  let mut walkingExpl := true
+  while walkingExpl do
+    let ty ← force chainTy
+    match ty with
+    | .vPi _qty binder name dom cod =>
+      if binder.isImplicit then
+        let metaVal ← TCM.freshMetaVal dom (displayHint := some name)
+        chainTy ← applyClosure cod metaVal
+      else
+        let fvarUid ← TCM.freshLocalId name
+        let domExpr ← quoteTypeAnn dom
+        explicitFields := explicitFields.push (fvarUid, name, domExpr)
+        let fieldNeutral : Value :=
+          .vNeutral dom (.nVar ⟨name, ⟨fvarUid.id⟩⟩)
+        chainTy ← applyClosure cod fieldNeutral
+    | _ => walkingExpl := false
+
+  let resultTy ← force chainTy
+  let resultExpr ← quoteTypeAnn resultTy
+
+  let fieldExprs := explicitFields.map fun (uid, _, domExpr) =>
+    Soma.Core.Expr.fvar uid domExpr
+  let mut body : Soma.Core.Expr := .construct qn tag fieldExprs resultExpr
+  for i in [:explicitFields.size] do
+    let idx := explicitFields.size - 1 - i
+    let (uid, name, domExpr) := explicitFields[idx]!
+    body := body.abstractFVar uid
+    body := .lam .explicit name domExpr body
+
+  return (instantiatedTy, body)
 
 /-- Instantiate all leading implicit binders in a type with fresh metas. -/
 partial def instantiateImplicits (ty : Value) (_span : Span) : TCM Value := do
@@ -1049,13 +1101,7 @@ where
         | some info =>
           let qn := info.name
           if info.isConstructor then
-            let (instantiatedTy, metas) ← instantiateImplicitsTracked info.type
-            let tyExpr ← quoteTypeAnn info.type
-            let mut expr : Soma.Core.Expr := .const qn tyExpr
-            for (metaVal, _) in metas do
-              let metaExpr ← quoteValueToExpr metaVal
-              expr := .app expr metaExpr
-            return (instantiatedTy, expr)
+            return ← elaborateConstructorRef qn info.ctorTag info.type
           else if info.origin == .typeDecl then
             return (info.type, .dataTy qn.id #[])
           else
@@ -1689,8 +1735,8 @@ partial def inferSyntaxRecordFields (fields : List (Soma.Syntax.QualName × Soma
 private partial def buildConstantMotive (scrutTys : List Value) (target : Value) : Value :=
   match scrutTys with
   | [] => target
-  | _ :: rest =>
-    Value.vLam "_" (Closure.const "_" (buildConstantMotive rest target))
+  | ty :: rest =>
+    Value.vLam "_" ty (Closure.const "_" (buildConstantMotive rest target))
 
 /-- Apply a motive value to a spine of scrutinee/pattern values left to right -/
 partial def applyMotiveSpine (motive : Value) (args : Array Value) : TCM Value := do
