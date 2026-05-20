@@ -72,7 +72,6 @@ private def isPureInst : ClosedInst → Bool
   | .select .. => true
   | .alloca .. => true
   | .load .. => true
-  | .callClosure .. => true
   | _ => false
 
 /-- Remove dead instructions from a block (iterative fixpoint) -/

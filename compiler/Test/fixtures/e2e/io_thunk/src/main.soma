@@ -1,0 +1,11 @@
+def greet : IO () := puts "Hello from a thunk"
+
+def farewell : IO () := puts "Goodbye from a thunk"
+
+def runAction (action : IO ()) : IO () := action
+
+def main : IO () :=
+    compose
+        runAction greet
+        runAction farewell
+        puts "Done!"

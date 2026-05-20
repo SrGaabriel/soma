@@ -2003,19 +2003,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           let captureCount : Nat := if isEraEnv then 0 else 1
           let envOperand : Operand :=
             if isEraEnv then .const (.undef (.prim .unit)) else .local envVal
-          let closureVal ← match typeArgs? with
+          match typeArgs? with
           | some typeArgs =>
             StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs captureCount envOperand) .rawPtr)
           | none =>
             StateT.lift (LowerM.emitInst (.makeClosure funcRef captureCount envOperand) .rawPtr)
-          -- ERA env + arity 0 signals an IO thunk that must be demanded here
-          let wrappedArity := match graph.getDefinition refId with
-            | some def_ => runtimeArityOfDefinition def_ ctx
-            | none => 1
-          if isEraEnv && wrappedArity == 0 then
-            StateT.lift (LowerM.emitInst (.callClosure (.local closureVal) #[.local envVal] nodeTy) nodeTy)
-          else
-            pure closureVal
       | .dynamicValue _ =>
         -- Check if this LAM was extracted as a synthetic function
         let ns ← get
@@ -2027,20 +2019,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           let fnNodeTy := graph.getNode fnPort.node |>.map (·.ty)
           let typeArgs? := (graph.getDefinition bookIdx).bind fun def_ =>
             fnNodeTy.bind fun concTy => extractCallTypeArgs def_.ty concTy ctx
-          let closureVal ← match typeArgs? with
+          match typeArgs? with
           | some typeArgs =>
             StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs 0 (.local unitEnv)) .rawPtr)
           | none =>
             StateT.lift (LowerM.emitInst (.makeClosure funcRef 0 (.local unitEnv)) .rawPtr)
-          -- If the env port connects to a real value (not ERA), partially apply it.
-          -- ERA env + arity 0 marks an IO thunk that must be demanded now
-          let wrappedArity := match graph.getDefinition bookIdx with
-            | some def_ => runtimeArityOfDefinition def_ ctx
-            | none => 1
-          if !isEraEnv || (isEraEnv && wrappedArity == 0) then
-            StateT.lift (LowerM.emitInst (.callClosure (.local closureVal) #[.local envVal] nodeTy) nodeTy)
-          else
-            pure closureVal
         else
           -- Check if the LAM is a definition root: find its book index
           let bookIdx? := graph.book.findIdx? fun d => d.root == fnPort.node
@@ -2049,14 +2032,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             -- LAM is a known definition root. Create closure via book reference.
             let ls ← StateT.lift get
             let funcRef := buildFuncRefFromBookRef graph bookIdx (some funcIdMap) ls.ctxIntrinsics
-            let closureVal ← StateT.lift (LowerM.emitInst (.makeClosure funcRef 1 (.local envVal)) .rawPtr)
-            let wrappedArity' := match graph.getDefinition bookIdx with
-              | some def_ => runtimeArityOfDefinition def_ ctx
-              | none => 1
-            if isEraEnv && wrappedArity' == 0 then
-              StateT.lift (LowerM.emitInst (.callClosure (.local closureVal) #[.local envVal] nodeTy) nodeTy)
-            else
-              pure closureVal
+            StateT.lift (LowerM.emitInst (.makeClosure funcRef 1 (.local envVal)) .rawPtr)
           | none =>
             let fnClosureVal ← lowerOperandWithMap graph fnPort funcIdMap
             let closureVal ← StateT.lift (LowerM.emitInst (.makeClosureDyn (.local fnClosureVal) 1 (.local envVal) nodeTy) .rawPtr)

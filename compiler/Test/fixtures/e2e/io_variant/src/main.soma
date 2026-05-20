@@ -1,0 +1,20 @@
+// Exercises IO actions that flow through a variant payload.
+
+inductive Task where
+    | MkTask : IO () -> Task
+    | Skip
+
+def run : Task -> IO ()
+    | Task::MkTask action => action
+    | Task::Skip => puts "(skipped)"
+
+def hello : IO () := puts "Hello from a packed thunk"
+
+def goodbye : IO () := puts "Goodbye from a packed thunk"
+
+def main : IO () :=
+    compose
+        run (Task::MkTask hello)
+        run (Task::MkTask goodbye)
+        run Task::Skip
+        puts "Done!"
