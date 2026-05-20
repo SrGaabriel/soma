@@ -1227,9 +1227,26 @@ comptime {
     }
 }
 
-fn somaMain() callconv(.c) c_int {
+var g_argc: c_int = 0;
+var g_argv: ?[*][*:0]const u8 = null;
+
+fn somaMain(argc: c_int, argv: [*][*:0]const u8) callconv(.c) c_int {
+    g_argc = argc;
+    g_argv = argv;
     soma_pool_init();
     const result = soma_main();
     soma_pool_cleanup();
     return result;
+}
+
+pub export fn soma_argc() i32 {
+    return @intCast(g_argc);
+}
+
+pub export fn soma_argv_at(i: i32) SomaString {
+    if (i < 0 or i >= g_argc) {
+        return .{ .data = null, .len = 0, .offset = 0 };
+    }
+    const argv = g_argv orelse return .{ .data = null, .len = 0, .offset = 0 };
+    return soma_from_cstring(argv[@intCast(i)]);
 }

@@ -208,6 +208,26 @@ def inLayout (p : ParserM α) : ParserM α := do
   let _ ← tryLayoutEnd
   return result
 
+/-- Run a parser that produces the body of an expression continuation -/
+def inContinuation (p : ParserM α) : ParserM α := do
+  let started ← tryLayoutStart
+  if !started then
+    let _ ← tryLayoutSep
+  let result ← p
+  if started then
+    let _ ← tryLayoutEnd
+  return result
+
+/-- Try to consume `kind` stepping over a leading `layoutSep` -/
+def tryConsumeAcrossSep (kind : TokenKind) : ParserM (Option GreenNode) := do
+  if (← check kind) then return some (← consumeAny)
+  if (← check .layoutSep) then
+    let next ← peekNext
+    if next.kind == some kind then
+      let _ ← consumeAny
+      return some (← consumeAny)
+  return none
+
 /-- Parse zero or more items separated by layoutSep, inside an optional layout block -/
 def layoutSepBy (p : ParserM (Option GreenNode)) : ParserM (Array GreenNode) := do
   let _ ← tryLayoutStart

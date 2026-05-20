@@ -1,5 +1,6 @@
 import Soma.Dependent.Totality.Core
 import Soma.Dependent.Totality.TermShape
+import Soma.Dependent.Totality.LinArith
 import Soma.Dependent.Totality.CallMatrix
 import Soma.Dependent.Totality.Positivity
 import Soma.Core.Expr
@@ -39,16 +40,15 @@ private def analyzePatternFromArmExpr (patternName : String) (scrutineeParam : O
       depth := 1
     }
 
-/-- Check if a recursive call terminates using SupGen-style structural comparison
-    Returns a decrease witness if termination can be proven. -/
+/-- Check if a recursive call terminates -/
 def checkRecursiveCallStructural (args : List Soma.Core.Expr) (ctx : TerminationContext)
-    : DecreaseWitness :=
+    (linCtx : LinCtx) : DecreaseWitness :=
   let argShapes := args.map analyzeExprShape
 
   -- Try lexicographic comparison across arguments
   let rec go (shapes : List TermShape) (idx : Nat) : DecreaseWitness :=
     match shapes with
-    | [] => .notFound "all arguments are equal or no relationship found"
+    | [] => fallbackToLinear "all arguments are equal or no relationship found"
     | shape :: rest =>
       if h : idx < ctx.params.size then
         let paramName := ctx.params[idx]
@@ -92,7 +92,12 @@ where
 
     match search shapes 0 with
     | some (idx, reason) => .arg idx reason
-    | none => .notFound s!"no decreasing argument found (failed at position {failedIdx})"
+    | none => fallbackToLinear s!"no decreasing argument found (failed at position {failedIdx})"
+
+  fallbackToLinear (structuralReason : String) : DecreaseWitness :=
+    match findLinearDecrease ctx.params args linCtx ctx.bindings with
+    | some w => .linear w.description
+    | none => .notFound structuralReason
 
 /-- Find which parameter a scrutinee corresponds to -/
 private def findScrutineeParam (scrutinee : Soma.Core.Expr) (params : Array String) : Option (Nat × String) :=
@@ -106,10 +111,10 @@ private def findScrutineeParam (scrutinee : Soma.Core.Expr) (params : Array Stri
 /-- Check termination for a function body -/
 partial def checkTermination (fnInfo : FunctionInfo) (body : Soma.Core.Expr) : TermM Unit := do
   TermM.setCurrentFn fnInfo
-  checkTerm body
+  checkTerm body LinCtx.empty
 where
   /-- Check a term for termination -/
-  checkTerm (t : Soma.Core.Expr) : TermM Unit := do
+  checkTerm (t : Soma.Core.Expr) (linCtx : LinCtx) : TermM Unit := do
     match t with
     | .bvar _ => pure ()
     | .fvar _ _ => pure ()
@@ -145,7 +150,7 @@ where
         | some fnInfo =>
           if name.display == fnInfo.name.display then
             let ctx ← TermM.getContext
-            let witness := checkRecursiveCallStructural args ctx
+            let witness := checkRecursiveCallStructural args ctx linCtx
             let argNames := args.filterMap (fun e =>
               exprVarName? e) |>.toArray
             TermM.recordRecursiveCall {
@@ -155,56 +160,64 @@ where
               decrease := witness
             }
         | none => pure ()
-      | _ => checkTerm head
+      | _ => checkTerm head linCtx
       for arg in args do
-        checkTerm arg
+        checkTerm arg linCtx
 
-    | .lam _ _ _ body => checkTerm body
+    | .lam _ _ _ body => checkTerm body linCtx
 
     | .let_ _ ty val body =>
-      checkTerm ty
-      checkTerm val
-      checkTerm body
+      checkTerm ty linCtx
+      checkTerm val linCtx
+      checkTerm body linCtx
 
     | .if_ cond then_ else_ =>
-      checkTerm cond
-      checkTerm then_
-      checkTerm else_
+      checkTerm cond linCtx
+      let ctx ← TermM.getContext
+      let posAtom? := analyzeCondAtom cond ctx.params ctx.bindings
+      let thenCtx := match posAtom? with
+        | some a => linCtx.addAtom a
+        | none => linCtx
+      let elseCtx := match posAtom? with
+        | some a => linCtx.addAtom a.negate
+        | none => linCtx
+      checkTerm then_ thenCtx
+      checkTerm else_ elseCtx
 
     | .pi _ _ _ dom cod =>
-      checkTerm dom
-      checkTerm cod
+      checkTerm dom linCtx
+      checkTerm cod linCtx
 
-    | .recordTy row => checkTerm row
-    | .variantTy row => checkTerm row
+    | .recordTy row => checkTerm row linCtx
+    | .variantTy row => checkTerm row linCtx
 
     | .rowExtend label ty tail =>
-      checkTerm label
-      checkTerm ty
-      checkTerm tail
+      checkTerm label linCtx
+      checkTerm ty linCtx
+      checkTerm tail linCtx
 
     | .record fields =>
       for (_, t) in fields do
-        checkTerm t
+        checkTerm t linCtx
 
     | .recordUpdate base updates =>
-      checkTerm base
+      checkTerm base linCtx
       for (_, t) in updates do
-        checkTerm t
+        checkTerm t linCtx
 
-    | .fieldAccess e _ _ => checkTerm e
+    | .fieldAccess e _ _ => checkTerm e linCtx
 
     | .inject _ args _ =>
       for arg in args do
-        checkTerm arg
+        checkTerm arg linCtx
 
     | .construct _ _ args _ =>
       for arg in args do
-        checkTerm arg
+        checkTerm arg linCtx
 
     | .«case» scruts _ arms =>
       for scrut in scruts do
-        checkTerm scrut
+        checkTerm scrut linCtx
 
       -- Use the first scrutinee for parameter matching
       let scrutinee := scruts[0]?
@@ -224,29 +237,29 @@ where
           let bindings := analyzePatternFromArmExpr patName (some (paramIdx, paramName))
                            armBody ctx.params
           TermM.withBindings bindings do
-            checkTerm armBody
+            checkTerm armBody linCtx
         | none =>
-          checkTerm armBody
+          checkTerm armBody linCtx
 
     | .closure _ caps _ =>
       for cap in caps do
-        checkTerm cap
+        checkTerm cap linCtx
 
     | .array elements _ =>
       for e in elements do
-        checkTerm e
+        checkTerm e linCtx
 
     | .tuple elements =>
       for e in elements do
-        checkTerm e
+        checkTerm e linCtx
 
     | .dataTy _ params =>
       for p in params do
-        checkTerm p
+        checkTerm p linCtx
 
     | .ann expr ty =>
-      checkTerm expr
-      checkTerm ty
+      checkTerm expr linCtx
+      checkTerm ty linCtx
 
 /-- Verify all recursive calls are well-founded -/
 def verifyRecursiveCalls (fnInfo : FunctionInfo) : TermM Bool := do
@@ -257,6 +270,7 @@ def verifyRecursiveCalls (fnInfo : FunctionInfo) : TermM Bool := do
     match call.decrease with
     | .arg _ _ => pure ()
     | .lex _ => pure ()
+    | .linear _ => pure ()
     | .notFound reason =>
       allOk := false
       TermM.addError (.terminationCheckFailed fnInfo.name reason call.callSpan #[] #[])

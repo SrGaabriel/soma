@@ -203,7 +203,7 @@ partial def parseForallExpr : ParserM (Option GreenNode) := do
 
       match ← tryConsumeDot with
       | some dotTok =>
-          match ← parseExpr with
+          match ← inContinuation parseExpr with
           | some body =>
               let varList := GreenNode.mkNode .tyParamList vars
               return some (GreenNode.mkNode .typeForall #[forallTok, varList, dotTok, body])
@@ -212,7 +212,7 @@ partial def parseForallExpr : ParserM (Option GreenNode) := do
               return some (GreenNode.mkError "incomplete forall" #[forallTok])
       | none =>
           recordExpected "'.' after forall variables"
-          match ← parseExpr with
+          match ← inContinuation parseExpr with
           | some body =>
               let varList := GreenNode.mkNode .tyParamList vars
               return some (GreenNode.mkNode .typeForall #[forallTok, varList, body])
@@ -235,7 +235,7 @@ partial def parseForallSymbolExpr : ParserM (Option GreenNode) := do
 
       match ← tryConsumeDot with
       | some dotTok =>
-          match ← parseExpr with
+          match ← inContinuation parseExpr with
           | some body =>
               let varList := GreenNode.mkNode .tyParamList vars
               return some (GreenNode.mkNode .typeForall #[forallTok, varList, dotTok, body])
@@ -244,7 +244,7 @@ partial def parseForallSymbolExpr : ParserM (Option GreenNode) := do
               return some (GreenNode.mkError "incomplete forall" #[forallTok])
       | none =>
           recordExpected "'.' after ∀ variables"
-          match ← parseExpr with
+          match ← inContinuation parseExpr with
           | some body =>
               let varList := GreenNode.mkNode .tyParamList vars
               return some (GreenNode.mkNode .typeForall #[forallTok, varList, body])
@@ -280,7 +280,7 @@ partial def parseImplicitBinderExpr : ParserM (Option GreenNode) := do
               | some rbrace2 =>
                   if (← check .arrow) then
                     let arrowTok ← consumeAny
-                    match ← parseExpr with
+                    match ← inContinuation parseExpr with
                     | some codomainTy =>
                         let binder := GreenNode.mkNode .typePiBinder #[GreenNode.mkNode .typeVar #[nameTok], colonTok, domainTy]
                         return some (GreenNode.mkNode .typeImplicit #[lbrace1, lbrace2, binder, rbrace1, rbrace2, arrowTok, codomainTy])
@@ -309,7 +309,7 @@ partial def parseImplicitBinderExpr : ParserM (Option GreenNode) := do
           | some rbrace2 =>
               if (← check .arrow) then
                 let arrowTok ← consumeAny
-                match ← parseExpr with
+                match ← inContinuation parseExpr with
                 | some codomainTy =>
                     return some (GreenNode.mkNode .typeImplicit #[lbrace1, lbrace2, domain, rbrace1, rbrace2, arrowTok, codomainTy])
                 | none =>
@@ -333,7 +333,7 @@ partial def parseImplicitBinderExpr : ParserM (Option GreenNode) := do
             | some rbrace2 =>
                 if (← check .arrow) then
                   let arrowTok ← consumeAny
-                  match ← parseExpr with
+                  match ← inContinuation parseExpr with
                   | some codomainTy =>
                       return some (GreenNode.mkNode .typeImplicit #[lbrace1, lbrace2, domain, rbrace1, rbrace2, arrowTok, codomainTy])
                   | none =>
@@ -819,7 +819,7 @@ partial def parseLambda : ParserM (Option GreenNode) := do
       let tok ← current
       if tok.kind == some .arrow || tok.kind == some .fatArrow then
         let arrowTok ← consumeAny
-        match ← parseExpr with
+        match ← inContinuation parseExpr with
         | some body =>
             let paramList := GreenNode.mkNode .paramList params
             return some (GreenNode.mkNode .exprLambda #[lambdaTok, paramList, arrowTok, body])
@@ -828,7 +828,7 @@ partial def parseLambda : ParserM (Option GreenNode) := do
             return some (GreenNode.mkError "incomplete lambda" #[lambdaTok])
       else
         recordExpected "'->' after lambda parameters"
-        match ← parseExpr with
+        match ← inContinuation parseExpr with
         | some body =>
             let paramList := GreenNode.mkNode .paramList params
             return some (GreenNode.mkNode .exprLambda #[lambdaTok, paramList, body])
@@ -844,12 +844,11 @@ partial def parseLetExpr : ParserM (Option GreenNode) := do
           let typeAnnot ← if (← check .doubleColon) then parseTypeSignature else pure none
           match ← tryConsume .colonEquals with
           | some eqTok =>
-              match ← parseExpr with
+              match ← inContinuation parseExpr with
               | some value =>
-                  match ← tryConsume .kw_in with
+                  match ← tryConsumeAcrossSep .kw_in with
                   | some inTok =>
-                      let _ ← tryLayoutSep
-                      match ← parseExpr with
+                      match ← inContinuation parseExpr with
                       | some body =>
                           let children := #[letTok, nameTok] ++
                             (match typeAnnot with | some t => #[t] | none => #[]) ++
@@ -887,12 +886,11 @@ partial def parseLetExpr : ParserM (Option GreenNode) := do
           | some pat =>
               match ← tryConsume .colonEquals with
               | some eqTok =>
-                  match ← parseExpr with
+                  match ← inContinuation parseExpr with
                   | some value =>
-                      match ← tryConsume .kw_in with
+                      match ← tryConsumeAcrossSep .kw_in with
                       | some inTok =>
-                          let _ ← tryLayoutSep
-                          match ← parseExpr with
+                          match ← inContinuation parseExpr with
                           | some body =>
                               return some (GreenNode.mkNode .exprLet #[letTok, pat, eqTok, value, inTok, body])
                           | none =>
@@ -926,13 +924,13 @@ partial def parseIfExpr : ParserM (Option GreenNode) := do
   | some ifTok =>
       match ← parseExpr with
       | some cond =>
-          match ← tryConsume .kw_then with
+          match ← tryConsumeAcrossSep .kw_then with
           | some thenTok =>
-              match ← parseExpr with
+              match ← inContinuation parseExpr with
               | some thenBranch =>
-                  match ← tryConsume .kw_else with
+                  match ← tryConsumeAcrossSep .kw_else with
                   | some elseTok =>
-                      match ← parseExpr with
+                      match ← inContinuation parseExpr with
                       | some elseBranch =>
                           return some (GreenNode.mkNode .exprIf #[ifTok, cond, thenTok, thenBranch, elseTok, elseBranch])
                       | none =>
@@ -998,7 +996,7 @@ partial def parseMatchArm : ParserM (Option GreenNode) := do
       let tok ← current
       if tok.kind == some .fatArrow then
         let arrowTok ← consumeAny
-        match ← inLayout parseExpr with
+        match ← inContinuation parseExpr with
         | some body =>
             let children := #[pipeTok] ++ patternsWithDelims ++
               (match guard with | some g => #[g] | none => #[]) ++
@@ -1284,7 +1282,7 @@ partial def parseExpr : ParserM (Option GreenNode) := do
   | some left =>
       if (← check .arrow) then
         let arrowTok ← consumeAny
-        match ← parseExpr with
+        match ← inContinuation parseExpr with
         | some right =>
             return some (GreenNode.mkNode .typeArrow #[left, arrowTok, right])
         | none =>
@@ -1292,7 +1290,7 @@ partial def parseExpr : ParserM (Option GreenNode) := do
             return some (GreenNode.mkError "incomplete arrow" #[left, arrowTok])
       else if (← check .doubleColon) then
         let colonTok ← consumeAny
-        match ← parseExpr with
+        match ← inContinuation parseExpr with
         | some ty =>
             return some (GreenNode.mkNode .exprTypeAnnot #[left, colonTok, ty])
         | none =>
@@ -1350,7 +1348,7 @@ partial def parseConstraints : ParserM (Option GreenNode) := do
 partial def parseTypeSignature : ParserM (Option GreenNode) := do
   match ← tryConsume .doubleColon with
   | some colonTok =>
-      match ← parseExpr with
+      match ← inContinuation parseExpr with
       | some ty =>
           return some (GreenNode.mkNode .signature #[colonTok, ty])
       | none =>

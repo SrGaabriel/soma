@@ -1,0 +1,23 @@
+@[intrinsic "primop.add"]
+def {+} : Int32 -> Int32 -> Int32
+
+@[intrinsic "primop.sub"]
+def {-} : Int32 -> Int32 -> Int32
+
+@[intrinsic "primop.le"]
+def {<=} : Int32 -> Int32 -> Bool
+
+inductive Box where
+  | Item
+
+def iter_up (i : Int32) (n : Int32) : Box :=
+    if n <= i then Box::Item
+    else iter_up (i + 1) n
+
+def iter_up_two (i : Int32) (n : Int32) : Box :=
+    if n <= i then Box::Item
+    else iter_up_two (i + 2) n
+
+def iter_down (j : Int32) (n : Int32) : Box :=
+    if n <= j then Box::Item
+    else iter_down j (n - 1)

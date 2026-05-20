@@ -103,7 +103,7 @@ partial def parseDefClause : ParserM (Option GreenNode) := do
       let tok ← current
       if tok.kind == some .fatArrow then
         let arrowTok ← consumeAny
-        match ← inLayout parseExpr with
+        match ← inContinuation parseExpr with
         | some body =>
             return some (GreenNode.mkNode .defClause (children ++ #[arrowTok, body]))
         | none =>
@@ -254,14 +254,14 @@ private partial def parseDefOrTheoremDecl
 
       let signature ← if (← check .colon) then do
         let colonTok ← consumeAny
-        match ← parseType with
+        match ← inContinuation parseType with
         | some ty => pure (some (GreenNode.mkNode .signature #[colonTok, ty]))
         | none => recordExpected "type after ':'"; pure none
       else pure none
 
       if (← check .colonEquals) then
         let eqTok ← consumeAny
-        match ← inLayout parseExpr with
+        match ← inContinuation parseExpr with
         | some body =>
             let children := attrs ++ #[kwTok, nameNode] ++
               (match params with | some p => #[p] | none => #[]) ++

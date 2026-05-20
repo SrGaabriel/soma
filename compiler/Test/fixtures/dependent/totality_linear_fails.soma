@@ -1,0 +1,9 @@
+// expect: error termination check
+
+@[intrinsic "primop.add"]
+def {+} : Int32 -> Int32 -> Int32
+
+inductive Box where
+  | Item
+
+def runaway (i : Int32) : Box := runaway (i + 1)

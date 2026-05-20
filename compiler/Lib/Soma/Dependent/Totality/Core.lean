@@ -111,6 +111,7 @@ end StructuralCmp
 inductive DecreaseWitness where
   | arg (paramIdx : Nat) (reason : String) -- Decrease on a specific argument
   | lex (witnesses : Array DecreaseWitness) -- Lexicographic decrease
+  | linear (description : String) -- Decrease on a linear measure under path-condition guards
   | notFound (reason : String) -- No decrease found
   deriving Repr, Inhabited
 
