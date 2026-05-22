@@ -1,0 +1,9 @@
+// expect: success
+
+class Monad (m : Type -> Type) where
+    pure : ∀ a. a -> m a
+    {>>=} : ∀ a b. m a -> (a -> m b) -> m b
+
+@[partial]
+def step {a : Type} {m : Type -> Type} {{Monad m}} : a -> m a
+    | n => step n >>= (\x -> pure x)

@@ -3,13 +3,12 @@ error[E1017]: could not infer a type here
   |
 8 |
 9 | def f (x : Int32) := id id
-  | -------------------------- expected a value of type `(x : Int32) -> Type`
+  | -------------------------- expected a value of type `Type`
   |
-  ,-> <goal at 9:1>:2:3
+  ,-> <expected at 9:1>:1:1
   |
-1 | x : Int32
-2 | ⊢ (x : Int32) -> Type
-  |   ------------------- this goal is unsolved
+1 | Type
+  | ---- expected type
   |
   = help: add a type annotation to help inference
   = metavar origins:

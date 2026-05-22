@@ -1,1 +1,5 @@
-def main : IO () := puts "Hello, World!"
+use stdlib::program::{get_args}
+
+def main : IO () := compose
+    bind args <- get_args
+    puts "Hello, World!"

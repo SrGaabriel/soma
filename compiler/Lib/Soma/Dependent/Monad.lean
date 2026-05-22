@@ -1622,6 +1622,17 @@ def freshMeta (ty : Value) (piLevel : Option Nat := none)
   set state'
   return id
 
+/-- Create a fresh metavariable with an explicit context list -/
+def freshMetaInCtx (ty : Value) (ctxEntries : List CtxEntry)
+    (piLevel : Option Nat := none)
+    (origin : Soma.Core.MetaOrigin := .user)
+    (displayHint : Option String := none) : TCM MetaId := do
+  let state ← getState
+  let (id, state') := state.freshMeta ty ctxEntries
+    (piLevel := piLevel) (origin := origin) (displayHint := displayHint)
+  set state'
+  return id
+
 /-- Create a fresh metavariable and return it as a Value -/
 def freshMetaVal (ty : Value) (origin : Soma.Core.MetaOrigin := .user)
     (displayHint : Option String := none) : TCM Value := do

@@ -2743,6 +2743,18 @@ def addRuntimeDeclarations : CodegenM Unit := do
         attrs := { nounwind := true }
         isDeclaration := true
       }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_argv_at"
+        retTy := .void
+        params := #[
+          { name := "ret", ty := .ptr, attrs := #[s!"sret({strTyStr})"] },
+          { name := "i", ty := .i32 }
+        ]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
   else
     -- Non-Windows (SysV): coerce string struct to { i64, i64 } for correct ABI
     let coercedStrTy := sysVCoercedType strTy
@@ -2790,6 +2802,15 @@ def addRuntimeDeclarations : CodegenM Unit := do
         name := "soma_int_to_string"
         retTy := coercedStrTy
         params := #[{ name := "val", ty := .i32 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_argv_at"
+        retTy := coercedStrTy
+        params := #[{ name := "i", ty := .i32 }]
         attrs := { nounwind := true }
         isDeclaration := true
       }

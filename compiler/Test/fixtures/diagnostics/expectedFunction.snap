@@ -11,5 +11,5 @@ error[E1003]: expected function type
   | ----- not a function
   |
   = note: function application requires a function type (Π-type)
-  = note: type was inferred from: checking `app` against `Int32`
+  = note: type was inferred from: argument 1 of `n`
   = help: did you mean field access (`.x`) or forget parentheses?

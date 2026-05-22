@@ -3,6 +3,7 @@ import Soma.Core.Eval
 import Soma.Dependent.Prelude
 import Soma.Dependent.Monad
 import Soma.Dependent.Unify.Core
+import Soma.Dependent.Unify.Invariants
 
 namespace Soma.Dependent
 
@@ -354,6 +355,198 @@ def shouldDeferMeta (m : MetaId) : TCM Bool := do
         recordMetaDependency m mid
         return true
     return false
+
+/-- Look up the type of a rigid head value -/
+def rigidHeadType (head : Head) : TCM (Option Value) := do
+  match head with
+  | .hVar bv =>
+    let ctx ← TCM.getCtx
+    match ctx.lookupLevel bv.level with
+    | some entry => return some entry.type
+    | none => return none
+  | .hConst _ ty => return some ty
+  | _ => return none
+
+/-- Convert a rigid Head back to an `Expr` form suitable for embedding in a meta solution -/
+def rigidHeadToExpr (head : Head) (paramCount : Nat) : TCM (Option Soma.Core.Expr) := do
+  match head with
+  | .hVar bv =>
+    let ctx ← TCM.getCtx
+    let ctxSize := ctx.size
+    let idx := ctxSize + paramCount - 1 - bv.level.lvl
+    match ctx.lookupLevel bv.level with
+    | some entry =>
+      let tyExpr := Soma.Core.quoteExpr ⟨0⟩ entry.type
+      return some (.fvar entry.fvarId tyExpr)
+    | none =>
+      return some (.bvar idx)
+  | .hConst qn ty =>
+    let tyExpr := Soma.Core.quoteExpr0 ty
+    return some (.const qn tyExpr)
+  | _ => return none
+
+/-- Build the application `?fresh x_0 x_1 ... x_{paramCount-1}` where each `x_i` is the i-th lambda binder we're inside -/
+def buildFreshMetaApp (freshMid : MetaId) (paramCount : Nat) : Soma.Core.Expr :=
+  let argIndices : List Nat := (List.range paramCount).reverse
+  buildFilteredApplication freshMid argIndices paramCount
+
+/-- Try to rename a rigid head so it can appear inside the body of a
+    meta-solution lambda whose binders correspond to the meta's captured
+    context -/
+def renameHeadOverCaptures (head : Head) (captureSpine : List Value)
+    (captureCount : Nat) : TCM (Option Soma.Core.Expr) := do
+  match head with
+  | .hVar bv =>
+    match Soma.Dependent.findCapturedPosition bv.level captureSpine with
+    | some i => return some (.bvar (captureCount - 1 - i))
+    | none => return none
+  | .hConst qn ty =>
+    let tyExpr := Soma.Core.quoteExpr0 ty
+    return some (.const qn tyExpr)
+  | _ => return none
+
+/-- Spine-suffix imitation -/
+def tryImitationOverCaptures (unifyCallback : Value → Value → TCM Unit)
+    (m : MetaId) (spine : List Value) (rigidHead : Head)
+    (rhsArgs : List Value) : TCM Bool := do
+  let info? ← TCM.lookupMeta m
+  let some info := info? | return false
+  if info.solution.isSome then return false
+
+  let captureCount := info.context.length
+  if spine.length < captureCount then return false
+  let extras := spine.length - captureCount
+
+  if extras != rhsArgs.length then return false
+
+  let metaParamTypes ← extractMetaParamTypes info.type
+  if metaParamTypes.length < captureCount then return false
+
+  let captureSpine : List Value := spine.take captureCount
+  let some headExpr ← renameHeadOverCaptures rigidHead captureSpine captureCount
+    | return false
+
+  -- λ(c_0' : T_0) … (c_{L-1}' : T_{L-1}) head
+  let mut solutionExpr := headExpr
+  for j in [:captureCount] do
+    let idx := captureCount - 1 - j
+    let dom := metaParamTypes[idx]!
+    let domExpr := Soma.Core.quoteExpr ⟨idx⟩ dom
+    let name := s!"x{idx}"
+    solutionExpr := .lam .explicit name domExpr solutionExpr
+
+  let solutionVal ← evalPruneSolution solutionExpr
+
+  let attempt : TCM Unit := do
+    TCM.solveMeta m solutionVal (callerTag := "Pruning.imitationOverCaptures")
+    for h : i in [:rhsArgs.length] do
+      let extraVal := spine[captureCount + i]!
+      unifyCallback extraVal rhsArgs[i]!
+  match ← TCM.tryWithRollback attempt with
+  | some _ => return true
+  | none => return false
+
+/-- Standard higher-order Miller/Pfenning imitation rule -/
+def tryFullImitation (unifyCallback : Value → Value → TCM Unit)
+    (m : MetaId) (spine : List Value) (rigidHead : Head)
+    (rhsArgs : List Value) : TCM Bool := do
+  let info? ← TCM.lookupMeta m
+  let some info := info? | return false
+  if info.solution.isSome then return false
+
+  let some headTy ← rigidHeadType rigidHead | return false
+
+  let metaParamTypes ← extractMetaParamTypes info.type
+  let paramCount := metaParamTypes.length
+  if paramCount != spine.length then return false
+
+  let rigidParamTypes ← extractMetaParamTypes headTy
+  if rigidParamTypes.length != rhsArgs.length then return false
+
+  -- TODO: abstract away
+  let captureCount := info.context.length
+  let captureSpine : List Value := spine.take captureCount
+  match Soma.Dependent.captureLevels? captureSpine with
+  | none => return false
+  | some captureLevels =>
+    if rhsArgs.any (fun a => Soma.Dependent.valueEscapesCaptures a captureLevels) then
+      return false
+
+  let some headExpr ← rigidHeadToExpr rigidHead paramCount | return false
+
+  -- `T_0 → T_1 → … → T_{n-1} → S_i` so that `?p_i vs : S_i`
+  let mut freshMetas : Array MetaId := #[]
+  let mut freshMetaTys : Array Value := #[]
+  for sTy in rigidParamTypes do
+    let mTy ← buildPiType metaParamTypes sTy
+    let mid ← TCM.freshMeta mTy
+    freshMetas := freshMetas.push mid
+    freshMetaTys := freshMetaTys.push mTy
+
+  -- `head (?p_0 zs) (?p_1 zs) … (?p_{k-1} zs)`
+  let mut bodyExpr := headExpr
+  for fresh in freshMetas do
+    let appTerm := buildFreshMetaApp fresh paramCount
+    bodyExpr := .app bodyExpr appTerm
+
+  let paramNames := (List.range paramCount).map fun i => s!"x{i}"
+  let mut solutionExpr := bodyExpr
+  for i in [:paramCount] do
+    let idx := paramCount - 1 - i
+    let dom := metaParamTypes[idx]!
+    let domExpr := Soma.Core.quoteExpr ⟨idx⟩ dom
+    let name := paramNames[idx]!
+    solutionExpr := .lam .explicit name domExpr solutionExpr
+
+  let solutionVal ← evalPruneSolution solutionExpr
+
+  let attempt : TCM Unit := do
+    TCM.solveMeta m solutionVal (callerTag := "Pruning.fullImitation")
+    let spineElims : Array Elim := spine.toArray.map (.eApp ·)
+    for h : i in [:freshMetas.size] do
+      let fresh := freshMetas[i]
+      let freshTy := freshMetaTys[i]!
+      let rhsArg := rhsArgs[i]!
+      let freshHead : Value := .vNeutral freshTy (.mk (.hMeta fresh) #[])
+      let freshApplied ← applySpine freshHead spineElims
+      unifyCallback freshApplied rhsArg
+  match ← TCM.tryWithRollback attempt with
+  | some _ => return true
+  | none => return false
+
+/-- HOU projection rule -/
+def tryProjection (unifyCallback : Value → Value → TCM Unit)
+    (m : MetaId) (spine : List Value) (rhs : Value) : TCM Bool := do
+  let info? ← TCM.lookupMeta m
+  let some info := info? | return false
+  if info.solution.isSome then return false
+
+  let metaParamTypes ← extractMetaParamTypes info.type
+  let paramCount := metaParamTypes.length
+  if paramCount != spine.length then return false
+
+  let metaResTy ← getMetaResultType info.type
+
+  for h : i in [:paramCount] do
+    let paramTy := metaParamTypes[i]!
+    let attempt : TCM Unit := do
+      unifyCallback paramTy metaResTy
+      -- λ(x_0 : T_0) … λ(x_{n-1} : T_{n-1}). x_i
+      let bodyExpr : Soma.Core.Expr := .bvar (paramCount - 1 - i)
+      let mut solutionExpr := bodyExpr
+      for j in [:paramCount] do
+        let idx := paramCount - 1 - j
+        let dom := metaParamTypes[idx]!
+        let domExpr := Soma.Core.quoteExpr ⟨idx⟩ dom
+        let name := s!"x{idx}"
+        solutionExpr := .lam .explicit name domExpr solutionExpr
+      let solutionVal ← evalPruneSolution solutionExpr
+      TCM.solveMeta m solutionVal (callerTag := "Pruning.projection")
+      unifyCallback spine[i]! rhs
+    match ← TCM.tryWithRollback attempt with
+    | some _ => return true
+    | none   => continue
+  return false
 
 /-- Check if a spine can be made into a pattern by η-expanding the meta.
     Returns the extended spine and corresponding RHS if successful. -/

@@ -126,18 +126,11 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
           }
         else
           let dom' ← force dom
-          let nextIsInstance ← do
-            let lvl ← TCM.currentLevel
-            let neutral := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
-            let nextTy ← applyClosure cod neutral
-            match ← force nextTy with
-            | .vPi _ .instance_ _ _ _ => pure true
-            | _ => pure false
           Soma.Dependent.freshMetaWithPolicy dom {
             kind := .autoImplicit
             abstractLocals := true
             includeInstanceLocals := false
-            includeTermLocals := !(isSortDomain dom' && nextIsInstance)
+            includeTermLocals := !isSortDomain dom'
             piLevel := piLvl
             displayHint := some name
           }
@@ -166,14 +159,48 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
       return (fnTy', fnExpr, #[])
   | _ => return (fnTy', fnExpr, #[])
 
-private def valueMentionsTrackedMeta
-    (v : Value) (metas : Array (MetaId × Value × String)) : Bool :=
-  let tracked := metas.map (fun (m, _, _) => m)
-  (Value.collectMetas v).any fun m => tracked.contains m
+/-- Does `e` reference the De Bruijn binder at the enclosing scope's index 0? -/
+private partial def exprReferencesEnclosingBinder : Soma.Core.Expr → Bool :=
+  go 0
+where
+  go (d : Nat) : Soma.Core.Expr → Bool
+    | .bvar idx => idx == d
+    | .fvar _ ty => go d ty
+    | .mvar _ => false
+    | .const _ ty => go d ty
+    | .tyvar _ _ => false
+    | .app fn arg => go d fn || go d arg
+    | .lam _ _ dom body => go d dom || go (d + 1) body
+    | .let_ _ ty val body => go d ty || go d val || go (d + 1) body
+    | .lit _ => false
+    | .sort _ => false
+    | .pi _ _ _ dom cod => go d dom || go (d + 1) cod
+    | .construct _ _ args ty =>
+      args.any (go d) || go d ty
+    | .case scruts motive arms =>
+      scruts.any (go d) || go d motive ||
+        arms.any (fun arm =>
+          let patternBinders := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
+          go (d + patternBinders) arm.body)
+    | .record fields => fields.any (fun (_, v) => go d v)
+    | .recordUpdate base updates =>
+      go d base || updates.any (fun (_, v) => go d v)
+    | .fieldAccess e _ _ => go d e
+    | .inject _ args ty => args.any (go d) || go d ty
+    | .rowSort | .labelSort | .rowEmpty | .labelLit _ => false
+    | .rowExtend label fieldTy tail => go d label || go d fieldTy || go d tail
+    | .recordTy row => go d row
+    | .variantTy row => go d row
+    | .dataTy _ params => params.any (go d)
+    | .if_ c t e => go d c || go d t || go d e
+    | .panic _ => false
+    | .closure _ captures ty => captures.any (go d) || go d ty
+    | .array elems ty => elems.any (go d) || go d ty
+    | .tuple elems => elems.any (go d)
+    | .proj _ _ _ => false
+    | .ann e ty => go d e || go d ty
 
-/-- Project the result type after consuming n explicit arguments, reusing existing metas.
-    This ensures that when we unify the projected result type with an expected type,
-    the constraints properly connect to the metas that will be used in the actual application -/
+/-- Project the result type after consuming `numExplicitArgs` explicit arguments -/
 partial def projectResultTypeWithMetas (ty : Value) (numExplicitArgs : Nat)
     (existingMetas : Array (MetaId × Value × String)) : TCM (Option Value) := do
   if numExplicitArgs == 0 then
@@ -183,20 +210,23 @@ partial def projectResultTypeWithMetas (ty : Value) (numExplicitArgs : Nat)
   match ty' with
   | .vPi _qty binder name dom cod =>
     if binder.isImplicit then
-      -- Find the corresponding meta from existingMetas if available
       let metaVal ← match existingMetas.find? (fun (_, _, n) => n == name) with
         | some (mid, _, _) => pure (Value.vNeutral dom (.nMeta mid))
-        | none => TCM.freshMetaVal dom  -- Fallback to fresh meta
+        | none => TCM.freshMetaVal dom
       let resultTy ← applyClosure cod metaVal
       projectResultTypeWithMetas resultTy numExplicitArgs existingMetas
     else
-      -- Consume one explicit argument with a placeholder
-      if valueMentionsTrackedMeta dom existingMetas then
-        return none
-      let lvl ← TCM.currentLevel
-      let argVal := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
-      let resultTy ← applyClosure cod argVal
-      projectResultTypeWithMetas resultTy (numExplicitArgs - 1) existingMetas
+      match cod with
+      | .const _ value =>
+        projectResultTypeWithMetas value (numExplicitArgs - 1) existingMetas
+      | .term _ _ body =>
+        if exprReferencesEnclosingBinder body then
+          return none
+        else
+          let lvl ← TCM.currentLevel
+          let placeholder := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+          let stepped ← applyClosure cod placeholder
+          projectResultTypeWithMetas stepped (numExplicitArgs - 1) existingMetas
   | _ => return none
 
 /-- Insert implicit arguments with expected type guidance and full bidirectional propagation -/
@@ -575,6 +605,17 @@ partial def flattenApp : Soma.Syntax.Expr → Soma.Syntax.Expr × Array Soma.Syn
   | .app fn arg _ =>
     let (head, args) := flattenApp fn
     (head, args.push arg)
+  | e => (e, #[])
+
+/-- Flatten an application spine -/
+partial def flattenAppSpine : Soma.Syntax.Expr →
+    Soma.Syntax.Expr × Array Soma.Syntax.Expr
+  | .app fn arg _ =>
+    let (head, args) := flattenAppSpine fn
+    (head, args.push arg)
+  | .infix op left right _ =>
+    let opVar : Soma.Syntax.Expr := .var ⟨#[], op.value, op.span⟩
+    (opVar, #[left, right])
   | e => (e, #[])
 
 /-- Count the number of explicit Pi binders in a constructor's declared type -/
@@ -1142,23 +1183,14 @@ where
       let boolTyExpr := Soma.Core.quoteExpr lvl boolTy
       return (boolTy, .construct ctorName ctorTag #[] boolTyExpr)
 
-    -- Application: infer fn, then apply arg
     | .app fn arg span => do
       match fn with
       | .lambda #[(name, none)] body lamSpan =>
         inferLetStyle name body arg lamSpan
       | _ =>
-        let (head, priorArgs) := flattenApp fn
-        let fnName := syntaxExprDescription head
-        let argIdx := priorArgs.size
-        unless ← TCM.inApplicationChain do
-          let totalArgs := priorArgs.size + 1
-          checkConstructorArityAtHead head totalArgs span
-        let (fnTy, fnExpr) ← TCM.withInApplicationChain (inferSyntax fn)
-        TCM.withOrigin (.application fnName argIdx span) do
-          inferSyntaxApp fnTy fnExpr arg span
+        let (head, args) := flattenAppSpine (.app fn arg span)
+        elabAppSpine head args none span
 
-    -- Infix operators: resolve op, apply to both args
     | .infix op left right span => do
       if op.value == "=" then
         let eqInfo ← requireUniqueWiredRole .typeEq span
@@ -1168,13 +1200,8 @@ where
         let tyExpr ← quoteValueToExpr lhsTy
         return (.vType tyLevel, .dataTy eqInfo.name.id #[tyExpr, lhsExpr, rhsExpr])
       else
-        -- Resolve the operator name
-        let (opTy, opExpr) ← inferSyntax (.var ⟨#[], op.value, op.span⟩)
-        -- Apply to left
-        let (ty1, expr1) ← inferSyntaxApp opTy opExpr left span
-        -- Apply to right
-        let (ty2, expr2) ← inferSyntaxApp ty1 expr1 right span
-        return (ty2, expr2)
+        let (head, args) := flattenAppSpine (.infix op left right span)
+        elabAppSpine head args none span
 
     -- Lambda: generate bindings, infer body
     | .lambda params body span => do
@@ -1581,6 +1608,46 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
       let appExpr := Soma.Core.Expr.app fnExpr' argExpr
       return (resultTy, appExpr)
 
+/-- Spine-level application elaborator with bidirectional type propagation -/
+partial def elabAppSpine (head : Soma.Syntax.Expr) (args : Array Soma.Syntax.Expr)
+    (expected : Option Value) (span : Span)
+    : TCM (Value × Soma.Core.Expr) := do
+  unless ← TCM.inApplicationChain do
+    checkConstructorArityAtHead head args.size span
+
+  let fnName := syntaxExprDescription head
+
+  let (headTy, headExpr) ← TCM.withInApplicationChain (inferSyntax head)
+  let (fnTy, fnExpr, implicitMetas) ← insertImplicitsCore headTy headExpr span
+
+  if let some expectedTy := expected then
+    if args.size == 0 then
+      let _ ← tryUnify fnTy expectedTy
+      let _ ← solveConstraints
+    else if !implicitMetas.isEmpty then
+      match ← projectResultTypeWithMetas fnTy args.size implicitMetas with
+      | some projected =>
+        let _ ← tryUnify projected expectedTy
+        let _ ← solveConstraints
+      | none =>
+        pure ()
+
+  let mut curTy := fnTy
+  let mut curExpr := fnExpr
+  for h : i in [:args.size] do
+    let arg := args[i]
+    let (newTy, newExpr) ← TCM.withOrigin (.application fnName i span) <|
+      TCM.withImplicits (toString curExpr) implicitMetas <|
+        inferSyntaxApp curTy curExpr arg span
+    curTy := newTy
+    curExpr := newExpr
+
+  if let some expectedTy := expected then
+    subtypeUnify curTy expectedTy
+    let _ ← solveConstraints
+
+  return (curTy, curExpr)
+
 /-- Elaborate `(λ name → body) value` as a let binding -/
 partial def inferLetStyle (name : Soma.Syntax.QualName) (body : Soma.Syntax.Expr)
     (value : Soma.Syntax.Expr) (lamSpan : Span)
@@ -1978,24 +2045,29 @@ where
     | .tuple elems _, .vType _ => do
       inferTupleAsSigma elems.toList
 
-    -- Application: use expected type to guide implicit solving
     | .app fn arg span, _ => do
       match fn with
       | .lambda #[(name, none)] body lamSpan =>
         checkLetStyle name body arg expected' lamSpan
       | _ =>
-        unless ← TCM.inApplicationChain do
-          let (head, priorArgs) := flattenApp fn
-          let totalArgs := priorArgs.size + 1
-          checkConstructorArityAtHead head totalArgs span
-        let (fnTy, fnExpr) ← TCM.withInApplicationChain (inferSyntax fn)
-        let (fnTy', fnExpr', impls) ←
-          insertImplicitsWithExpected fnTy fnExpr (some expected') 1 span
-        TCM.withImplicits (toString fnExpr) impls do
-          let (resultTy, appExpr) ← inferSyntaxApp fnTy' fnExpr' arg span
-          let _ ← solveConstraints
-          subtypeUnify resultTy expected'
-          return appExpr
+        let (head, args) := flattenAppSpine (.app fn arg span)
+        let (_, appExpr) ← elabAppSpine head args (some expected') span
+        return appExpr
+
+    | .infix op left right span, _ => do
+      if op.value == "=" then
+        let eqInfo ← requireUniqueWiredRole .typeEq span
+        let (lhsTy, lhsExpr) ← inferSyntax left
+        let rhsExpr ← checkSyntax right lhsTy
+        let tyLevel ← inferUniverse lhsTy
+        let tyExpr ← quoteValueToExpr lhsTy
+        let eqVal : Value := .vType tyLevel
+        subtypeUnify eqVal expected'
+        return .dataTy eqInfo.name.id #[tyExpr, lhsExpr, rhsExpr]
+      else
+        let (head, args) := flattenAppSpine (.infix op left right span)
+        let (_, appExpr) ← elabAppSpine head args (some expected') span
+        return appExpr
 
     | .composeBlock stmts final_ _, _ =>
       checkSyntax (desugarCompose stmts final_) expected'

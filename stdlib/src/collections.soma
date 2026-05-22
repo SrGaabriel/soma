@@ -1,5 +1,5 @@
 use base::prim::{+, -, *, ==, <=}
-use base::core::{Option}
+use base::core::{Option, Monad, Applicative, >>=, pure}
 use base::prim::{List, Bool, Int32}
 
 def head {a : Type} : [a] -> Option a
@@ -32,6 +32,10 @@ def replicate {a : Type} : Int32 -> a -> [a]
 def map {a : Type} {b : Type} : (a -> b) -> [a] -> [b]
     | f, (x:xs) => List::Cons (f x) (map f xs)
     | _, [] => []
+
+def mapM {a : Type} { b : Type} {m : Type -> Type} {{Monad m}} : (a -> m b) -> [a] -> m [b]
+    | f, (x:xs) => f x >>= (\y -> mapM f xs >>= (\ys -> pure (List::Cons y ys)))
+    | _, [] => pure []
 
 def reverse_acc {a : Type} : [a] -> [a] -> [a]
     | (x:xs), acc => reverse_acc xs (List::Cons x acc)

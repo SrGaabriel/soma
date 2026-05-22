@@ -4,6 +4,7 @@ import Soma.Core.Quote
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
 import Soma.Dependent.Instance
+import Soma.Dependent.Unify.Invariants
 
 namespace Soma.Dependent
 
@@ -59,6 +60,53 @@ def localDictValue (dictName : String) (dictTy : Value) : TCM Value := do
     panic! s!"localDictValue: dictionary `{dictName}` is not bound in the local \
 context (callers must install the binding via TCM.withBinding first)"
 
+/-- Register `instInfo` plus every transitive superclass instance derived from it -/
+private partial def addInstanceWithSuperclasses (env : InstanceEnv)
+    (classId : Unique) (classArgs : Array Value) (dictValue : Value)
+    (span : Span) (originDictName : String) : TCM InstanceEnv := do
+  let instUnique ← TCM.freshUnique s!"$localInst_{originDictName}_{classId.original}"
+  let instInfo : InstanceInfo := {
+    instanceId := instUnique
+    classId := classId
+    args := classArgs
+    constraints := #[]
+    value := dictValue
+    span := span
+  }
+  let classInfo? ← TCM.lookupClass classId
+  if let some classInfo := classInfo? then
+    if let some diag := Soma.Dependent.diagnoseInstanceInfo instInfo classInfo then
+      TCM.throw (.compilerBug s!"{diag} (registering `{originDictName}`)" span)
+  let env := ← env.addInstanceWithIdForced instInfo
+  match classInfo? with
+  | none => return env
+  | some info =>
+    let mut env := env
+    for (superClassId, paramIdxs) in info.superclasses do
+      let mut superArgs : Array Value := #[]
+      let mut argsOk := true
+      for idx in paramIdxs do
+        if let some a := classArgs[idx]? then
+          superArgs := superArgs.push a
+        else
+          argsOk := false
+      if !argsOk then continue
+      match ← TCM.lookupClass superClassId with
+      | none => continue
+      | some superInfo =>
+        let superFieldName := s!"$super_{superInfo.classId.original}"
+        let projectedTy : Value := Value.vDataType superClassId superArgs.toList
+        let superDict :=
+          match dictValue with
+          | .vNeutral _ neu =>
+            Value.vNeutral projectedTy (neu.pushElim (.eField superFieldName))
+          | _ =>
+            Value.vNeutral projectedTy
+              (Neutral.mk (.hVar ⟨originDictName, ⟨0⟩⟩) #[.eField superFieldName])
+        env := ← addInstanceWithSuperclasses env superClassId superArgs
+          superDict span originDictName
+    return env
+
 /-- Register an already-bound local dictionary as a temporary local instance -/
 def withLocalInstanceForBoundDict (dictName : String) (_dictUnique : Soma.Unique)
     (dictTy : Value) (span : Span) (action : TCM α) : TCM α := do
@@ -66,18 +114,9 @@ def withLocalInstanceForBoundDict (dictName : String) (_dictUnique : Soma.Unique
   match extractClassInfo? forcedTy with
   | none => action
   | some (classId, classArgs) =>
-    let instUnique ← TCM.freshUnique s!"$localInst_{dictName}"
     let dictValue ← localDictValue dictName dictTy
-    let instInfo : InstanceInfo := {
-      instanceId := instUnique
-      classId := classId
-      args := classArgs
-      constraints := #[]
-      value := dictValue
-      span := span
-    }
     let env ← TCM.getInstanceEnv
-    let env' ← env.addInstanceWithIdForced instInfo
+    let env' ← addInstanceWithSuperclasses env classId classArgs dictValue span dictName
     TCM.withInstanceEnv env' action
 
 /-- Bind an instance dictionary and register it in the local instance scope -/
@@ -137,6 +176,16 @@ structure MetaPolicy where
   displayHint : Option String := none
   deriving Inhabited, Repr
 
+/-- Whether `ty` is the type of a kind-level binding -/
+private partial def isKindLevelTy : Value → TCM Bool
+  | .vType _ | .vRowSort | .vLabelSort => pure true
+  | .vPi _ _ name dom cod => do
+    let lvl ← TCM.currentLevel
+    let neutral := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+    let codTy ← applyClosure cod neutral
+    isKindLevelTy (← force codTy)
+  | _ => pure false
+
 /-- A freshly-created meta plus the corresponding value and core expression -/
 structure FreshMeta where
   id : MetaId
@@ -164,9 +213,8 @@ def freshMetaWithPolicy (expectedTy : Value) (policy : MetaPolicy := {})
         return false
       if !policy.includeTermLocals then
         let entryTy ← force entry.type
-        match entryTy with
-        | .vType _ | .vRowSort | .vLabelSort => pure ()
-        | _ => return false
+        unless ← isKindLevelTy entryTy do
+          return false
       if !policy.includeErasedProofLocals && entry.qty == .zero then
         let isProof ← valueInPropUniverse entry.type
         return !isProof
@@ -182,7 +230,7 @@ def freshMetaWithPolicy (expectedTy : Value) (policy : MetaPolicy := {})
       metaTyExpr := .pi entry.qty entry.binder entry.name typeExpr metaTyExpr
     let metaTy ← TCM.evalExprInEnv Soma.Core.Env.empty metaTyExpr
 
-    let mid ← TCM.freshMeta metaTy
+    let mid ← TCM.freshMetaInCtx metaTy ordered.toList
       (piLevel := policy.piLevel)
       (origin := policy.kind.origin)
       (displayHint := policy.displayHint)

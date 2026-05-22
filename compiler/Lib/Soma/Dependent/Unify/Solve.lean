@@ -906,7 +906,25 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
             if !intersected then
               markStuckOnFlexFlex m spine m2
         | none =>
-          markStuckOnMetaWithSpineList m spine
+          -- `?m spine = rigid_head rhs_args`
+          let rhsArgsOpt? : Option (List Value) := do
+            let onlyApp := neu2.spine.toList.all fun e =>
+              match e with | .eApp _ => true | _ => false
+            if !onlyApp then none
+            else neu2.spine.toList.mapM fun e =>
+              match e with | .eApp v => some v | _ => none
+          match rhsArgsOpt? with
+          | none => markStuckOnMetaWithSpineList m spine
+          | some rhsArgs =>
+            let suffixed ← tryImitationOverCaptures unify m spine neu2.head rhsArgs
+            if suffixed then pure ()
+            else
+              let projected ← tryProjection unify m spine rhs
+              if projected then pure ()
+              else
+                let imitated ← tryFullImitation unify m spine neu2.head rhsArgs
+                if imitated then pure ()
+                else markStuckOnMetaWithSpineList m spine
       | _ =>
         markStuckOnMetaWithSpineList m spine
 
