@@ -44,7 +44,7 @@ def inferUniverse (ty : Value) : TCM Level := do
     TCM.freshLevel "u"
 
 /-- Ensure a value is a Pi type -/
-def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none)
+partial def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none)
     : TCM (Quantity × BinderInfo × String × Value × Closure) := do
   let resolveOrigin : TCM ConstraintOrigin := do
     match origin with
@@ -74,7 +74,9 @@ def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none
         TCM.throw (.expectedFunction v' span (← resolveOrigin))
     | _ => TCM.throw (.expectedFunction v' span (← resolveOrigin))
   | _ =>
-    TCM.throw (.expectedFunction v' span (← resolveOrigin))
+    match ← tryUnfoldOneStep v' with
+    | some (u, _) => ensurePi u span origin
+    | none => TCM.throw (.expectedFunction v' span (← resolveOrigin))
 
 /-- Apply a motive value to an argument -/
 def vAppMotive (motive : Value) (arg : Value) : TCM Value := do

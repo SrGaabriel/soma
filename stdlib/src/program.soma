@@ -1,7 +1,7 @@
 use base::prim::{IO, Int32, List, +, <=}
 use base::string::{String}
 use base::io::{pure_io}
-use base::core::{>>=}
+use base::core::{>>=, pure}
 
 @[extern "soma_argc"]
 def argc : IO Int32
@@ -10,10 +10,10 @@ def argc : IO Int32
 def argv_at : Int32 -> IO String
 
 def collect_args (i : Int32) (n : Int32) : IO (List String) :=
-    if n <= i then pure_io List::Nil
+    if n <= i then pure List::Nil
     else argv_at i >>= (\arg ->
         collect_args (i + 1) n >>= (\rest ->
-            pure_io (List::Cons arg rest)))
+            pure (List::Cons arg rest)))
 
 def get_args : IO (List String) :=
     argc >>= (\n -> collect_args 0 n)

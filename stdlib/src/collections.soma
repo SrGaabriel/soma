@@ -1,5 +1,5 @@
 use base::prim::{+, -, *, ==, <=}
-use base::core::{Option, Monad, Applicative, >>=, pure}
+use base::core::{Option, Monad, >>=, pure}
 use base::prim::{List, Bool, Int32}
 
 def head {a : Type} : [a] -> Option a

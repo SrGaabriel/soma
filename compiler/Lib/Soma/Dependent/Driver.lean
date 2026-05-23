@@ -250,8 +250,9 @@ partial def extractParamTypes (ty : Value) (numParams : Nat) : TCM (Array Value 
         let (restParams, resultTy) ← extractParamTypes codTy (numParams - 1)
         return (#[dom] ++ restParams, resultTy)
     | _ =>
-      -- Not a Pi type, return remaining as result
-      return (#[], ty')
+      match ← tryUnfoldOneStep ty' with
+      | some (u, _) => extractParamTypes u numParams
+      | none => return (#[], ty')
 
 /-- Extract a binder telescope prefix from a Pi type, preserving QTT quantities -/
 partial def extractSignaturePrefix (ty : Value) (numExplicit : Nat)
@@ -272,7 +273,12 @@ where
       let (restParams, resultTy) ← go codTy remainingExplicit (lvl + 1)
       return (#[(name, dom, binder, qty)] ++ restParams, resultTy)
     | _ =>
-      return (#[], ty)
+      if numExplicit > 0 then
+        match ← tryUnfoldOneStep ty' with
+        | some (u, _) => go u numExplicit lvl
+        | none => return (#[], ty)
+      else
+        return (#[], ty)
 
 /-- Extend the context with function parameters and run an action -/
 def withFunctionParams (params : Array Soma.Core.FunctionParam) (paramTypes : Array Value)

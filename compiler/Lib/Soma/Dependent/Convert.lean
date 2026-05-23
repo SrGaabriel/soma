@@ -241,20 +241,6 @@ partial def force (v : Value) : TCM Value := do
       | none =>
         return .vNeutral ty (.mk (.hCase scruts' motive arms) neu.spine)
     | _ => return v
-  | .vDataType dId params =>
-    let abbrev? ← TCM.lookupAbbrev ⟨dId⟩
-    match abbrev? with
-    | some abbrevInfo =>
-      if params.length == abbrevInfo.arity then
-        let mut result := abbrevInfo.expansion
-        for arg in params do
-          match result with
-          | .vLam _ _ body => result ← applyClosure body arg
-          | .vPi _ _ _ _ cod => result ← applyClosure cod arg
-          | _ => return v
-        force result
-      else return v
-    | none => return v
   | _ => return v
 
 /-- Apply a closure to an argument -/
@@ -293,6 +279,15 @@ partial def tryUnfoldOneStep (v : Value) : TCM (Option (Value × String)) := do
       else return none
     | none => return none
   | _ => return none
+
+/-- δ-step for conversion -/
+def unfoldAliasStep (v1 v2 : Value) : TCM (Option (Value × Value)) := do
+  match ← tryUnfoldOneStep v1 with
+  | some (u1, _) => return some (u1, v2)
+  | none =>
+    match ← tryUnfoldOneStep v2 with
+    | some (u2, _) => return some (v1, u2)
+    | none => return none
 
 abbrev LevelSubst := Std.HashMap Nat Value
 
@@ -787,9 +782,12 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
 
   -- Data types
   | .vDataType id1 ps1, .vDataType id2 ps2 =>
-    if id1 != id2 then return false
-    if ps1.length != ps2.length then return false
-    convertValueLists ps1 ps2
+    if id1 == id2 && ps1.length == ps2.length then
+      convertValueLists ps1 ps2
+    else
+      match ← unfoldAliasStep v1' v2' with
+      | some (u1, u2) => convert u1 u2
+      | none => return false
 
   -- Constructors
   | .vConstructor n1 t1 as1 _, .vConstructor n2 t2 as2 _ =>
@@ -822,8 +820,11 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
   | .vNeutral neuTy neu, .vConstructor _ 0 ctorArgs ctorRty =>
     recordEtaConvert ctorArgs ctorRty neuTy neu (ctorOnLeft := false)
 
-  -- Different constructors
-  | _, _ => return false
+  -- Different heads
+  | _, _ =>
+    match ← unfoldAliasStep v1' v2' with
+    | some (u1, u2) => convert u1 u2
+    | none => return false
 
 /-- Compare equal-length scrutinee prefixes -/
 partial def convertScrutPrefix (ss1 ss2 : Array Value) (count : Nat) : TCM Bool := do

@@ -201,16 +201,19 @@ partial def unifyCore (v1 v2 : Value) : TCM Unit := do
 
   | .vDataType id1 ps1, .vDataType id2 ps2 =>
     if id1 != id2 then
-      throwUnifyError v1' v2' "data type mismatch"
-    TCM.withInjectiveDescent do
-      match (← TCM.lookupWiredIn .typeEq) with
-      | some info =>
-        if info.name.id == id1 ∧ ps1.length == 3 ∧ ps2.length == 3 then
-          TCM.withPathStep (.dataTypeParam 1) do unifyCore ps1[1]! ps2[1]!
-          TCM.withPathStep (.dataTypeParam 2) do unifyCore ps1[2]! ps2[2]!
-        else
-          unifyList ps1 ps2 PathStep.dataTypeParam
-      | none => unifyList ps1 ps2 PathStep.dataTypeParam
+      match ← unfoldAliasStep v1' v2' with
+      | some (u1, u2) => unifyCore u1 u2
+      | none => throwUnifyError v1' v2' "data type mismatch"
+    else
+      TCM.withInjectiveDescent do
+        match (← TCM.lookupWiredIn .typeEq) with
+        | some info =>
+          if info.name.id == id1 ∧ ps1.length == 3 ∧ ps2.length == 3 then
+            TCM.withPathStep (.dataTypeParam 1) do unifyCore ps1[1]! ps2[1]!
+            TCM.withPathStep (.dataTypeParam 2) do unifyCore ps1[2]! ps2[2]!
+          else
+            unifyList ps1 ps2 PathStep.dataTypeParam
+        | none => unifyList ps1 ps2 PathStep.dataTypeParam
 
   | .vConstructor n1 t1 as1 _, .vConstructor n2 t2 as2 _ =>
     if n1 != n2 || t1 != t2 then throwUnifyError v1' v2' "constructor mismatch"
@@ -288,7 +291,9 @@ partial def unifyCore (v1 v2 : Value) : TCM Unit := do
         | _ => throwUnifyError v1' v2' "rigid-flex mismatch"
 
   | _, _ =>
-    throwUnifyError v1' v2' "incompatible types"
+    match ← unfoldAliasStep v1' v2' with
+    | some (u1, u2) => unifyCore u1 u2
+    | none => throwUnifyError v1' v2' "incompatible types"
 
 /-- Unify equal-length scrutinee prefixes -/
 partial def unifyScrutPrefix (ss1 ss2 : Array Value) (count : Nat) : TCM Unit := do
