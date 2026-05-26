@@ -2,9 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use colored::Colorize;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, CacheEntry, HashCalculator};
 use crate::build::consts::{BUILD_FOLDER_NAME, CACHE_FOLDER_NAME, SRC_FOLDER_NAME};
@@ -13,6 +10,7 @@ use crate::build::graph::DependencyGraph;
 use crate::build::resolve::DependencyResolver;
 use crate::build::scheduler::{BuildResults, LayeredBuilder};
 use crate::config::manifest::Manifest;
+use crate::style::{self, Tone};
 
 pub struct BuildOrchestrator {
     root_path: PathBuf,
@@ -50,39 +48,18 @@ impl BuildOrchestrator {
 
     pub fn build(&mut self, manifest: &Manifest) -> BuildResult<BuildStats> {
         let build_start = Instant::now();
-        let multi_progress =
-            MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::stdout());
-
-        let resolution_pb = multi_progress.add(ProgressBar::new_spinner());
-        resolution_pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
-        );
-        resolution_pb.set_message(format!("{}", "Resolving dependencies...".cyan()));
-        resolution_pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         let resolution_start = Instant::now();
         let graph = self.resolve_dependencies(manifest)?;
         let resolution_time = resolution_start.elapsed().as_millis();
-
-        resolution_pb.finish_with_message(format!(
-            "{} {} {}",
-            "✓".green(),
-            "Resolved dependencies".dimmed(),
-            format!("({resolution_time}ms)").dimmed()
-        ));
-
-        let analysis_pb = multi_progress.add(ProgressBar::new_spinner());
-        analysis_pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
-        );
-        analysis_pb.set_message(format!("{}", "Analyzing build cache...".cyan()));
-        analysis_pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        if style::is_verbose() {
+            style::status_meta(
+                Tone::Progress,
+                "resolved",
+                format!("{} modules", graph.len()),
+                format!("in {}", format_ms(resolution_time)),
+            );
+        }
 
         let analysis_start = Instant::now();
         let analysis = self.analyze_incremental_builds(&graph)?;
@@ -91,26 +68,22 @@ impl BuildOrchestrator {
         let modules_to_build =
             analysis.layers.iter().flatten().count() - analysis.skip_modules.len();
 
-        analysis_pb.finish_with_message(format!(
-            "{} {} {} {}",
-            "✓".green(),
-            "Cache analysis complete".dimmed(),
-            format!(
-                "({} to build, {} cached)",
-                modules_to_build,
-                analysis.skip_modules.len()
-            )
-            .bright_blue(),
-            format!("({analysis_time}ms)").dimmed()
-        ));
+        if style::is_verbose() {
+            style::status_meta(
+                Tone::Progress,
+                "analyzed",
+                format!(
+                    "cache ({} to build, {} cached)",
+                    modules_to_build,
+                    analysis.skip_modules.len()
+                ),
+                format!("in {}", format_ms(analysis_time)),
+            );
+        }
 
         let execution_start = Instant::now();
-        let build_results = self.execute_builds(
-            &analysis.layers,
-            &graph,
-            &analysis.skip_modules,
-            &multi_progress,
-        )?;
+        let build_results =
+            self.execute_builds(&analysis.layers, &graph, &analysis.skip_modules)?;
         let execution_time = execution_start.elapsed().as_millis();
         let final_binary_path = build_results.get(&manifest.name).and_then(|res| {
             if res.success {
@@ -195,16 +168,9 @@ impl BuildOrchestrator {
         layers: &[Vec<String>],
         graph: &DependencyGraph,
         skip_modules: &HashMap<String, (String, String)>,
-        multi_progress: &MultiProgress,
     ) -> BuildResult<HashMap<String, BuildResults>> {
         let builder = LayeredBuilder::new(self.num_workers);
-        builder.build_layers(
-            layers,
-            graph.nodes(),
-            skip_modules,
-            &self.cache,
-            multi_progress,
-        )
+        builder.build_layers(layers, graph.nodes(), skip_modules, &self.cache)
     }
 
     fn update_cache(
@@ -242,21 +208,21 @@ impl BuildOrchestrator {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn clean(&mut self) -> BuildResult<()> {
-        println!("Cleaning build artifacts...");
-
+    pub fn clean(&mut self) -> BuildResult<u64> {
         let build_path = self.root_path.join(BUILD_FOLDER_NAME);
-        if build_path.exists() {
+        let removed_bytes = if build_path.exists() {
+            let bytes = directory_size(&build_path).unwrap_or(0);
             std::fs::remove_dir_all(&build_path)
                 .map_err(BuildError::FailedToCleanBuildArtifacts)?;
-        }
+            bytes
+        } else {
+            0
+        };
 
         self.cache.clear();
         self.cache.save().map_err(BuildError::FailedToSaveCache)?;
 
-        println!("✓ Build artifacts cleaned");
-        Ok(())
+        Ok(removed_bytes)
     }
 }
 
@@ -264,4 +230,36 @@ struct IncrementalBuildAnalysis {
     layers: Vec<Vec<String>>,
     skip_modules: HashMap<String, (String, String)>,
     module_hashes: HashMap<String, (String, String)>,
+}
+
+fn format_ms(ms: u128) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        #[allow(clippy::cast_precision_loss)]
+        let secs = ms as f64 / 1000.0;
+        format!("{secs:.2}s")
+    } else {
+        let seconds = ms / 1000;
+        let minutes = seconds / 60;
+        let remaining_seconds = seconds % 60;
+        format!("{minutes}m {remaining_seconds}s")
+    }
+}
+
+fn directory_size(path: &std::path::Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(total)
 }

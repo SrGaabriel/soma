@@ -1,152 +1,70 @@
 use std::path::Path;
 
-use colored::Colorize;
-
 use crate::{
     build::{BuildStats, build_project},
     cli::parse_manifest,
     logging::{output_debug, output_err},
+    style::{self, Hyperlink, Tone},
 };
 
-pub fn execute(path: &Path) {
+pub fn execute(path: &Path, profile: &str) {
     let manifest = parse_manifest(path);
     output_debug("Successfully read manifest file");
     match build_project(path, &manifest) {
         Ok(build) => {
-            print_build_success(&build);
+            print_build_summary(&build, profile);
         }
         Err(e) => {
-            output_err(&format!("Build failed: {e}"));
+            output_err(format!("build failed: {e}"));
+            std::process::exit(1);
         }
     }
 }
 
-fn print_build_success(stats: &BuildStats) {
-    println!();
-    println!(
-        "{}",
-        "╔═══════════════════════════════════════════════════════════════╗".bright_green()
-    );
-    println!(
-        "{}",
-        "║                     BUILD SUCCESSFUL ✓                        ║"
-            .bright_green()
-            .bold()
-    );
-    println!(
-        "{}",
-        "╚═══════════════════════════════════════════════════════════════╝".bright_green()
-    );
-    println!();
-
-    println!("{}", "  📦 Module Statistics".cyan().bold());
-    println!(
-        "     {} {}",
-        "Total modules:".bright_white(),
-        stats.total_modules.to_string().yellow()
-    );
-    println!(
-        "     {} {}",
-        "Built:".bright_white(),
+pub fn print_build_summary(stats: &BuildStats, profile: &str) {
+    let count = if stats.modules_built == 0 {
+        format!("{} cached", stats.modules_cached)
+    } else if stats.modules_cached > 0 {
         format!(
-            "{} module{}",
-            stats.modules_built,
-            if stats.modules_built == 1 { "" } else { "s" }
+            "{} built, {} cached",
+            stats.modules_built, stats.modules_cached
         )
-        .green()
-    );
-    println!(
-        "     {} {} {}",
-        "Cached:".bright_white(),
-        format!(
-            "{} module{}",
-            stats.modules_cached,
-            if stats.modules_cached == 1 { "" } else { "s" }
-        )
-        .bright_blue(),
-        if stats.total_modules > 0 {
-            format!(
-                "({}% reused)",
-                (stats.modules_cached * 100) / stats.total_modules
-            )
-            .dimmed()
-            .to_string()
-        } else {
-            String::new()
-        }
-    );
-    println!();
-
-    println!("{}", "  ⏱  Timing Breakdown".cyan().bold());
-    println!(
-        "     {} {}",
-        "Resolution:".bright_white(),
-        format_duration(stats.resolution_time_ms)
-    );
-    println!(
-        "     {} {}",
-        "Analysis:".bright_white(),
-        format_duration(stats.analysis_time_ms)
-    );
-    println!(
-        "     {} {}",
-        "Execution:".bright_white(),
-        format_duration(stats.execution_time_ms).green()
-    );
-    if stats.linking_time_ms > 0 {
-        println!(
-            "     {} {}",
-            "Linking:".bright_white(),
-            format_duration(stats.linking_time_ms)
-        );
-    }
-    println!("     {}", "─".repeat(40).dimmed());
-    println!(
-        "     {} {}",
-        "Total:".bright_white().bold(),
-        format_duration(stats.total_time_ms).yellow().bold()
-    );
-    println!();
-
-    if let Some(binary_path) = &stats.final_binary_path {
-        println!("{}", "  🎯 Output".cyan().bold());
-        println!(
-            "     {} {}",
-            "Binary:".bright_white(),
-            binary_path.display().to_string().green()
-        );
-        println!();
-    }
-
-    let efficiency = if stats.total_modules > 0 {
-        (stats.modules_cached * 100) / stats.total_modules
     } else {
-        0
+        format!("{} built", stats.modules_built)
     };
 
-    if efficiency > 0 {
-        println!(
-            "  {} {}",
-            "⚡".yellow(),
-            format!(
-                "Build completed in {} ({}% cache hit rate)",
-                format_duration(stats.total_time_ms),
-                efficiency
-            )
-            .dimmed()
-        );
-    } else {
-        println!(
-            "  {} {}",
-            "✓".green(),
-            format!(
-                "Build completed in {}",
-                format_duration(stats.total_time_ms)
-            )
-            .dimmed()
-        );
+    style::status(
+        Tone::Success,
+        "done",
+        format!(
+            "· {profile} · {count} · {}",
+            format_duration(stats.total_time_ms)
+        ),
+    );
+
+    if let Some(binary_path) = &stats.final_binary_path {
+        let link = Hyperlink::for_path(binary_path);
+        println!("  {} {link}", style::paint_verb("→", Tone::Accent));
     }
-    println!();
+
+    if style::is_verbose() {
+        print_verbose_breakdown(stats);
+    }
+}
+
+fn print_verbose_breakdown(stats: &BuildStats) {
+    let line = |label: &str, ms: u128| {
+        println!(
+            "{}",
+            style::dim(format!("  {label:>8} {}", format_duration(ms)))
+        );
+    };
+    line("resolve", stats.resolution_time_ms);
+    line("analyze", stats.analysis_time_ms);
+    line("execute", stats.execution_time_ms);
+    if stats.linking_time_ms > 0 {
+        line("link", stats.linking_time_ms);
+    }
 }
 
 #[allow(clippy::cast_precision_loss)]

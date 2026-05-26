@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +10,8 @@ use crate::build::graph::BuildNode;
 use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;
 use crate::cli::somac;
-use crate::logging::{output_err, output_ok};
+use crate::logging::output_err;
+use crate::style::{self, Tone};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckOutput {
@@ -21,12 +23,13 @@ pub struct CheckOutput {
 
 pub fn execute(path: &Path) {
     let manifest = parse_manifest(path);
+    let started = Instant::now();
 
     let mut resolver = DependencyResolver::new(path.to_path_buf());
     let graph = match resolver.resolve(&manifest) {
         Ok(g) => g,
         Err(e) => {
-            output_err(&format!("Failed to resolve dependencies: {e}"));
+            output_err(format!("failed to resolve dependencies: {e}"));
             std::process::exit(1);
         }
     };
@@ -34,7 +37,7 @@ pub fn execute(path: &Path) {
     let layers = match graph.topological_layers() {
         Ok(l) => l,
         Err(e) => {
-            output_err(&format!("Failed to order modules: {e}"));
+            output_err(format!("failed to order modules: {e}"));
             std::process::exit(1);
         }
     };
@@ -45,72 +48,90 @@ pub fn execute(path: &Path) {
 
     let root_module = layers.last().and_then(|l| l.last()).cloned();
 
-    for layer in layers {
+    for layer in &layers {
         for module_name in layer {
-            if let Some(node) = graph.get_node(&module_name) {
-                let dep_files: HashMap<String, PathBuf> = node
-                    .dependencies
-                    .iter()
-                    .filter_map(|dep| dep_metadata.get(dep).map(|p| (dep.clone(), p.clone())))
-                    .collect();
+            let Some(node) = graph.get_node(module_name) else {
+                continue;
+            };
+            let dep_files: HashMap<String, PathBuf> = node
+                .dependencies
+                .iter()
+                .filter_map(|dep| dep_metadata.get(dep).map(|p| (dep.clone(), p.clone())))
+                .collect();
 
-                let is_root = root_module.as_ref() == Some(&module_name);
+            let is_root = root_module.as_ref() == Some(module_name);
+            if style::is_verbose() {
+                style::status(Tone::Progress, "checking", module_name);
+            }
 
-                if is_root {
-                    match check_module(node, &dep_files) {
-                        Ok(output) => {
-                            if !output.success {
-                                all_success = false;
-                            }
-                            all_outputs.push(output);
-                        }
-                        Err(e) => {
+            if is_root {
+                match check_module(node, &dep_files) {
+                    Ok(output) => {
+                        if !output.success {
                             all_success = false;
-                            all_outputs.push(make_error_output(node, &module_name, &e));
                         }
+                        all_outputs.push(output);
                     }
-                } else {
-                    match somac::generate_metadata(node, &dep_files) {
-                        Ok(metadata_path) => {
-                            all_outputs.push(CheckOutput {
-                                success: true,
-                                diagnostics: None,
-                                module_name: Some(module_name.clone()),
-                            });
-                            dep_metadata.insert(module_name.clone(), metadata_path);
-                        }
-                        Err(e) => {
-                            all_success = false;
-                            all_outputs.push(make_error_output(
-                                node,
-                                &module_name,
-                                &format!("Failed to generate metadata for dependency: {e}"),
-                            ));
-                        }
+                    Err(e) => {
+                        all_success = false;
+                        all_outputs.push(make_error_output(node, module_name, &e));
+                    }
+                }
+            } else {
+                match somac::generate_metadata(node, &dep_files) {
+                    Ok(metadata_path) => {
+                        all_outputs.push(CheckOutput {
+                            success: true,
+                            diagnostics: None,
+                            module_name: Some(module_name.clone()),
+                        });
+                        dep_metadata.insert(module_name.clone(), metadata_path);
+                    }
+                    Err(e) => {
+                        all_success = false;
+                        all_outputs.push(make_error_output(
+                            node,
+                            module_name,
+                            &format!("failed to generate metadata for dependency: {e}"),
+                        ));
                     }
                 }
             }
         }
     }
 
-    for module_output in all_outputs {
-        if let Some(module_name) = &module_output.module_name {
-            if module_output.success {
-                output_ok(&format!("Module '{module_name}': Check passed"));
-            } else {
-                output_err(&format!("Module '{module_name}': Check failed"));
+    let module_count = all_outputs.len();
+    let mut failed = 0usize;
+    for module_output in &all_outputs {
+        if !module_output.success {
+            failed += 1;
+            if let Some(name) = &module_output.module_name {
+                output_err(format!("check failed for `{name}`"));
             }
             if let Some(diagnostics) = &module_output.diagnostics {
-                println!("{diagnostics}");
+                eprintln!("{diagnostics}");
             }
         }
     }
 
-    if !all_success {
-        output_err("One or more checks failed. Please review the diagnostics above.");
+    let elapsed = format_duration(started.elapsed().as_millis());
+    if all_success {
+        style::status(
+            Tone::Success,
+            "checked",
+            format!("· {module_count} modules · {elapsed}"),
+        );
+    } else {
+        println!(
+            "{}",
+            style::format_status(
+                Tone::Error,
+                "failed",
+                format!("· {failed}/{module_count} · {elapsed}")
+            )
+        );
         std::process::exit(1);
     }
-    output_ok("All checks passed successfully!");
 }
 
 fn make_error_output(_node: &BuildNode, module_name: &str, message: &str) -> CheckOutput {
@@ -166,4 +187,18 @@ fn check_module(
         },
         module_name: Some(node.manifest.name.clone()),
     })
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn format_duration(ms: u128) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.2}s", ms as f64 / 1000.0)
+    } else {
+        let seconds = ms / 1000;
+        let minutes = seconds / 60;
+        let remaining_seconds = seconds % 60;
+        format!("{minutes}m {remaining_seconds}s")
+    }
 }

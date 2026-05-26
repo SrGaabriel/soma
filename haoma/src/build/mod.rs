@@ -4,6 +4,7 @@ pub mod consts;
 mod errors;
 pub mod graph;
 mod orchestrator;
+mod progress;
 pub mod resolve;
 mod scheduler;
 
@@ -20,8 +21,7 @@ pub fn build_project(module_path: &Path, manifest: &Manifest) -> BuildResult<Bui
     orchestrator.build(manifest)
 }
 
-#[allow(dead_code)]
-pub fn clean_project(module_path: &Path) -> BuildResult<()> {
+pub fn clean_project(module_path: &Path) -> BuildResult<u64> {
     let mut orchestrator = BuildOrchestrator::new(module_path.to_path_buf())?;
     orchestrator.clean()
 }

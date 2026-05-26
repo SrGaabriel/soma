@@ -7,13 +7,16 @@ mod build;
 mod cli;
 mod config;
 mod logging;
+mod style;
 
 fn main() {
     let cli = cli::parse();
-    let _guard = if let Some(log_file) = cli.log_file {
+    cli::init_style(&cli);
+
+    let _guard = if let Some(log_file) = &cli.log_file {
         if log_file.exists() {
             logging::output_err(
-                "Log file already exists. Please remove it or choose a different file.",
+                "log file already exists; please remove it or choose a different file",
             );
             std::process::exit(1);
         }

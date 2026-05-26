@@ -4,16 +4,15 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use colored::Colorize;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, HashCalculator};
 use crate::build::compile::{compile_binary, compile_lib};
 use crate::build::consts::SRC_FOLDER_NAME;
 use crate::build::errors::{BuildError, InternalBuildError};
 use crate::build::graph::BuildNode;
+use crate::build::progress::ProgressDisplay;
 use crate::config::manifest::ManifestModuleType;
+use crate::style::{self, Tone};
 
 #[derive(Debug)]
 pub struct BuildResults {
@@ -189,48 +188,43 @@ impl LayeredBuilder {
         nodes: &HashMap<String, BuildNode>,
         skip_modules: &HashMap<String, (String, String)>,
         cache: &BuildCache,
-        multi_progress: &MultiProgress,
     ) -> BuildResult<HashMap<String, BuildResults>> {
+        let total_to_build: usize = layers
+            .iter()
+            .map(|l| l.iter().filter(|m| !skip_modules.contains_key(*m)).count())
+            .sum();
+
+        let mut display = ProgressDisplay::new(total_to_build);
         let mut results = HashMap::new();
         let mut tarball_paths: HashMap<String, PathBuf> = HashMap::new();
 
         for (layer_idx, layer) in layers.iter().enumerate() {
-            let layer_pb = multi_progress.add(ProgressBar::new(layer.len() as u64));
-            layer_pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                    .unwrap()
-                    .progress_chars("█▓▒░  "),
-            );
-            layer_pb.set_message(format!("Layer {}", layer_idx + 1));
-
-            let mut pending = layer.len();
+            let mut pending = 0usize;
             let mut layer_failed = false;
 
             for module_name in layer {
                 if let Some((source_hash, dep_hash)) = skip_modules.get(module_name) {
-                    layer_pb.set_message(format!(
-                        "Layer {} | {} {}",
-                        layer_idx + 1,
-                        "⚡".yellow(),
-                        module_name.dimmed()
-                    ));
-
                     if let Some(cache_entry) = cache.get(module_name) {
                         tarball_paths.insert(module_name.clone(), cache_entry.tarball_path.clone());
-                        let cached_result = BuildResults {
-                            module_name: module_name.clone(),
-                            success: true,
-                            output_path: Some(cache_entry.tarball_path.clone()),
-                            source_hash: source_hash.clone(),
-                            dependency_hash: dep_hash.clone(),
-                            error: None,
-                        };
-                        results.insert(module_name.clone(), cached_result);
+                        results.insert(
+                            module_name.clone(),
+                            BuildResults {
+                                module_name: module_name.clone(),
+                                success: true,
+                                output_path: Some(cache_entry.tarball_path.clone()),
+                                source_hash: source_hash.clone(),
+                                dependency_hash: dep_hash.clone(),
+                                error: None,
+                            },
+                        );
                     }
-
-                    layer_pb.inc(1);
-                    pending -= 1;
+                    if style::is_verbose() {
+                        display.print_above(&style::format_status(
+                            Tone::Note,
+                            "cached",
+                            module_name,
+                        ));
+                    }
                     continue;
                 }
 
@@ -267,67 +261,56 @@ impl LayeredBuilder {
                     }
                 }
 
+                display.start(module_name, &node.manifest.version);
                 self.scheduler.submit(node, dependency_tarballs)?;
+                pending += 1;
             }
 
             while pending > 0 {
-                if let Some(result) = self.scheduler.receive_result() {
-                    pending -= 1;
-
-                    if result.success {
-                        layer_pb.set_message(format!(
-                            "Layer {} | {} {}",
-                            layer_idx + 1,
-                            "✓".green(),
-                            result.module_name
-                        ));
-                        if let Some(tarball) = &result.output_path {
-                            tarball_paths.insert(result.module_name.clone(), tarball.clone());
-                        }
-                    } else {
-                        layer_pb.set_message(format!(
-                            "Layer {} | {} {}",
-                            layer_idx + 1,
-                            "✗".red(),
-                            result.module_name
-                        ));
-                        if let Some(error) = &result.error {
-                            layer_pb.println(format!("    Error: {error}"));
-                        }
-                        layer_failed = true;
-                    }
-
-                    layer_pb.inc(1);
-                    results.insert(result.module_name.clone(), result);
-                } else {
+                let Some(result) = self.scheduler.receive_result() else {
                     return Err(BuildError::Internal(
                         crate::build::errors::InternalBuildError::FailedToReceiveBuildResult,
                     ));
+                };
+                pending -= 1;
+
+                display.finish(&result.module_name);
+
+                if result.success {
+                    if let Some(tarball) = &result.output_path {
+                        tarball_paths.insert(result.module_name.clone(), tarball.clone());
+                    }
+                    if style::is_verbose() {
+                        display.print_above(&style::format_status(
+                            Tone::Progress,
+                            "compiled",
+                            &result.module_name,
+                        ));
+                    }
+                } else {
+                    if let Some(error) = &result.error {
+                        display.print_above(&style::format_status(
+                            Tone::Error,
+                            "error",
+                            format!("{}: {error}", result.module_name),
+                        ));
+                    }
+                    layer_failed = true;
                 }
+
+                results.insert(result.module_name.clone(), result);
             }
 
-            layer_pb.finish_with_message(format!(
-                "Layer {} {} {}",
-                layer_idx + 1,
-                "✓".green(),
-                "complete".dimmed()
-            ));
-
             if layer_failed {
-                layer_pb.finish_with_message(format!(
-                    "Layer {} {} {}",
-                    layer_idx + 1,
-                    "✗".red(),
-                    "failed".red()
-                ));
+                display.finish_all();
                 self.scheduler.shutdown();
-
                 return Err(BuildError::Internal(
                     InternalBuildError::UnexpectedLayerBuildFailure(layer_idx + 1),
                 ));
             }
         }
 
+        display.finish_all();
         self.scheduler.shutdown();
         Ok(results)
     }

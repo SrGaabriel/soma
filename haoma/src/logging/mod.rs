@@ -1,30 +1,20 @@
-use colored::{Color, Colorize};
+use std::fmt::Display;
 
-pub fn output_err(text: &str) {
-    pretty_print("error", "⛔", colored::Color::Red, text);
-    tracing::error!("{}", text);
+use crate::style;
+
+pub fn output_err(text: impl Display) {
+    let text = text.to_string();
+    style::error(&text);
+    tracing::error!("{text}");
 }
 
 #[allow(dead_code)]
-pub fn output_warning(text: &str) {
-    pretty_print("warn", "⚠️", colored::Color::Yellow, text);
-    tracing::warn!("{}", text);
+pub fn output_warning(text: impl Display) {
+    let text = text.to_string();
+    style::warning(&text);
+    tracing::warn!("{text}");
 }
 
-pub fn output_debug(text: &str) {
-    tracing::debug!("{}", text);
-}
-
-pub fn output_ok(text: &str) {
-    pretty_print("success", "✅", colored::Color::Green, text);
-    tracing::info!("{}", text);
-}
-
-pub fn pretty_print(prefix: &str, emoji: &str, color: Color, text: &str) {
-    println!(
-        "{} {} {}",
-        format!("[{prefix}]").color(color).bold(),
-        emoji,
-        text
-    );
+pub fn output_debug(text: impl Display) {
+    tracing::debug!("{text}");
 }
