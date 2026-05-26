@@ -75,7 +75,7 @@ structure ValueParam where
 structure TypedFunction where
   name : QualifiedName
   params : Array (Soma.Unique × String)
-  valueParams : Array ValueParam := #[]
+  valueParams : Array ValueParam
   body : Expr
   fnType : Value
   closureInfo : Option ClosureInfo

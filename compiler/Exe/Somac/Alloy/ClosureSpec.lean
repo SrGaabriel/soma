@@ -178,6 +178,42 @@ private def buildDerivedParamMap (cfg : ClosedCFG) (paramIds : Std.HashSet Nat)
           | _ => pure ()
   return derivedFrom
 
+/-- Does any local derived from `srcParamId` flow into a position other than a
+    direct closure call, a recursive pass-through at `paramIdx` or an ownership
+    op (`erase`/`clone`)? -/
+private def closureParamEscapes (cfg : ClosedCFG) (derivedFrom : Std.HashMap Nat Nat)
+    (srcParamId : Nat) (origFuncId : FuncId) (paramIdx : Nat) : Bool := Id.run do
+  let isDer (op : Operand) : Bool := match op with
+    | .local lid => derivedFrom.get? lid.id == some srcParamId
+    | _ => false
+  let usesDer (lids : Array LocalId) : Bool :=
+    lids.any fun lid => derivedFrom.get? lid.id == some srcParamId
+  for (_, block) in cfg.blocks.toArray do
+    for stmt in block.stmts do
+      let resultDerived := match stmt.result with
+        | some rid => derivedFrom.get? rid.id == some srcParamId
+        | none => false
+      if resultDerived then continue
+      match stmt.inst with
+      | .callClosure _ args _ =>
+        if args.any isDer then return true
+      | .call fid args _ =>
+        if fid == origFuncId then
+          for i in [:args.size] do
+            if i != paramIdx && isDer args[i]! then return true
+        else if args.any isDer then return true
+      | .callPoly fid _ args _ =>
+        if fid == origFuncId then
+          for i in [:args.size] do
+            if i != paramIdx && isDer args[i]! then return true
+        else if args.any isDer then return true
+      | .erase _ _ => pure ()
+      | .clone _ _ _ => pure ()
+      | other =>
+        if usesDer other.localUses then return true
+    if usesDer block.terminator.localUses then return true
+  return false
+
 /-- Scan a function body for parameters used in callClosure instructions -/
 def findClosureParams (f : ClosedFunc) : Array ClosureParamInfo := Id.run do
   let some cfg := f.body | return #[]
@@ -194,8 +230,9 @@ def findClosureParams (f : ClosedFunc) : Array ClosureParamInfo := Id.run do
           if !found.contains srcParamId then
             for i in [:f.sig.params.size] do
               if f.sig.params[i]!.id.id == srcParamId then
-                result := result.push { paramIdx := i, localId := f.sig.params[i]!.id }
                 found := found.insert srcParamId
+                if !closureParamEscapes cfg derivedFrom srcParamId f.id i then
+                  result := result.push { paramIdx := i, localId := f.sig.params[i]!.id }
       | _ => pure ()
   return result
 

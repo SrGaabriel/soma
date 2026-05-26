@@ -37,6 +37,10 @@ def mapM {a : Type} { b : Type} {m : Type -> Type} {{Monad m}} : (a -> m b) -> [
     | f, (x:xs) => f x >>= (\y -> mapM f xs >>= (\ys -> pure (List::Cons y ys)))
     | _, [] => pure []
 
+def mapM_ {a : Type} { b : Type} {m : Type -> Type} {{Monad m}} : (a -> m b) -> [a] -> m ()
+    | f, (x:xs) => f x >>= (\test -> mapM_ f xs)
+    | _, [] => pure ()
+
 def reverse_acc {a : Type} : [a] -> [a] -> [a]
     | (x:xs), acc => reverse_acc xs (List::Cons x acc)
     | [], acc => acc

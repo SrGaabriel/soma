@@ -1227,7 +1227,7 @@ partial def getOrEmitClosureEntry (funcId : FuncId) : CodegenM String := do
   let sig ← match ← CodegenM.getFuncSig funcId.id with
     | some sig => pure sig
     | none => panic! s!"CODEGEN BUG: missing signature for closure target {funcId}"
-  let params := runtimeParams sig
+  let params := sig.params
   let wrapperName := s!"{funcName}$closure_entry"
   modify fun s => { s with closureEntryCache := s.closureEntryCache.insert funcId.id wrapperName }
 
@@ -1248,8 +1248,9 @@ partial def getOrEmitClosureEntry (funcId : FuncId) : CodegenM String := do
     let mut callArgs : Array (LLVMType × LLVMValue) := #[]
     for h : i in [:params.size] do
       let p := params[i]
-      let argRef := paramRefs[i]!
       let llvmTy := convertTy p.ty
+      if isZeroWidthLLVM p.ty then continue
+      let argRef := paramRefs[i]!
       let argVal ←
         if llvmTy == .ptr then
           pure (.local argRef)
@@ -1339,10 +1340,9 @@ private def initClosureBuffer (closurePtr : LocalRef) (funcRef : FuncRef)
     | none => panic! s!"CODEGEN BUG: missing signature for closure target {funcId}"
   let rtParams := runtimeParams sig
   let envSlotCount := captureCount
-  let closureArity : Nat ← do
-    if rtParams.size < envSlotCount then
-      panic! s!"CODEGEN BUG: closure env captures {envSlotCount} parameter(s), but {funcId} has only {rtParams.size}"
-    pure (rtParams.size - envSlotCount)
+  if rtParams.size < envSlotCount then
+    panic! s!"CODEGEN BUG: closure env captures {envSlotCount} parameter(s) but {funcId} has only {rtParams.size}"
+  let closureArity : Nat := sig.params.size - envSlotCount
   let ps := (← get).ptrSize
   let closureHeaderSize := ps + ps
   -- Store arity (field 0 of closureHeaderTy)
@@ -2497,6 +2497,8 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Optio
   let func? ← CodegenM.getCurrentFunc
 
   let callerActualRetTy := llvmRetOverride.getD (func?.map (fun f => convertRetTy f.sig.retTy) |>.getD .void)
+  let callerParamTys : Option (Array LLVMType) :=
+    func?.map (fun f => (runtimeParams f.sig).map (fun p => convertTy p.ty))
   let tailCallResultId ← if llvmRetOverride.isSome then pure none else match block.terminator with
     | .ret (.local retId) => do
       match block.stmts.back? with
@@ -2508,17 +2510,13 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Optio
             match calleeSig with
             | some sig =>
               let calleeActualRetTy := convertRetTy sig.retTy
-              if callerActualRetTy == calleeActualRetTy then
+              let calleeParamTys := (runtimeParams sig).map (fun p => convertTy p.ty)
+              if callerActualRetTy == calleeActualRetTy
+                  && callerParamTys == some calleeParamTys then
                 pure (some retId.id)
               else
                 pure none
             | none => pure none
-          | .callExtern _ _ callRetTy | .callExternPoly _ _ _ callRetTy =>
-            let calleeActualRetTy := convertRetTy callRetTy
-            if callerActualRetTy == calleeActualRetTy then
-              pure (some retId.id)
-            else
-              pure none
           | _ => pure none
         else
           pure none

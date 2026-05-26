@@ -1,5 +1,7 @@
 use stdlib::program::{get_args}
+use stdlib::collections::{mapM_}
 
 def main : IO () := compose
     bind args <- get_args
+    mapM_ (\arg -> puts (arg)) args
     puts "Hello, World!"

@@ -1,6 +1,5 @@
 use base::prim::{IO, Int32, List, +, <=}
 use base::string::{String}
-use base::io::{pure_io}
 use base::core::{>>=, pure}
 
 @[extern "soma_argc"]

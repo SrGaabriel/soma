@@ -14,7 +14,7 @@ structure ToolPaths where
   zig : String := "zig"
   deriving Inhabited
 
-/-- Default tool paths -/
+/-- A naïve `ToolPaths` populated by name only -/
 def defaultTools : ToolPaths := {}
 
 /-- The C runtime / object-file ABI the host toolchain produces -/
@@ -116,6 +116,42 @@ def runCommand (cmd : String) (args : Array String) (cwd : Option String := none
   let stderr ← proc.stderr.readToEnd
   let exitCode ← proc.wait
   pure { exitCode, stdout, stderr }
+
+def clangCanLink (clang : String) : IO Bool := do
+  let probe := if System.Platform.isOSX then "crt0.o" else "Scrt1.o"
+  let result ← runCommand clang #[s!"-print-file-name={probe}"]
+    |>.catchExceptions fun _ =>
+      pure { exitCode := 1, stdout := "", stderr := "" }
+  if result.exitCode ≠ 0 then return false
+  let printed := result.stdout.trimAscii.toString
+  return printed != probe && !printed.isEmpty
+
+private def systemClangCandidates : Array String :=
+  if System.Platform.isOSX then
+    #["/usr/bin/clang", "/opt/homebrew/bin/clang", "/usr/local/bin/clang"]
+  else if System.Platform.isWindows then
+    #[]
+  else
+    #["/run/current-system/sw/bin/clang", "/usr/bin/clang",
+      "/usr/local/bin/clang", "/etc/profiles/per-user/clang"]
+
+def discoverClang : IO String := do
+  if let some explicit ← IO.getEnv "SOMA_CLANG" then
+    if !explicit.isEmpty then return explicit
+  if let some explicit ← IO.getEnv "CLANG" then
+    if !explicit.isEmpty then return explicit
+
+  if ← clangCanLink "clang" then return "clang"
+
+  for candidate in systemClangCandidates do
+    if ← System.FilePath.pathExists ⟨candidate⟩ then
+      if ← clangCanLink candidate then return candidate
+
+  pure "clang"
+
+def mkToolPaths : IO ToolPaths := do
+  let clang ← discoverClang
+  pure { defaultTools with clang := clang }
 
 /-- Query clang for its default target triple -/
 def detectClangTriple (tools : ToolPaths) : IO String := do

@@ -28,18 +28,26 @@ open Soma.Core (QualifiedName PrimOp FFIOp Intrinsic PrimType)
 
 /-- Mapping from de Bruijn level to bounded type variable index -/
 structure TyVarMapping (n : Nat) where
-  map : Std.HashMap Nat (Fin n)
+  /-- Maps a de Bruijn level of a rigid type variable to its specialization index -/
+  levelMap : Std.HashMap Nat (Fin n)
+  /-- Maps a metavariable id of an unsolved implicit type argument to its specialization idx -/
+  metaMap : Std.HashMap Nat (Fin n) := {}
   deriving Inhabited
 
 namespace TyVarMapping
 
-def empty : TyVarMapping n := ⟨{}⟩
+def empty : TyVarMapping n := ⟨{}, {}⟩
 
+/-- Look up a de Bruijn level -/
 def get? (m : TyVarMapping n) (level : Nat) : Option (Fin n) :=
-  m.map.get? level
+  m.levelMap.get? level
+
+/-- Look up a metavariable id -/
+def getMeta? (m : TyVarMapping n) (metaId : Nat) : Option (Fin n) :=
+  m.metaMap.get? metaId
 
 def insert (m : TyVarMapping n) (level : Nat) (idx : Fin n) : TyVarMapping n :=
-  ⟨m.map.insert level idx⟩
+  { m with levelMap := m.levelMap.insert level idx }
 
 end TyVarMapping
 
@@ -404,7 +412,7 @@ partial def isTypeLevelValue : Value → Bool
   | .vType _ => true
   | .vRowSort | .vLabelSort => true
   | .vPi _ _ _ dom cod =>
-    if dom.isType then
+    if dom.isKind then
       let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩)
       isTypeLevelValue (cod.applyPure neutralArg)
     else false
@@ -516,7 +524,7 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
     let codTy := match cod with
       | .const _ value => convertValueTypeWithMapping value ctx
       | .term closName env _ =>
-        let freshLvl : Nat := ctx.tyVars.map.fold (init := env.level.lvl)
+        let freshLvl : Nat := ctx.tyVars.levelMap.fold (init := env.level.lvl)
           fun acc level _ => max acc (level + 1)
         let dummyArg := Value.vNeutral dom (.nVar ⟨closName, ⟨freshLvl⟩⟩)
         convertValueTypeWithMapping (cod.applyPure dummyArg) ctx
@@ -559,11 +567,17 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
   | Value.vConstructor _ _ _ _ => .rawPtr
   | Value.vRecord row =>
     let fields := extractRowFieldsForStruct row ctx
-    if fields.isEmpty then .rawPtr else .struct fields
+    let kept := fields.filter fun (_, ty) => !Ty.isZeroWidth ty
+    if kept.isEmpty then .rawPtr
+    else if kept.size == 1 then kept[0]!.2
+    else .struct kept
   | Value.vRecordVal fields =>
     let alloyFields := fields.toArray.map fun (name, val) =>
       (name, convertValueTypeWithMapping val ctx)
-    if alloyFields.isEmpty then .rawPtr else .struct alloyFields
+    let kept := alloyFields.filter fun (_, ty) => !Ty.isZeroWidth ty
+    if kept.isEmpty then .rawPtr
+    else if kept.size == 1 then kept[0]!.2
+    else .struct kept
   | Value.vVariant row => .tagged (.prim .u32) (extractRowVariantsWithMapping row ctx)
   | Value.vType _ => .rawPtr
   | Value.vNeutral _ neu =>
@@ -574,11 +588,20 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
         | some idx => .var idx
         | none => .rawPtr
       | .hMeta m =>
-        match ctx.tyVars.get? m.id with
+        match ctx.tyVars.getMeta? m.id with
         | some idx => .var idx
         | none => .rawPtr
       | _ => .rawPtr
-    else .rawPtr
+    else
+      match neu.head with
+      | .hConst qn _ =>
+        if (ctx.inductives.get? qn).isSome || (ctx.primTypes.get? qn.id).isSome then
+          let args := neu.spine.filterMap fun e => match e with
+            | .eApp a => some a
+            | _ => none
+          convertValueTypeWithMapping (.vDataType qn.id args.toList) ctx
+        else .rawPtr
+      | _ => .rawPtr
   | Value.vLabelLit _ => .rawPtr
   | Value.vRowSort => .rawPtr
   | Value.vLabelSort => .rawPtr
@@ -683,11 +706,11 @@ private partial def advanceCodomain (cod : Soma.Core.Closure) (dom : Value) : Va
     let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
     cod.applyPure dummyArg
 
-/-- Strip all leading implicit type parameters (∀ a : Type) from a Value type -/
+/-- Strip all leading implicit type/kind parameters (∀ a : Type, ∀ m : Type → Type) from a Value type -/
 private partial def stripLeadingImplicits (val : Value) : Value :=
   match val with
   | Value.vPi _ binder _ dom cod =>
-    if binder.isImplicit && dom.isType then
+    if binder.isImplicit && dom.isKind then
       stripLeadingImplicits (advanceCodomain cod dom)
     else val
   | _ => val
@@ -696,7 +719,7 @@ private partial def stripLeadingImplicits (val : Value) : Value :=
 private partial def countExplicitPiBinders (val : Value) : Nat :=
   match val with
   | Value.vPi _ binder _ dom cod =>
-    if binder.isImplicit && dom.isType then
+    if binder.isImplicit && dom.isKind then
       countExplicitPiBinders (advanceCodomain cod dom)
     else
       1 + countExplicitPiBinders (advanceCodomain cod dom)
@@ -753,7 +776,7 @@ def buildTyVarMapping (levels : Std.HashSet Nat) : Σ n, TyVarMapping n :=
       (acc.insert lvl ⟨i, h⟩, i + 1)
     else
       (acc, i) -- impossible
-  ⟨n, ⟨map.1⟩⟩
+  ⟨n, ⟨map.1, {}⟩⟩
 
 /-- Build tyVar mapping from a definition's type signature and body -/
 def buildTyVarMappingFromDefinition (graph : CGraph) (def_ : CDefinition)
@@ -762,8 +785,8 @@ def buildTyVarMappingFromDefinition (graph : CGraph) (def_ : CDefinition)
   let ⟨n, baseMapping⟩ := buildTyVarMapping defLevels
   let implicitMap := metaState.implicitLevelMap
   let augmented := implicitMap.fold (init := baseMapping) fun mapping metaId level =>
-    match baseMapping.get? level with
-    | some fin => mapping.insert metaId fin
+    match baseMapping.levelMap.get? level with
+    | some fin => { mapping with metaMap := mapping.metaMap.insert metaId fin }
     | none => mapping
   ⟨n, augmented⟩
 
@@ -785,7 +808,7 @@ partial def extractCallTypeArgs (defTy : Value) (concreteTy : Value)
 private partial def countLeadingImplicits (ty : Value) : Nat :=
   match ty with
   | Value.vPi _ binder _ dom cod =>
-    if binder.isImplicit && dom.isType then
+    if binder.isImplicit && dom.isKind then
       1 + countLeadingImplicits (advanceCodomain cod dom)
     else 0
   | _ => 0
@@ -828,15 +851,18 @@ private partial def bindResolvedArgsGo (ty : Value) (args : Array Value) (idx : 
   else
     match ty with
     | Value.vPi _ binder _ dom cod =>
-      if binder.isImplicit && dom.isType then
-        let next := advanceCodomain cod dom
+      let next := advanceCodomain cod dom
+      if binder.isImplicit && dom.isKind then
         let bindings' := match cod.level? with
           | some lvl =>
             if levels.contains lvl.lvl then bindings.insert lvl.lvl args[idx]!
             else bindings
           | none => bindings
         bindResolvedArgsGo next args (idx + 1) levels bindings'
-      else bindings
+      else if binder.isImplicit then
+        bindResolvedArgsGo next args idx levels bindings
+      else
+        bindings
     | _ => bindings
 
 /-- Convert resolved type arg Values directly to Alloy types -/
@@ -898,7 +924,7 @@ partial def extractParamsUsingMapping (ty : Value) (ctx : TypeConvCtx n)
     | _ => ty
   match unfolded with
   | Value.vPi _ binder name dom cod =>
-    let isTypeParam := binder.isImplicit && dom.isType
+    let isTypeParam := binder.isImplicit && dom.isKind
     match cod with
     | .const _ nextTy =>
       if isTypeParam then
@@ -1133,6 +1159,15 @@ partial def emitCtorOrRecord (tag : Nat) (fieldVals : Array LocalId) (ty : Ty n)
       StateT.lift (lowerCtor tag fieldVals.size fieldVals ty)
   | .prim .unit =>
     StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .u8))) (.prim .unit))
+  | .closure _ _ =>
+    let ls ← StateT.lift get
+    let nonZero := fieldVals.filter fun lid =>
+      match ls.func.getLocalType lid with
+      | some fty => !Ty.isZeroWidth fty
+      | none => true
+    if h : nonZero.size > 0 then pure nonZero[0]
+    else if h2 : fieldVals.size > 0 then pure fieldVals[0]
+    else panic! "emitCtorOrRecord: .closure-typed record with no fields"
   | _ =>
     -- Collapsed single-ctor inductive (for ex Pair-of-World-X => X)
     match (← findMatch) with
@@ -1640,7 +1675,6 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   modify fun s => { s with results := s.results.insert intermediateId.id result }
                 pure (some result)
             else if chain.argPorts.size > defArity && defArity > 0 then
-              -- Over-saturated: call with defArity args, then apply extra args.
               let mut argVals : Array LocalId := #[]
               for argPort in chain.argPorts do
                 let val ← lowerOperandWithMap graph argPort funcIdMap
@@ -1651,17 +1685,28 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               let callRetTy := extractReturnTypeWithMapping chain.baseEntry.ty ctx
               let ls ← StateT.lift get
               let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
+              let typeArgs? :=
+                (graph.getResolvedTypeArgs chain.baseNodeId).bind fun resolved =>
+                  let levelBased := convertResolvedTypeArgs resolved def_.ty ctx
+                  levelBased.orElse fun _ => convertResolvedTypeArgsDirect resolved ctx
               let initResult ← match funcRef with
                 | .local funcId =>
-                  StateT.lift (LowerM.emitInst (.call funcId directArgs callRetTy) callRetTy)
+                  match typeArgs? with
+                  | some typeArgs =>
+                    StateT.lift (LowerM.emitInst (.callPoly funcId typeArgs directArgs callRetTy) callRetTy)
+                  | none =>
+                    StateT.lift (LowerM.emitInst (.call funcId directArgs callRetTy) callRetTy)
                 | .external name | .externC name =>
-                  StateT.lift (LowerM.emitInst (.callExtern name directArgs callRetTy) callRetTy)
+                  match typeArgs? with
+                  | some typeArgs =>
+                    StateT.lift (LowerM.emitInst (.callExternPoly name typeArgs directArgs callRetTy) callRetTy)
+                  | none =>
+                    StateT.lift (LowerM.emitInst (.callExtern name directArgs callRetTy) callRetTy)
                 | _ =>
                   StateT.lift (LowerM.emitInst (.call (FuncId.mk 0) directArgs callRetTy) callRetTy)
-              -- For io_bind-erased chains, the extra args are continuations
               let mut current := initResult
               for extraArg in extraArgs do
-                current ← StateT.lift (LowerM.emitInst (.callClosure extraArg #[.local current] nodeTy) nodeTy)
+                current ← StateT.lift (LowerM.emitInst (.callClosure (.local current) #[extraArg] nodeTy) nodeTy)
               for intermediateId in chain.intermediateAppNodes do
                 modify fun s => { s with results := s.results.insert intermediateId.id current }
               pure (some current)
@@ -1970,8 +2015,14 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         let ls ← StateT.lift get
         let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
         let fnNodeTy := graph.getNode fnPort.node |>.map (·.ty)
-        let typeArgs? := (graph.getDefinition refId).bind fun def_ =>
-          fnNodeTy.bind fun concTy => extractCallTypeArgs def_.ty concTy ctx
+        let typeArgs? := match graph.getResolvedTypeArgs fnPort.node with
+          | some resolved =>
+            let levelBased := (graph.getDefinition refId).bind fun def_ =>
+              convertResolvedTypeArgs resolved def_.ty ctx
+            levelBased.orElse fun _ => convertResolvedTypeArgsDirect resolved ctx
+          | none =>
+            (graph.getDefinition refId).bind fun def_ =>
+              fnNodeTy.bind fun concTy => extractCallTypeArgs def_.ty concTy ctx
         let envFields : Option (Array CPortId) := Id.run do
           let some envPort := entry.getPort ⟨2⟩ | return none
           let some envEntry := graph.getNode envPort.node | return none
@@ -2605,8 +2656,9 @@ def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
     if let some entry := graph.getNode current then
       match entry.node with
       | .lam erased =>
-        if !erased && paramIdx < maxParams then
-          lamParams := lamParams.insert current.id paramIdx
+        if paramIdx < maxParams then
+          if !erased then
+            lamParams := lamParams.insert current.id paramIdx
           paramIdx := paramIdx + 1
         if let some bodyPort := entry.getPort ⟨2⟩ then
           current := bodyPort.node

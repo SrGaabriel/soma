@@ -133,6 +133,9 @@ partial def copySubgraph (rootId : NodeId) : ReduceM PortId := do
             pure (Node.sup newLabel)
         | other => pure other
       let newId ← ReduceM.addNode newNode entry.ty
+      -- Carry intrinsic resolved type args onto the copy so polymorphic call/reference heads stay specializable after instantiation/duplication
+      if !entry.typeArgs.isEmpty then
+        ReduceM.modifyGraph (·.setResolvedTypeArgs newId entry.typeArgs)
       idMap := idMap.insert oldId.id newId
     | none => pure ()
 

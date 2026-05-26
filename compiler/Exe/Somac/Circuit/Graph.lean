@@ -25,6 +25,8 @@ structure NodeEntry where
   ports : Array (Option PortId)
   /-- Type of the value at the principal port (from elaboration) -/
   ty : Value
+  /-- Resolved type arguments for a polymorphic call/reference head (REF/ALO) -/
+  typeArgs : Array Value := #[]
   deriving Inhabited
 
 namespace NodeEntry
@@ -103,8 +105,6 @@ structure Graph where
   strings : Std.HashMap String Nat := {}
   /-- Next string index -/
   nextStringIdx : Nat := 0
-  /-- Resolved type arguments per call site -/
-  resolvedTypeArgs : Std.HashMap Nat (Array Value) := {}
   deriving Inhabited
 
 namespace Graph
@@ -124,14 +124,6 @@ def setReducibility (g : Graph) (bookIdx : Nat) (r : Reducibility) : Graph :=
     let d := g.book[bookIdx]
     { g with book := g.book.set bookIdx { d with reducibility := r } }
   else g
-
-/-- Store resolved type arguments for a call site node -/
-def setResolvedTypeArgs (g : Graph) (nodeId : NodeId) (typeArgs : Array Value) : Graph :=
-  { g with resolvedTypeArgs := g.resolvedTypeArgs.insert nodeId.id typeArgs }
-
-/-- Get resolved type arguments for a call site node -/
-def getResolvedTypeArgs (g : Graph) (nodeId : NodeId) : Option (Array Value) :=
-  g.resolvedTypeArgs.get? nodeId.id
 
 /-- Allocate a fresh node ID -/
 def freshNodeId (g : Graph) : NodeId × Graph :=
@@ -190,6 +182,16 @@ def updateNode (g : Graph) (nid : NodeId) (f : NodeEntry → NodeEntry) : Graph 
   match g.nodes.get? nid.id with
   | some entry => { g with nodes := g.nodes.insert nid.id (f entry) }
   | none => g
+
+/-- Store resolved type arguments on a call/reference node, intrinsically -/
+def setResolvedTypeArgs (g : Graph) (nodeId : NodeId) (typeArgs : Array Value) : Graph :=
+  g.updateNode nodeId (fun e => { e with typeArgs := typeArgs })
+
+/-- Get resolved type arguments for a call/reference node (none if unset) -/
+def getResolvedTypeArgs (g : Graph) (nodeId : NodeId) : Option (Array Value) :=
+  match g.getNode nodeId with
+  | some e => if e.typeArgs.isEmpty then none else some e.typeArgs
+  | none => none
 
 /-- Remove a node from the graph -/
 def removeNode (g : Graph) (nid : NodeId) : Graph :=

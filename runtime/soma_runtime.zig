@@ -779,19 +779,14 @@ pub export fn soma_proj1(sup_val: SomaValue) SomaValue {
 const SOMA_MAX_CALL_ARGS: comptime_int = 16;
 
 fn CallFnType(comptime n: comptime_int) type {
-    var params: [n]std.builtin.Type.Fn.Param = undefined;
-    inline for (&params) |*p| p.* = .{
-        .is_generic = false,
-        .is_noalias = false,
-        .type = ?*anyopaque,
-    };
-    return @Type(.{ .@"fn" = .{
-        .calling_convention = .c,
-        .is_generic = false,
-        .is_var_args = false,
-        .return_type = ?*anyopaque,
-        .params = &params,
-    } });
+    const param_types = [_]type{?*anyopaque} ** n;
+    const param_attrs = [_]std.builtin.Type.Fn.Param.Attributes{.{}} ** n;
+    return @Fn(
+        &param_types,
+        &param_attrs,
+        ?*anyopaque,
+        .{ .@"callconv" = .c },
+    );
 }
 
 fn somaCallWithArgs(fn_ptr: ?*anyopaque, args: [*]const ?*anyopaque, nargs: u32) ?*anyopaque {

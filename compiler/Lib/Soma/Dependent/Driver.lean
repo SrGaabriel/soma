@@ -307,7 +307,6 @@ def withSignaturePrefixBindingsFull
     (span : Span) (action : TCM α)
     : TCM (Array (Soma.Unique × String)
         × Array Soma.Core.ValueParam × α) := do
-  let mut explicitBindings : Array (Soma.Unique × String) := #[]
   let mut allBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo × Soma.Core.Quantity) := #[]
   let mut valueBindings : Array Soma.Core.ValueParam := #[]
   let mut eIdx : Nat := 0
@@ -322,7 +321,6 @@ def withSignaturePrefixBindingsFull
       allBindings := allBindings.push (bindingId, paramName, .explicit, qty)
       valueBindings := valueBindings.push
         { uid := bindingId, name := paramName, binder := .explicit, type := ty }
-      explicitBindings := explicitBindings.push (bindingId, paramName)
       eIdx := eIdx + 1
   let rec go (idx : Nat) : TCM α := do
     if idx >= allBindings.size then
@@ -337,7 +335,10 @@ def withSignaturePrefixBindingsFull
         else
           go (idx + 1)
   let result ← go 0
-  return (explicitBindings, valueBindings, result)
+  let runtimeBindings : Array (Soma.Unique × String) := valueBindings.filterMap fun vp =>
+    if vp.binder.isImplicit && vp.type.isKind then none
+    else some (vp.uid, vp.name)
+  return (runtimeBindings, valueBindings, result)
 
 /-- Elaborate a function type signature -/
 def elaborateFunctionType (sigSyntax : Syntax.Expr) : TCM Value := do
@@ -473,13 +474,13 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       let runBodyCheck : TCM Soma.Core.Expr :=
         TCM.withOrigin (.returnType fn.name.display body.span) <|
           TCM.infallible (Soma.Dependent.checkSyntax body resultType) default
-      let (generatedParams, valueParams, typedBody) ← withSignaturePrefixBindingsFull allParams fn.paramNames span do
+      let (generatedParams, valueParams, zonkedBody) ← withSignaturePrefixBindingsFull allParams fn.paramNames span do
         let bodyExpr ← if bodyIsProof then TCM.inErasedContext runBodyCheck else runBodyCheck
         Soma.Dependent.drainConstraints
-        pure bodyExpr
+        zonkExpr bodyExpr
       let declaredType' ← zonkValue declaredType
       reportUnsolvedMetas declaredType' span
-      let typedBody' := (← zonkExpr typedBody).betaReduce
+      let typedBody' := zonkedBody.betaReduce
       Soma.Dependent.zonkLocalTypesInPlace
       let declaredType'' ← expandAbbrevValue declaredType'
       return (declaredType'', typedBody', generatedParams, valueParams, false)
@@ -491,15 +492,14 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       | none =>
         TCM.freshMetaVal (.vType .zero)
           (displayHint := some s!"type:{param.name}")
-    -- Extend context with parameters and infer body type
-    let (generatedParams, (inferredType, typedBody)) ← withFunctionParams fn.params paramTypes span do
-      TCM.infallibleExpr (Soma.Dependent.inferSyntax fn.body) span
-    -- Solve pending instance constraints before zonking
-    Soma.Dependent.drainConstraints
-    -- Zonk all solved metas so downstream passes see concrete types
+    let (generatedParams, (inferredType, zonkedBody)) ← withFunctionParams fn.params paramTypes span do
+      let (inferredType, typedBody) ← TCM.infallibleExpr (Soma.Dependent.inferSyntax fn.body) span
+      Soma.Dependent.drainConstraints
+      let zonked ← zonkExpr typedBody
+      pure (inferredType, zonked)
     let inferredType' ← zonkValue inferredType
     reportUnsolvedMetas inferredType' span
-    let typedBody' := (← zonkExpr typedBody).betaReduce
+    let typedBody' := zonkedBody.betaReduce
     Soma.Dependent.zonkLocalTypesInPlace
     -- Expand parameterized type abbreviations so downstream passes see real types
     let inferredType'' ← expandAbbrevValue inferredType'
@@ -547,9 +547,15 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
       let fname := fieldNm i
       let uid ← TCM.freshLocalId fname
       TCM.withBinding fname uid fieldVal qty bi Span.uninhabited do
-        let inner ← processFields (i + 1) paramVals
+        let act := processFields (i + 1) paramVals
+        let inner ←
+          if bi == .instance_ then
+            Soma.Dependent.withLocalInstanceForBoundDict fname uid fieldVal Span.uninhabited act
+          else act
         pure (.pi qty bi fname fieldExpr inner)
     else
+      let report ← Soma.Dependent.solveConstraintsSoft
+      report.allowPostponed
       resultExpr (N + M) paramVals
   termination_by fieldTypeSyntax.size - i
 
@@ -582,8 +588,6 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName)
         else act
     else
       let body ← processFields 0 paramVals
-      let report ← Soma.Dependent.solveConstraintsSoft
-      report.allowPostponed
       pure (body, kindExprs)
   termination_by typeVarBinders.size - i
   let (innerBody, paramKindExprs) ← processBinders 0 #[] #[]
@@ -1315,21 +1319,35 @@ def buildGlobals
 
   for typeClass in module.typeClasses do
     let dirty := isDirty typeClass.name.display
+    let superOffset := typeClass.superclasses.size
     for h : i in [:typeClass.methodSignatures.size] do
       let (methodName, methodTypeSyntax) := typeClass.methodSignatures[i]
-      globals ← registerMethod globals typeClass methodName methodTypeSyntax i prevGlobals dirty
+      globals ← registerMethod globals typeClass methodName methodTypeSyntax (superOffset + i) prevGlobals dirty
 
   for typeClass in module.typeClasses do
     let classNameStr := typeClass.name.display
     let dirty := isDirty classNameStr
-    let methodFieldNames := typeClass.methodSignatures.map (·.1.display)
+    let mut superFieldSpecs : Array (String × Soma.Syntax.Expr) := #[]
+    for (_, cstr) in typeClass.superclasses do
+      match globals.resolve ns cstr.className.path cstr.className.name with
+      | some superQN =>
+        let head : Soma.Syntax.Expr := .con cstr.className
+        let tyExpr := cstr.args.foldl
+          (fun acc a => Soma.Syntax.Expr.app acc a cstr.span) head
+        superFieldSpecs := superFieldSpecs.push
+          (s!"$super_{superQN.id.original}", tyExpr)
+      | none =>
+        TCM.addError (.unknownClass cstr.className.name cstr.span)
+    let superFieldNames := superFieldSpecs.map (·.1)
+    let methodFieldNames := superFieldNames ++ typeClass.methodSignatures.map (·.1.display)
     let typeVarNames := typeClass.params.map (·.name.name)
     if let some classQN := globals.resolve ns #[] classNameStr then
-      -- Class methods are always at runtime (no erasure), so the
-      -- parallel quantity array is uniform `.omega`.
       let methodFieldQuantities := methodFieldNames.map fun _ => Soma.Core.Quantity.omega
       globals := globals.registerInductive classQN .record typeVarNames methodFieldNames methodFieldQuantities
       let fields : Array Soma.Core.RecordFieldDef :=
+        -- Superclass dictionaries are `.instance_` fields
+        (superFieldSpecs.map fun (nm, tyExpr) =>
+          { name := some nm, type := tyExpr, binderInfo := .instance_ }) ++
         typeClass.methodSignatures.map fun (name, ty) =>
           { name := some name.display, type := ty }
       let ctorName ← do
@@ -1343,7 +1361,7 @@ def buildGlobals
         | none =>
           let u ← TCM.freshUnique "New"
           pure ⟨u⟩
-      globals ← registerRecordConstructor globals typeClass.name typeClass.binders ctorName fields prevGlobals dirty
+      globals ← registerRecordConstructor globals typeClass.name typeClass.params ctorName fields prevGlobals dirty
 
   globals ← indexWiredRoles module globals
   -- Functions and theorems

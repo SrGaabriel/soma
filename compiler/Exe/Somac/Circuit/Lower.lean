@@ -40,6 +40,17 @@ structure VarAlloc where
   erased : Bool := false
   deriving Inhabited
 
+/-- One binder of the lowering's de Bruijn context -/
+structure DbSlot where
+  /-- Key into `LowerCtx.bindings` for this binder's owned port and DUP state -/
+  allocId : Unique
+  /-- Neutral standing for this binder at its de Bruijn level (type evaluation) -/
+  neutral : Value
+  /-- The binder's type -/
+  ty : Value
+  erased : Bool := false
+  deriving Inhabited
+
 /-- Look up the canonical `Value` for a wired-in primitive type by kind -/
 private def wiredPrimTy (globals : Soma.Core.GlobalEnv) (p : Soma.Core.PrimType) : Value :=
   globals.primTypeValue? p |>.getD (.vType .zero)
@@ -135,27 +146,13 @@ structure LowerCtx where
   pairCtorTag? : Option Nat := none
   /-- The current "World" port for the IO function being lowered -/
   currentWorld? : Option PortId := none
-  /-- Types of de Bruijn-bound variables in scope, ordered outermost first -/
-  bvarCtx : Array Value := #[]
-  /-- Evaluation environment paired with `bvarCtx` -/
-  bvarEnv : Soma.Core.Env := .empty
+  /-- The de Bruijn variable context -/
+  dbStack : Array DbSlot := #[]
   deriving Inhabited
 
 namespace LowerCtx
 
 def empty : LowerCtx := {}
-
-/-- Register an ownership-based variable binding -/
-def bindVarOwned (ctx : LowerCtx) (id : Unique) (name : String)
-    (source : PortId) (remaining : Nat) (ty : Value)
-    (erased : Bool := false) : LowerCtx :=
-  { ctx with bindings := ctx.bindings.insert id ⟨source, remaining, name, ty, erased⟩ }
-
-/-- Check if a binding is erased -/
-def isBindingErased (ctx : LowerCtx) (id : Unique) : Bool :=
-  match ctx.bindings.get? id with
-  | some alloc => alloc.erased
-  | none => false
 
 /-- Register a global function -/
 def registerGlobal (ctx : LowerCtx) (name : QualifiedName) (idx : Nat) : LowerCtx :=
@@ -413,52 +410,6 @@ def buildDupChain (sourcePort : PortId) (n : Nat) (ty : Value) : LowerM (Array P
     usePorts := usePorts.push chainPort
     pure (usePorts, false)
 
-/-- Increment usage count in a map -/
-private def usageInc (m : Std.HashMap Unique Nat) (id : Unique) (k : Nat := 1) : Std.HashMap Unique Nat :=
-  m.insert id (m.getD id 0 + k)
-
-/-- Pointwise addition of two usage maps -/
-private def usageAdd (a b : Std.HashMap Unique Nat) : Std.HashMap Unique Nat :=
-  b.fold (init := a) fun acc id cnt => usageInc acc id cnt
-
-/-- Structural usage count for Core expressions (additive over syntax tree) -/
-partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
-  match e with
-  | .fvar u _ => usageInc {} u
-  | .app fn arg => usageAdd (countUsesExpr fn) (countUsesExpr arg)
-  | .lam _ _ _ body => countUsesExpr body
-  | .construct _ _ args _
-  | .inject _ args _
-  | .array args _ =>
-    args.foldl (init := {}) fun acc arg => usageAdd acc (countUsesExpr arg)
-  | .if_ cond then_ else_ =>
-    usageAdd (countUsesExpr cond) (usageAdd (countUsesExpr then_) (countUsesExpr else_))
-  | .«case» scruts _ arms =>
-    let scrutUses := scruts.foldl (init := {}) fun acc s => usageAdd acc (countUsesExpr s)
-    let armUses := arms.foldl (init := {}) fun acc arm => usageAdd acc (countUsesExpr arm.body)
-    usageAdd scrutUses armUses
-  | .fieldAccess expr _ _
-  | .ann expr _ => countUsesExpr expr
-  | .record fields
-  | .recordUpdate (.record fields) #[] =>
-    fields.foldl (init := {}) fun acc (_, expr) => usageAdd acc (countUsesExpr expr)
-  | .recordUpdate base updates =>
-    let baseUses := countUsesExpr base
-    let updUses := updates.foldl (init := {}) fun acc (_, expr) => usageAdd acc (countUsesExpr expr)
-    usageAdd baseUses updUses
-  | .tuple elems =>
-    elems.foldl (init := {}) fun acc expr => usageAdd acc (countUsesExpr expr)
-  | .closure _ captures _ =>
-    captures.foldl (init := {}) fun acc cap => usageAdd acc (countUsesExpr cap)
-  | .let_ _ _ val body => usageAdd (countUsesExpr val) (countUsesExpr body)
-  | .panic _
-  | .lit _
-  | .const _ _
-  | .sort _ | .pi _ _ _ _ _
-  | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
-  | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
-  | .mvar _ | .bvar _ | .proj _ _ _ | .tyvar _ _ => {}
-
 namespace LowerM
 
 /-- Consume one use of a variable, lazily inserting DUP at the current split site -/
@@ -487,6 +438,37 @@ def consumeVar (id : Unique) : LowerM (Option (PortId × Value)) := do
       }
       setCtx { ctx with bindings := ctx.bindings.insert id updated }
       pure (some (usePort, alloc.ty))
+
+/-- Allocate a binder in the DUP machinery and push it onto the de Bruijn context -/
+def pushDbBinder (name : String) (ty neutral : Value) (port : PortId)
+    (remaining : Nat) (erased : Bool) : LowerM Unique := do
+  let ctx ← getCtx
+  let (allocId, ctx') := ctx.freshSyntheticUnique name
+  let alloc : VarAlloc := ⟨port, remaining, name, ty, erased⟩
+  let slot : DbSlot := ⟨allocId, neutral, ty, erased⟩
+  setCtx { ctx' with bindings := ctx'.bindings.insert allocId alloc,
+                     dbStack := ctx'.dbStack.push slot }
+  pure allocId
+
+/-- Enter a binder -/
+def withDbBinder (name : String) (ty neutral : Value) (port : PortId)
+    (remaining : Nat) (erased : Bool) (body : LowerM α) : LowerM α := do
+  let _ ← pushDbBinder name ty neutral port remaining erased
+  let r ← body
+  modifyCtx (fun c => { c with dbStack := c.dbStack.pop })
+  pure r
+
+/-- Resolve a de Bruijn term variable to its owned port (DUP-aware) -/
+def lowerBVar (idx : Nat) : LowerM (Option PortId) := do
+  let ctx ← getCtx
+  let n := ctx.dbStack.size
+  if idx < n then
+    let slot := ctx.dbStack[n - idx - 1]!
+    if slot.erased then pure none
+    else match ← consumeVar slot.allocId with
+      | some (port, _) => pure (some port)
+      | none => pure none
+  else pure none
 
 /-- Produce an erased runtime placeholder for a computationally absent term -/
 def erasedRuntimePort : LowerM PortId := do
@@ -614,18 +596,6 @@ def lowerLiteral (lit : Literal) (targetTy? : Option Value := none) : LowerM Por
 
     pure (PortId.principal stringNode)
 
-/-- Lower a variable reference -/
-def lowerVar (bindingId : Unique) : LowerM (Option PortId) := do
-  let ctx ← LowerM.getCtx
-  if ctx.isBindingErased bindingId then
-    pure none
-  else
-    match ← LowerM.consumeVar bindingId with
-    | some (port, _ty) =>
-      pure (some port)
-    | none =>
-      pure none
-
 /-- Convert a PrimOp to an Op1Code for unary operations -/
 def primOpToOp1Code : PrimOp → Option Op1Code
   | .not => some .not
@@ -714,12 +684,17 @@ private partial def getCoreExprPrimOp (e : Soma.Core.Expr) : LowerM (Option Prim
     getCoreExprPrimOp fn
   | _ => pure none
 
+private def isErasedBVar (ctx : LowerCtx) (i : Nat) : Bool :=
+  let n := ctx.dbStack.size
+  if i < n then ctx.dbStack[n - i - 1]!.erased else false
+
 /-- Check if a Core.Expr is syntactically type-level -/
-private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
+private def isCoreTypeLevelExpr (ctx : LowerCtx) : Soma.Core.Expr → Bool
   | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
-  | .mvar _ | .bvar _ => true
+  | .mvar _ => true
+  | .bvar i => isErasedBVar ctx i
   | _ => false
 
 /-- Check if a Soma value is a type/row/label sort -/
@@ -731,7 +706,7 @@ private def isTypeSort (v : Value) : Bool :=
 /-- Runtime erasure for an application argument derived from the elaborated Pi binder -/
 private def isRuntimeErasedBinder (ctx : LowerCtx) (qty : Quantity)
     (_binder : Soma.Core.BinderInfo) (dom : Value) : Bool :=
-  qty == .zero || isTypeSort (unfoldValue dom ctx.abbrevEnv)
+  qty == .zero || Value.isKind (unfoldValue dom ctx.abbrevEnv)
 
 /-- Count binders that survive into runtime calling convention -/
 private partial def runtimeArityFull (ctx : LowerCtx) (ty : Value) : Nat :=
@@ -753,7 +728,16 @@ private def isCoreTypeLevelArg (ctx : LowerCtx) : Soma.Core.Expr → Bool
     match ctx.metaState.lookup id with
     | some info => isTypeSort info.type
     | none => false
+  | .bvar i => isErasedBVar ctx i
   | e => Soma.Core.Expr.isTypeLevelExpr e
+
+/-- Neutral evaluation environment for the current de Bruijn context -/
+def LowerCtx.bvarEnv (ctx : LowerCtx) : Soma.Core.Env :=
+  ctx.dbStack.foldl (fun env slot => env.extend "_db" slot.neutral) Soma.Core.Env.empty
+
+/-- Binder types of the current de Bruijn context -/
+def LowerCtx.bvarCtx (ctx : LowerCtx) : Array Value :=
+  ctx.dbStack.map (·.ty)
 
 /-- Compute the type of a Core expression -/
 def getExprType (e : Soma.Core.Expr) : LowerM Value := do
@@ -772,10 +756,6 @@ def evalExprToValue (e : Soma.Core.Expr) : LowerM Value := do
     metas := ctx.metaState
   }
   pure (Soma.Core.evalCoreExpr evalCtx e)
-
-/-- Lower a Core.Expr variable (fvar) by looking up its Unique.id in the bindings map -/
-private def lowerCoreVar (u : Unique) : LowerM (Option PortId) := do
-  lowerVar u
 
 /-- Reserved ctor tag for panic nodes in the Circuit encoding -/
 private def panicTag : Nat := 0xFFFF
@@ -798,7 +778,10 @@ mutual
 partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option PortId) := do
   let ty := resolveMetas ty (← LowerM.getCtx).metaState
   match e with
-  | .fvar u _ => lowerCoreVar u
+  | .bvar i => LowerM.lowerBVar i
+
+  | .fvar _ _ =>
+    panic! s!"Circuit lowering: unexpected free variable in closed de Bruijn body ({e.toDebugString})"
 
   | .lit lit => some <$> lowerLiteral lit (some ty)
 
@@ -858,25 +841,25 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
     | none =>
       panic! s!"Circuit lowering found unknown runtime metavariable ?{id.id}"
 
-  | .let_ _name _ty val body => do
-    -- Open the body by replacing bvar(0) with an fvar, then lower as a bound variable
-    let letUnique ← LowerM.freshSyntheticUnique _name
-    let fvarBody := Soma.Core.Expr.instantiate body (Soma.Core.Expr.fvar letUnique _ty)
-    let annotationTy := Soma.Core.evalClosed _ty
-    let usageCount := fvarBody.countFVar letUnique
+  | .let_ name tyExpr val body => do
+    let annotationTy ← evalExprToValue tyExpr
+    let usageCount := body.countRuntimeBVar 0
+    let neutral := Value.vNeutral annotationTy
+      (.nVar ⟨name, ⟨(← LowerM.getCtx).dbStack.size⟩⟩)
     let valPort? ← lowerCoreExpr val annotationTy
     match valPort? with
     | none =>
-      -- val is type-level (erased) so we just lower the body directly
-      lowerCoreExpr fvarBody ty
+      -- val is type-level (erased): the binder has no runtime port
+      LowerM.withDbBinder name annotationTy neutral (← LowerM.erasedRuntimePort) 0 true
+        (lowerCoreExpr body ty)
     | some valPort =>
       let valTy ← do
         match ← LowerM.liftGraph (get >>= fun g => pure (g.getNode valPort.node)) with
         | some entry => pure entry.ty
         | none => pure annotationTy
       if usageCount == 0 then
-        -- Emit a USE node to force evaluation of the value before continuing with the body
-        let bodyPort? ← lowerCoreExpr fvarBody ty
+        let bodyPort? ← LowerM.withDbBinder name valTy neutral (← LowerM.erasedRuntimePort) 0 true
+          (lowerCoreExpr body ty)
         match bodyPort? with
         | none =>
           -- Body is type-level: still force val for effects
@@ -890,16 +873,15 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
           LowerM.connect ⟨useNode, ⟨2⟩⟩ bodyPort
           pure (some (PortId.principal useNode))
       else
-        LowerM.modifyCtx fun ctx =>
-          ctx.bindVarOwned letUnique _name valPort usageCount valTy false
-        lowerCoreExpr fvarBody ty
+        LowerM.withDbBinder name valTy neutral valPort usageCount false
+          (lowerCoreExpr body ty)
 
   -- Type-level constructs (erased at runtime)
   | .sort _ | .pi _ _ _ _ _
   | .rowSort | .labelSort | .rowEmpty
   | .rowExtend _ _ _ | .recordTy _ | .variantTy _
   | .labelLit _ | .dataTy _ _
-  | .bvar _ | .tyvar _ _ =>
+  | .tyvar _ _ =>
     pure none
 
 /-- Lower a Core.Expr function application -/
@@ -912,7 +894,7 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
     | _ => (e, args)
   let (baseFn, allArgs) := collectAppSpine fn #[arg]
 
-  if isCoreTypeLevelExpr baseFn then
+  if isCoreTypeLevelExpr (← LowerM.getCtx) baseFn then
     return none
 
   match baseFn with
@@ -1060,32 +1042,25 @@ partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
 /-- Lower a Core.Expr lambda -/
 partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
     (body : Soma.Core.Expr) (ty : Value) : LowerM PortId := do
-  -- The body uses bvar(0) for the lambda parameter (locally nameless).
-  let paramUnique ← LowerM.freshSyntheticUnique name
-  let paramTyExpr := match ty.piDomain? with
-    | some d => Soma.Core.quoteExpr0 d
-    | none => .sort .zero
-  let openBody := Soma.Core.Expr.instantiate body (.fvar paramUnique paramTyExpr)
-
   let paramTy := match ty.piDomain? with
     | some d => d
     | none => panic! s!"lowerCoreLam: expected Pi type for parameter, got {ty}"
 
-  let paramNeutral := Value.vNeutral paramTy (.nVar ⟨name, ⟨paramUnique.id⟩⟩)
+  let paramNeutral := Value.vNeutral paramTy
+    (.nVar ⟨name, ⟨(← LowerM.getCtx).dbStack.size⟩⟩)
   let codomainTy := match ty.piApply paramNeutral with
     | some t => t
     | none => panic! s!"lowerCoreLam: expected Pi type for codomain, got {ty}"
 
-  let usageCount := (countUsesExpr openBody).getD paramUnique 0
+  let usageCount := body.countRuntimeBVar 0
   let erased := usageCount == 0
   let lam ← LowerM.addNode (.lam erased) ty
   let varPort : PortId := ⟨lam, ⟨1⟩⟩
-  LowerM.modifyCtx fun ctx =>
-    ctx.bindVarOwned paramUnique name varPort usageCount paramTy erased
   if erased then
     LowerM.eraseParamPort varPort
 
-  let bodyPort? ← lowerCoreExpr openBody codomainTy
+  let bodyPort? ← LowerM.withDbBinder name paramTy paramNeutral varPort usageCount erased
+    (lowerCoreExpr body codomainTy)
   let bodyPort ← match bodyPort? with
     | some port => pure port
     | none => LowerM.erasedRuntimePort
@@ -1128,8 +1103,15 @@ partial def lowerCoreIf (cond then_ else_ : Soma.Core.Expr) (ty : Value)
   match condPort? with
   | none => pure none
   | some condPort =>
-    let thenUses := countUsesExpr then_
-    let elseUses := countUsesExpr else_
+    let dbStack := (← LowerM.getCtx).dbStack
+    let mut thenUses : Std.HashMap Unique Nat := {}
+    let mut elseUses : Std.HashMap Unique Nat := {}
+    for p in [:dbStack.size] do
+      let slot := dbStack[p]!
+      if slot.erased then continue
+      let dbIndex := dbStack.size - 1 - p
+      thenUses := thenUses.insert slot.allocId (then_.countRuntimeBVar dbIndex)
+      elseUses := elseUses.insert slot.allocId (else_.countRuntimeBVar dbIndex)
     let (thenCtx, elseCtx, contCtx) ← LowerM.splitIfContexts thenUses elseUses
 
     let savedCtx ← LowerM.getCtx
@@ -1189,19 +1171,16 @@ partial def lowerCoreCase (scruts : Array Soma.Core.Expr) (arms : Array Soma.Cor
     let matrix := PatternMatch.buildMatrixFromArms simplifyCtx arms
     let tree := PatternMatch.compileMatrix matrix ctx.ctorTypeRegistry scrutTypes
 
-    -- Compute additive usage counts from arm bodies for split-site DUP placement.
-    -- The usageMap uses max-counting across branches (suitable for
-    -- binding-site placement), but split-site placement needs the total uses across
-    -- ALL branches so that splitIfContexts can distribute copies to each branch.
     let mut splitSiteUsages : UsageMap := {}
     for arm in arms do
       let bindingIds := arm.patterns.foldl
         (fun acc p => acc ++ p.collectBindingIds) #[]
-      let openedBody := bindingIds.foldr
-        (fun uid body => body.instantiate (.fvar uid (.sort (.lit 0)))) arm.body
-      let armUses := countUsesExpr openedBody
-      for (id, count) in armUses.toList do
-        splitSiteUsages := splitSiteUsages.insert id (splitSiteUsages.getD id 0 + count)
+      let numBindings := bindingIds.size
+      for k in [:numBindings] do
+        let uid := bindingIds[k]!
+        let dbIndex := numBindings - 1 - k
+        let count := arm.body.countRuntimeBVar dbIndex
+        splitSiteUsages := splitSiteUsages.insert uid (splitSiteUsages.getD uid 0 + count)
 
     let result ← PatternMatch.lower tree scrutPorts scrutTypes ctx.ctorTypeRegistry ty
       (fun armIndex armCtx => lowerCoreArmBodyByIndex arms armIndex armCtx)
@@ -1213,26 +1192,28 @@ where
       (armCtx : PatternMatch.ArmContext) : LowerM PortId := do
     if h : idx < arms.size then
       let arm := arms[idx]
-      -- Open the arm body: instantiate bvars with fvars matching the pattern binding IDs.
-      -- The arm body uses locally-nameless binding (bvars for pattern bindings), while
-      -- the Circuit IR lowering resolves variables by fvar Unique IDs
       let bindingIds := arm.patterns.foldl
         (fun acc p => acc ++ p.collectBindingIds) #[]
-      let bindingTypes : Std.HashMap Unique Value := armCtx.bindings.foldl
-        (init := {}) fun m (id, _, _, _, ty) => m.insert id ty
-      let openedBody := bindingIds.foldr
-        (fun uid body =>
-          let tyExpr := match bindingTypes.get? uid with
-            | some ty => Soma.Core.quoteExpr ⟨0⟩ ty
-            | none => .sort (.lit 0)
-          body.instantiate (.fvar uid tyExpr)) arm.body
-      -- Install bindings from armCtx into the context
-      for (bindingId, name, source, useCount, varTy) in armCtx.bindings do
-        let erased := useCount == 0
-        LowerM.modifyCtx fun ctx =>
-          ctx.bindVarOwned bindingId name source useCount varTy erased
-      -- Lower the arm body
-      match ← lowerCoreExpr openedBody ty with
+      let armBindingMap : Std.HashMap Unique (PortId × Nat × Value) :=
+        armCtx.bindings.foldl (init := {}) fun m (id, _, source, useCount, varTy) =>
+          m.insert id (source, useCount, varTy)
+      let baseDbSize := (← LowerM.getCtx).dbStack.size
+      let unit := (← LowerM.getCtx).unitTy
+      let rec go (k : Nat) : LowerM (Option PortId) := do
+        if hk : k < bindingIds.size then
+          let uid := bindingIds[k]
+          let level : Soma.Core.DeBruijnLvl := ⟨baseDbSize + k⟩
+          match armBindingMap.get? uid with
+          | some (source, useCount, varTy) =>
+            let neutral := Value.vNeutral varTy (.nVar ⟨uid.original, level⟩)
+            LowerM.withDbBinder uid.original varTy neutral source useCount (useCount == 0) (go (k + 1))
+          | none =>
+            let neutral := Value.vNeutral unit (.nVar ⟨uid.original, level⟩)
+            let eraPort ← LowerM.erasedRuntimePort
+            LowerM.withDbBinder uid.original unit neutral eraPort 0 true (go (k + 1))
+        else
+          lowerCoreExpr arm.body ty
+      match ← go 0 with
       | some port => pure port
       | none =>
         let era ← LowerM.addNode .era ty
@@ -1346,14 +1327,21 @@ partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
     (captures : Array Soma.Core.Expr) (ty : Value) : LowerM (Option PortId) := do
   let fnPort ← lowerGlobal fnName ty
 
-  -- Lower captures
+  let ctxCap ← LowerM.getCtx
+  let mut typeArgVals : Array Value := #[]
   let mut capturePairs : Array (PortId × Value) := #[]
   for cap in captures do
-    let capTy ← getExprType cap
-    let port? ← lowerCoreExpr cap capTy
-    match port? with
-    | some port => capturePairs := capturePairs.push (port, capTy)
-    | none => pure ()
+    if isCoreTypeLevelArg ctxCap cap then
+      typeArgVals := typeArgVals.push (← evalExprToValue cap)
+    else
+      let capTy ← getExprType cap
+      let port? ← lowerCoreExpr cap capTy
+      match port? with
+      | some port => capturePairs := capturePairs.push (port, capTy)
+      | none => pure ()
+
+  if typeArgVals.size > 0 then
+    LowerM.recordTypeArgs fnPort.node typeArgVals
 
   let ctx ← LowerM.getCtx
   let envPort ← if capturePairs.isEmpty then do
@@ -1444,10 +1432,7 @@ private partial def skipImplicitTypeParams (ctx : LowerCtx) (ty : Value) : Value
   match ty with
   | .vPi _ binder name dom cod =>
     let isErasedImplicit := match binder with
-      | .implicit | .strictImplicit =>
-        match dom with
-        | .vType _ | .vRowSort | .vLabelSort => true
-        | _ => false
+      | .implicit | .strictImplicit => dom.isKind
       | _ => false
     if isErasedImplicit then
       let advanced := match cod with
@@ -1457,38 +1442,50 @@ private partial def skipImplicitTypeParams (ctx : LowerCtx) (ty : Value) : Value
     else ty
   | _ => ty
 
+/-- Is this function type polymorphic -/
+private partial def valueHasTypeParam (ty : Value) : Bool :=
+  match ty with
+  | .vPi _ binder name dom cod =>
+    (binder.isImplicit && dom.isKind) ||
+      valueHasTypeParam (cod.applyPure (Value.vNeutral dom (.nVar ⟨name, ⟨0⟩⟩)))
+  | _ => false
+
 /-- Lower a function definition -/
 def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
-  LowerM.modifyCtx fun ctx => { ctx with currentFn := some fn.name }
+  let savedDbStack := (← LowerM.getCtx).dbStack
+  LowerM.modifyCtx fun ctx => { ctx with currentFn := some fn.name, dbStack := #[] }
 
-  let paramList := fn.params.toList
+  let telescope : Array Soma.Core.ValueParam := fn.valueParams
+  let paramSet : Std.HashSet Unique :=
+    fn.params.foldl (fun s (u, _) => s.insert u) {}
+  let total := telescope.size
+
   let mut lamNodes : Array NodeId := #[]
   let mut currentTy := fn.fnType
-  let bodyUses := countUsesExpr fn.body
 
-  for param in paramList do
+  for i in [:total] do
     let ctx ← LowerM.getCtx
-    currentTy := skipImplicitTypeParams ctx (unfoldValue currentTy ctx.abbrevEnv)
-    let (bindingId, name) := param
-    let paramTy := match currentTy.piDomain? with
-      | some d => d
-      | none => panic! s!"lowerFunction: expected Pi type for param '{name}' (fn={fn.name.id.module}::{fn.name.id.original}#{fn.name.id.id}, params={fn.params.size}, valueParams={fn.valueParams.size}, paramNames={fn.params.map (·.2)}), got {currentTy}"
-    let paramNeutral := Value.vNeutral paramTy (.nVar ⟨name, ⟨bindingId.id⟩⟩)
-    let nextTy := match currentTy.piApply paramNeutral with
-      | some c => c
-      | none => panic! s!"lowerFunction: expected Pi type for codomain after '{name}', got {currentTy}"
-
-    let usageCount := bodyUses.getD bindingId 0
-    let erased := usageCount == 0
-    let lam ← LowerM.addNode (.lam erased) currentTy
-    lamNodes := lamNodes.push lam
-    let varPort : PortId := ⟨lam, ⟨1⟩⟩
-    LowerM.modifyCtx fun ctx =>
-      ctx.bindVarOwned bindingId name varPort usageCount paramTy erased
-    if erased then
-      LowerM.eraseParamPort varPort
-
-    currentTy := nextTy
+    currentTy := unfoldValue currentTy ctx.abbrevEnv
+    let vp := telescope[i]!
+    let (dom, cod) := match currentTy with
+      | .vPi _ _ _ dom cod => (dom, cod)
+      | _ => panic! s!"lowerFunction: expected Pi type for telescope binder #{i} '{vp.name}' (fn={fn.name.id.module}::{fn.name.id.original}#{fn.name.id.id}, params={fn.params.size}, valueParams={fn.valueParams.size}), got {currentTy}"
+    let level := cod.level?.getD ⟨i⟩
+    let neutral := Value.vNeutral dom (.nVar ⟨vp.name, level⟩)
+    let dbIndex := total - 1 - i
+    if paramSet.contains vp.uid then
+      let usageCount := fn.body.countRuntimeBVar dbIndex
+      let erased := usageCount == 0
+      let lam ← LowerM.addNode (.lam erased) currentTy
+      lamNodes := lamNodes.push lam
+      let varPort : PortId := ⟨lam, ⟨1⟩⟩
+      let _ ← LowerM.pushDbBinder vp.name dom neutral varPort usageCount erased
+      if erased then
+        LowerM.eraseParamPort varPort
+    else
+      let eraPort ← LowerM.erasedRuntimePort
+      let _ ← LowerM.pushDbBinder vp.name dom neutral eraPort 0 true
+    currentTy := cod.applyPure neutral
 
   let ctxAfterParams ← LowerM.getCtx
   currentTy := skipImplicitTypeParams ctxAfterParams
@@ -1528,6 +1525,8 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
       LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
       LowerM.connect ⟨app, ⟨2⟩⟩ argPort
       pure (some (PortId.principal app))
+
+  LowerM.modifyCtx fun ctx => { ctx with dbStack := savedDbStack }
 
   if lamNodes.isEmpty then
     match bodyPort? with
@@ -1732,7 +1731,11 @@ def lowerModule (types : Array Soma.Core.TypeDef)
     let ctx ← LowerM.getCtx
     let root ← lowerFunction fn
     let arity ← countLamChainArity root
-    let red := if fn.attrs.irreducible then Reducibility.irreducible else .reducible
+    -- Polymorphic functions are kept as calls (non-reducible) so monomorphization
+    -- specializes them by type instead of the net inlining their generic body
+    let hasTP := valueHasTypeParam fn.fnType
+    let red := if fn.attrs.irreducible || hasTP then
+        Reducibility.irreducible else .reducible
     let effectful := ctx.mentionsWorldTy fn.fnType
     let _ ← LowerM.addDefinition fn.name root arity fn.fnType
       (reducibility := red) (effectful := effectful)
@@ -1799,20 +1802,16 @@ def lower (types : Array Soma.Core.TypeDef)
 /-- Resolve all metavariables in a Circuit graph's node types and definition types -/
 def resolveGraphMetas (g : Graph) (metas : Soma.Core.MetaState) : Graph := Id.run do
   let mut graph := g
-  -- Resolve metas in all node types
+  -- Resolve metas in all node types and their intrinsic resolved type arguments
   for (nodeId, _) in graph.nodes.toList do
     graph := graph.updateNode ⟨nodeId⟩ fun e =>
-      { e with ty := resolveMetas e.ty metas }
+      { e with ty := resolveMetas e.ty metas
+             , typeArgs := e.typeArgs.map (resolveMetas · metas) }
   -- Resolve metas in all definition types
   for i in List.range graph.book.size do
     if let some d := graph.book[i]? then
       let resolvedTy := resolveMetas d.ty metas
       graph := { graph with book := graph.book.set! i { d with ty := resolvedTy } }
-  -- Resolve metas in resolved type arguments
-  let mut newResolvedTypeArgs := graph.resolvedTypeArgs
-  for (nodeId, args) in graph.resolvedTypeArgs.toList do
-    let resolvedArgs := args.map (resolveMetas · metas)
-    newResolvedTypeArgs := newResolvedTypeArgs.insert nodeId resolvedArgs
-  { graph with resolvedTypeArgs := newResolvedTypeArgs }
+  graph
 
 end Somac.Circuit.Lower

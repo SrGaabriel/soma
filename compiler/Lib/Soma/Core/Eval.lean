@@ -361,6 +361,13 @@ end
 def Closure.applyPure (clos : Closure) (arg : Value) : Value :=
   applyClosure clos arg EvalCtx.empty
 
+partial def Value.isKind (v : Value) : Bool :=
+  match v with
+  | .vType _ | .vRowSort | .vLabelSort => true
+  | .vPi _ _ name dom cod =>
+    Value.isKind (cod.applyPure (Value.vNeutral dom (.nVar ⟨name, ⟨0⟩⟩)))
+  | _ => false
+
 /-- Evaluate an expression with no globals and no meta state, only a local environment -/
 def evalExprPure (env : Env) (e : Soma.Core.Expr) : Value :=
   evalCoreExpr { env, globals := .empty, metas := .empty } e

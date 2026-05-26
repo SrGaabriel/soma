@@ -88,9 +88,43 @@ partial def applyMvarSubst (e : Expr) (subst : Std.HashMap MetaId Expr) (depth :
   | .dataTy id ps => .dataTy id (ps.map (applyMvarSubst · subst depth))
   | .ann x t => .ann (applyMvarSubst x subst depth) (applyMvarSubst t subst depth)
 
+/-- Restore the free-variable representation invariant after quoting -/
+partial def resolveTermTyvars (e : Expr) : TCM Expr := do
+  let ctx ← TCM.getCtx
+  return go ctx e
+where
+  go (ctx : TCContext) (e : Expr) : Expr :=
+    match e with
+    | .tyvar lvl _ =>
+      match ctx.lookupLevel lvl with
+      | some entry => .fvar entry.fvarId (Soma.Core.quoteExpr0 entry.type)
+      | none => e
+    | .app fn arg => .app (go ctx fn) (go ctx arg)
+    | .lam info name dom body => .lam info name dom (go ctx body)
+    | .let_ name ty val body => .let_ name ty (go ctx val) (go ctx body)
+    | .construct name tag args rty => .construct name tag (args.map (go ctx ·)) rty
+    | .«case» scruts motive arms =>
+      .«case» (scruts.map (go ctx ·)) motive
+        (arms.map fun arm => Arm.mk arm.patterns (go ctx arm.body))
+    | .record fields => .record (fields.map fun (n, v) => (n, go ctx v))
+    | .recordUpdate base updates =>
+      .recordUpdate (go ctx base) (updates.map fun (n, v) => (n, go ctx v))
+    | .fieldAccess x f i => .fieldAccess (go ctx x) f i
+    | .inject label args rty => .inject label (args.map (go ctx ·)) rty
+    | .if_ c t el => .if_ (go ctx c) (go ctx t) (go ctx el)
+    | .closure name caps ty => .closure name (caps.map (go ctx ·)) ty
+    | .array elems ty => .array (elems.map (go ctx ·)) ty
+    | .tuple elems => .tuple (elems.map (go ctx ·))
+    | .ann expr ty => .ann (go ctx expr) ty
+    | .bvar _ | .fvar _ _ | .mvar _ | .const _ _ | .lit _ | .sort _
+    | .pi _ _ _ _ _ | .rowSort | .labelSort | .rowEmpty
+    | .rowExtend _ _ _ | .recordTy _ | .variantTy _ | .labelLit _
+    | .dataTy _ _ | .panic _ | .proj _ _ _ => e
+
 /-- Substitute all solved metavariables in an expression -/
-partial def zonkExpr (e : Expr) (depth : Nat := 0) : TCM Expr :=
-  loop e {}
+partial def zonkExpr (e : Expr) (depth : Nat := 0) : TCM Expr := do
+  let zonked ← loop e {}
+  resolveTermTyvars zonked
 where
   loop (result : Expr) (processed : Std.HashSet MetaId) : TCM Expr := do
     let mvarIds := collectMvarIds result

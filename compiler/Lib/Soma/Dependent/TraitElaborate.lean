@@ -121,7 +121,8 @@ end
 
 /-- Build the dictionary record type for a class -/
 def elaborateClassRecordType (typeClass : Soma.Core.TypeClassMeta)
-  (methods : Array (QualifiedName × Soma.Syntax.Expr)) : TCM Value := do
+  (methods : Array (QualifiedName × Soma.Syntax.Expr))
+  (superclasses : Array (Unique × Array Nat)) : TCM Value := do
   let params := typeClass.params
   let N := params.size
 
@@ -146,6 +147,13 @@ def elaborateClassRecordType (typeClass : Soma.Core.TypeClassMeta)
     let oldSet := oldPostponed.foldl
       (init := (∅ : Std.HashSet Soma.Core.ConstraintId))
       (fun acc tc => acc.insert tc.constraintId)
+    let mut superFields : List (String × Value) := []
+    for (superId, paramIdxs) in superclasses do
+      let superArgs : Array Value := paramIdxs.filterMap fun i =>
+        if h : i < params.size then
+          some (Value.vNeutral paramKinds[i]! (.nVar ⟨params[i].name.name, ⟨i⟩⟩))
+        else none
+      superFields := (s!"$super_{superId.original}", Value.vDataType superId superArgs.toList) :: superFields
     let mut fields : List (String × Value) := []
     for (methodName, methodTypeSyntax) in methods do
       let expr ← Soma.Dependent.inferTypeExpr methodTypeSyntax
@@ -154,8 +162,9 @@ def elaborateClassRecordType (typeClass : Soma.Core.TypeClassMeta)
     TCM.modifyState fun s =>
       let kept := s.postponed.filter (fun tc => oldSet.contains tc.constraintId)
       { s with postponed := kept }
+    let allFields := superFields.reverse ++ fields.reverse
     let mut row := Value.vRowEmpty
-    for (name, ty) in fields.reverse do
+    for (name, ty) in allFields.reverse do
       row := Value.vRowExtend (Value.vLabelLit name) ty row
     pure (Soma.Core.quoteExpr ⟨N⟩ (Value.vRecord row))
 
@@ -210,12 +219,12 @@ def elaborateSuperclasses (params : Array TypeVarBinder)
 def elaborateClass (typeClass : Soma.Core.TypeClassMeta) : TCM ClassInfo := do
   let classUnique := typeClass.name.id
 
-  -- Build the dictionary record type
-  let recordType ← elaborateClassRecordType typeClass typeClass.methodSignatures
-
   let typeParams := typeClass.params
   let supersOnly := typeClass.superclasses.map (·.2)
   let superclasses ← elaborateSuperclasses typeParams supersOnly
+
+  -- Build the dictionary record type (superclass dictionaries become leading fields)
+  let recordType ← elaborateClassRecordType typeClass typeClass.methodSignatures superclasses
 
   return {
     classId := classUnique
@@ -466,7 +475,7 @@ private def withMethodSignaturePrefix
     let uid ← TCM.freshLocalId name
     binders := binders.push (uid, name, ty, binder, qty)
     valueParams := valueParams.push { uid, name, binder, type := ty }
-    if !binder.isImplicit then
+    unless binder.isImplicit && ty.isKind do
       runtimeParams := runtimeParams.push (uid, name)
 
   let rec bindAll (idx : Nat) : TCM α := do
@@ -492,7 +501,7 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
     : TCM MethodElabResult := do
   let (sigPrefix, resultType) ← extractMethodSignaturePrefix expectedType methodFn.params.size
 
-  let (generatedParams, valueParams, coreBody) ←
+  let (generatedParams, valueParams, coreBody') ←
     withMethodSignaturePrefix sigPrefix (methodFn.params.map (·.name)) methodFn.span do
       let bodyIsProof ← Soma.Dependent.valueInPropUniverse resultType
       let checked ←
@@ -501,9 +510,8 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
         else
           Soma.Dependent.checkSyntax methodFn.body resultType
       Soma.Dependent.drainConstraints
-      pure checked
-
-  let coreBody' := (← zonkExpr coreBody).betaReduce
+      let zonked ← zonkExpr checked
+      pure zonked.betaReduce
   let expectedType' ← zonkValue expectedType
 
   -- Build the unfoldable method value over the full semantic telescope
@@ -621,7 +629,33 @@ partial def elaborateInstanceBodiesCore
     (jobs : Array InstanceMethodJob)
     (selfRefs : Array (String × QualifiedName × Value))
     (constraintDicts : Array ConstraintDictEntry := #[])
+    (superclasses : Array (Unique × Array Nat) := #[])
+    (typeArgs : Array Value := #[])
+    (span : Span := Span.uninhabited)
     : TCM InstanceElabResult := do
+  let mut superValues : Array (String × Value) := #[]
+  let mut superExprs : Array (String × Expr) := #[]
+  for (superId, paramIdxs) in superclasses do
+    let fieldName := s!"$super_{superId.original}"
+    let superArgs : Array Value := paramIdxs.filterMap (fun i => typeArgs[i]?)
+    let isDictPassed := constraintDicts.any (·.classId == superId)
+    let resolved? ← Soma.Dependent.resolveInstance superId superArgs
+    let superDictTy ← buildConstraintDictType superId superArgs
+    let superVal ← match resolved? with
+      | .found v _ => pure v
+      | _ =>
+        if isDictPassed then
+          pure (Value.vNeutral superDictTy
+            (.nConst ⟨0, "", s!"$super_{superId.original}"⟩ superDictTy))
+        else
+          TCM.addError (.noInstance superId superArgs span #[] #[])
+          pure (Value.vNeutral superDictTy
+            (.nConst ⟨0, "", s!"$super_{superId.original}"⟩ superDictTy))
+    let superExpr : Expr ← match constraintDicts.find? (·.classId == superId) with
+      | some cd => pure (.fvar cd.dictUnique cd.dictTyExpr)
+      | none => pure (Soma.Core.quoteExpr0 superVal)
+    superValues := superValues.push (fieldName, superVal)
+    superExprs := superExprs.push (fieldName, superExpr)
   let mut fields : List (String × Value) := []
   let mut typedFns : Array Soma.Core.TypedFunction := #[]
   let mut methodExprs : Array (String × Expr) := #[]
@@ -657,9 +691,9 @@ partial def elaborateInstanceBodiesCore
     }
 
   return {
-    value := Value.vRecordVal fields.reverse
+    value := Value.vRecordVal (superValues.toList ++ fields.reverse)
     typedFns := typedFns
-    methodExprs := methodExprs
+    methodExprs := superExprs ++ methodExprs
   }
 
 /-- Collect `InstanceMethodJob`s from a concrete class record type and the user-written methods -/
@@ -688,9 +722,10 @@ partial def collectInstanceMethodJobsFromClassInfo
 partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
     (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
     (constraintDicts : Array ConstraintDictEntry := #[])
+    (span : Span := Span.uninhabited)
     : TCM InstanceElabResult := do
   let (jobs, selfRefs) ← collectInstanceMethodJobsFromClassInfo classInfo typeArgs methods
-  elaborateInstanceBodiesCore jobs selfRefs constraintDicts
+  elaborateInstanceBodiesCore jobs selfRefs constraintDicts classInfo.superclasses typeArgs span
 
 /-- Result of eager constraint resolution -/
 private inductive EagerResolutionResult where
@@ -798,26 +833,25 @@ private def elaborateDictPassingInstance
 
   let instValue ← TCM.evalExpr wrappedExpr
 
-  -- 4. Build TypedFunctions with dict params.
   let mut dictPassedFns := #[]
   for fn in result.typedFns do
-    let mut body := fn.body
     let mut fnType := fn.fnType
     let mut extraParams : Array (Unique × String) := #[]
+    let mut extraValueParams : Array Soma.Core.ValueParam := #[]
     for i in [:constraintDictBindings.size] do
       let idx := constraintDictBindings.size - 1 - i
       let (dictUnique, dictName, dictTy) := constraintDictBindings[idx]!
-      body := body.abstractFVar dictUnique
-      let domTyExpr := Soma.Core.quoteExpr0 dictTy
-      body := .lam .instance_ dictName domTyExpr body
       fnType := .vPi .omega .instance_ dictName dictTy
         (.const dictName fnType)
       extraParams := #[(dictUnique, dictName)] ++ extraParams
+      extraValueParams := #[{ uid := dictUnique, name := dictName,
+                              binder := .instance_, type := dictTy }] ++
+                          extraValueParams
     dictPassedFns := dictPassedFns.push {
       fn with
-      body := body
       fnType := fnType
       params := extraParams ++ fn.params
+      valueParams := extraValueParams ++ fn.valueParams
     }
 
   return (instValue, dictPassedFns, constraints.size)
@@ -901,8 +935,8 @@ partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
 
   let (instanceInfo, typedFns) ← elaborateConstrainedInstance
     classInfo.classId instUnique typeArgs constraints inst.span
-    (elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods)
-    (elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods ·)
+    (elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods #[] inst.span)
+    (elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods · inst.span)
 
   return some (instanceInfo, typedFns)
 
@@ -929,13 +963,13 @@ def elaborateInstanceValue (typeArgs : Array Value)
     (methodSignatures : Array (QualifiedName × Soma.Syntax.Expr))
     (typeClass : Soma.Core.TypeClassMeta)
     (constraintDicts : Array ConstraintDictEntry := #[])
+    (span : Span := Span.uninhabited)
     : TCM InstanceElabResult := do
   let (jobs, selfRefs) ← collectInstanceMethodJobs typeArgs methods methodSignatures typeClass
-  elaborateInstanceBodiesCore jobs selfRefs constraintDicts
+  let superclasses := (← TCM.lookupClass typeClass.name.id).map (·.superclasses) |>.getD #[]
+  elaborateInstanceBodiesCore jobs selfRefs constraintDicts superclasses typeArgs span
 
-/-- Elaborate a single instance declaration into an InstanceInfo.
-    Processes explicit binders for type variables and dictionary parameters,
-    then delegates to the constrained instance elaboration pipeline. -/
+/-- Elaborate a single instance declaration into an InstanceInfo and method implementations -/
 def elaborateInstance (inst : Soma.Core.InstanceDecl)
   (typeClass : Soma.Core.TypeClassMeta) : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) := do
   match ← resolveClassName inst.className with
@@ -958,12 +992,12 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl)
     let instUnique ← TCM.freshUnique s!"$inst_{inst.className.name}_{typeArgs.size}"
 
     let elabSimple := elaborateInstanceValue typeArgs inst.methods
-      typeClass.methodSignatures typeClass
+      typeClass.methodSignatures typeClass #[] inst.span
     let (instanceInfo, typedFns) ← elaborateConstrainedInstance
       typeClass.name.id instUnique typeArgs constraints inst.span
       elabSimple
       (fun entries => elaborateInstanceValue typeArgs inst.methods
-        typeClass.methodSignatures typeClass entries)
+        typeClass.methodSignatures typeClass entries inst.span)
 
     return some (instanceInfo, typedFns)
 
@@ -984,10 +1018,7 @@ private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
         { uid := paramUnique, name, binder, type := dom }
       let isErasedImplicitTyParam : Bool :=
         match binder with
-        | .implicit | .strictImplicit =>
-          match dom with
-          | .vType _ | .vRowSort | .vLabelSort => true
-          | _ => false
+        | .implicit | .strictImplicit => dom.isKind
         | _ => false
       if binder == .instance_ then
         dictUnique := paramUnique
@@ -1009,7 +1040,7 @@ private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
       fieldIdx
   for i in [allDictIdx + 1 : allValueParams.size] do
     let vp := allValueParams[i]!
-    if vp.binder == .explicit then
+    if vp.binder != .instance_ then
       let tyExpr := Soma.Core.quoteExpr0 vp.type
       body := Soma.Core.Expr.app body (Soma.Core.Expr.fvar vp.uid tyExpr)
 
@@ -1181,7 +1212,7 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
         | none => pure ()
 
   for typeClass in module.typeClasses do
-    let mut idx := 0
+    let mut idx := typeClass.superclasses.size
     for (methodName, _) in typeClass.methodSignatures do
       match ← TCM.lookupGlobalByQN methodName with
       | some info =>
@@ -1272,7 +1303,7 @@ def buildInstanceEnvFromModuleIncremental
 
   -- Third pass: create wrapper TypedFunctions for class methods
   for typeClass in module.typeClasses do
-    let mut idx := 0
+    let mut idx := typeClass.superclasses.size
     for (methodName, _) in typeClass.methodSignatures do
       match ← TCM.lookupGlobalByQN methodName with
       | some info =>

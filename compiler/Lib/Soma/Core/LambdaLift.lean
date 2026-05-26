@@ -61,6 +61,7 @@ structure LiftState where
   globalEnv : Soma.Core.GlobalEnv := .empty
   unfoldTy : Value → Value := id
   typeParamEnv : Soma.Core.Env := .empty
+  frameEnv : Soma.Core.Env := .empty
   metas : Soma.Core.MetaState := .empty
   /-- Qualified name of `io_bind` (when known) for pre-lift inlining -/
   ioBindName? : Option QualifiedName := none
@@ -125,12 +126,28 @@ def isGlobal (name : QualifiedName) : LiftM Bool := do
   let st ← get
   pure (st.globalNames.contains name)
 
+/-- Reset the closed de Bruijn frame to a given telescope -/
+def setFrameEnv (env : Soma.Core.Env) : LiftM Unit :=
+  modify ({ · with frameEnv := env })
+
+/-- Run `act` with the closed de Bruijn frame extended by binderTypes -/
+def withFrameBinders (binderTypes : Array (String × Value)) (act : LiftM α) : LiftM α := do
+  let saved := (← get).frameEnv
+  let extended := binderTypes.foldl (init := saved) fun env (name, ty) =>
+    env.extend name (Value.vNeutral ty (.nVar ⟨name, env.level⟩))
+  modify ({ · with frameEnv := extended })
+  let r ← act
+  modify ({ · with frameEnv := saved })
+  pure r
+
 end LiftM
 
 def buildFnType (paramTypes : Array Value) (resultType : Value) : Value :=
   paramTypes.foldr (init := resultType) fun paramTy acc =>
-    Value.vPi Soma.Core.Quantity.omega Soma.Core.BinderInfo.explicit "_" paramTy
-      (Soma.Core.Closure.const "_" acc)
+    let isKindParam := Value.isKind paramTy
+    let qty := if isKindParam then Soma.Core.Quantity.zero else Soma.Core.Quantity.omega
+    let binder := if isKindParam then Soma.Core.BinderInfo.implicit else Soma.Core.BinderInfo.explicit
+    Value.vPi qty binder "_" paramTy (Soma.Core.Closure.const "_" acc)
 
 /-- Apply an argument to an expression while pushing the application down through lambdas, cases, lets, and ifs -/
 partial def applyPushingDown (expr : Soma.Core.Expr) (arg : Soma.Core.Expr)
@@ -462,14 +479,14 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     let liftedV ← liftCoreExpr v
     let u ← LiftM.freshUnique n
     let openedB := Soma.Core.Expr.instantiate b (Soma.Core.Expr.fvar u liftedT)
-    let liftedB ← liftCoreExpr openedB
+    let liftedB ← LiftM.withFrameBinders #[(n, Value.type0)] (liftCoreExpr openedB)
     let closedB := Soma.Core.Expr.abstractFVar liftedB u
     pure (.let_ n liftedT liftedV closedB)
   | .pi q info n d c => do
     let d' ← liftCoreExpr d
     let u ← LiftM.freshUnique n
     let openedC := Soma.Core.Expr.instantiate c (Soma.Core.Expr.fvar u d')
-    let liftedC ← liftCoreExpr openedC
+    let liftedC ← LiftM.withFrameBinders #[(n, Value.type0)] (liftCoreExpr openedC)
     pure (.pi q info n d' (Soma.Core.Expr.abstractFVar liftedC u))
   | .construct n t args rty => do
     pure (.construct n t (← args.mapM (liftCoreExpr ·)) (← liftCoreExpr rty))
@@ -485,7 +502,9 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
         (fun (uid, ty) body =>
           body.instantiate (.fvar uid (Soma.Core.quoteExpr ⟨0⟩ ty)))
         arm.body
-      let liftedBody ← liftCoreExpr openedBody
+      let frameBinders : Array (String × Value) :=
+        bindings.map (fun (uid, ty) => (uid.original, ty))
+      let liftedBody ← LiftM.withFrameBinders frameBinders (liftCoreExpr openedBody)
       let closedBody := bindings.foldl
         (fun body (uid, _) => body.abstractFVar uid)
         liftedBody
@@ -529,7 +548,19 @@ partial def liftLambdaChain (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
       current := openedBody
     | _ => walking := false
 
-  let liftedBody ← liftCoreExpr current
+  let st0 ← get
+  let mut chainFrame := st0.frameEnv
+  let mut chainDomainValues : Array Value := #[]
+  for (_, name, dom, _) in chain do
+    chainFrame := chainFrame.extend name
+      (Value.vNeutral Value.type0 (.nVar ⟨name, chainFrame.level⟩))
+    let domVal := Soma.Core.evalCoreExpr
+      { env := chainFrame, globals := st0.globalEnv, metas := .empty } dom
+    chainDomainValues := chainDomainValues.push domVal
+  let chainBinderTypes : Array (String × Value) :=
+    chain.zipWith (fun (_, name, _, _) ty => (name, ty)) chainDomainValues
+
+  let liftedBody ← LiftM.withFrameBinders chainBinderTypes (liftCoreExpr current)
 
   let chainFvarSet : Std.HashSet Soma.Unique :=
     chain.foldl (fun acc (_, _, _, u) => acc.insert u) {}
@@ -555,8 +586,7 @@ partial def liftLambdaChain (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     { env := st.typeParamEnv, globals := st.globalEnv, metas := .empty }
   let captureValueTypes := captureParams.map fun (_, _, tyExpr) =>
     Soma.Core.evalCoreExpr evalCtx tyExpr
-  let chainDomainValues := chain.map fun (_, _, dom, _) =>
-    Soma.Core.evalCoreExpr evalCtx dom
+  -- `chainDomainValues` were computed above against the closed frame
   let bodyTyValue := Soma.Core.Expr.typeOf renamedBody st.globalEnv
     st.unfoldTy st.metas
   let liftedFnType :=
@@ -574,12 +604,32 @@ partial def liftLambdaChain (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     captureParams.map fun (u, n, _) => (u, n)
   let chainBindings : Array (Soma.Unique × String) :=
     chain.map fun (_, name, _, u) => (u, name)
-  let allParams := captureBindings ++ chainBindings
+  let allBinders := captureBindings ++ chainBindings
+
+  let captureValueParams : Array Soma.Core.ValueParam :=
+    captureParams.zipWith (fun (u, n, _) ty =>
+      { uid := u, name := n,
+        binder := if Value.isKind ty then .implicit else .explicit,
+        type := ty }) captureValueTypes
+  let chainValueParams : Array Soma.Core.ValueParam :=
+    chainBindings.zipWith (fun (u, n) ty =>
+      { uid := u, name := n,
+        binder := if Value.isKind ty then .implicit else .explicit,
+        type := ty }) chainDomainValues
+  let liftedValueParams := captureValueParams ++ chainValueParams
+
+  let runtimeParams : Array (Soma.Unique × String) :=
+    liftedValueParams.filterMap fun vp =>
+      if Value.isKind vp.type then none else some (vp.uid, vp.name)
+
+  let closedBody := allBinders.foldl
+    (fun b (uid, _) => Soma.Core.Expr.abstractFVar b uid) renamedBody
 
   let liftedFn : TypedFunction := {
     name := liftedName
-    params := allParams
-    body := renamedBody
+    params := runtimeParams
+    valueParams := liftedValueParams
+    body := closedBody
     fnType := liftedFnType
     closureInfo := some { capturedVars := captures.map fun (u, n, _) => (u, n) }
     attrs := {}
@@ -621,12 +671,7 @@ def liftTypedFunction (fn : TypedFunction) : LiftM TypedFunction := do
   while cont do
     match fnTy with
     | .vPi _ binder name dom cod =>
-      let isErasedImplicit := match binder with
-        | .implicit | .strictImplicit =>
-          match dom with
-          | .vType _ | .vRowSort | .vLabelSort => true
-          | _ => false
-        | _ => false
+      let isErasedImplicit := binder.isImplicit && dom.isKind
       if isErasedImplicit then
         let neutral := Value.vNeutral dom (.nVar ⟨name, tyParamEnv.level⟩)
         tyParamEnv := tyParamEnv.extend name neutral
@@ -647,21 +692,39 @@ def liftTypedFunction (fn : TypedFunction) : LiftM TypedFunction := do
     match st0.unfoldTy bodyTy with
     | .vPi _ _ _ dom _ => isWorldTyValue dom st0
     | _ => false
-  let (etaParams, etaBody) ← if needsEta then do
+  let baseValueParams : Array Soma.Core.ValueParam := fn.valueParams
+  let (etaParams, etaBody, etaValueParam?) ← if needsEta then do
       let wName := "_w"
       let wId ← LiftM.freshUnique wName
       let wTyExpr : Soma.Core.Expr :=
         match st0.worldUnique? with
         | some uid => .dataTy uid #[]
         | none => .sort .zero
+      let wTyValue : Value :=
+        match st0.worldUnique? with
+        | some uid => .vDataType uid []
+        | none => .vType .zero
       let body' := applyPushingDown fn.body (.fvar wId wTyExpr)
-      pure (fn.params ++ #[(wId, wName)], body')
+      let wParam : Soma.Core.ValueParam :=
+        { uid := wId, name := wName, binder := .explicit, type := wTyValue }
+      pure (fn.params ++ #[(wId, wName)], body', some wParam)
     else
-      pure (fn.params, fn.body)
+      pure (fn.params, fn.body, none)
+
+  let telescopeFrame : Soma.Core.Env :=
+    baseValueParams.foldl (init := Soma.Core.Env.empty) fun env vp =>
+      env.extend vp.name (Value.vNeutral vp.type (.nVar ⟨vp.name, env.level⟩))
+  LiftM.setFrameEnv telescopeFrame
 
   let inlinedBody ← inlineIOBind etaBody
   let coreBody' ← liftCoreExpr inlinedBody
-  pure { fn with params := etaParams, body := coreBody' }
+
+  let fullValueParams : Array Soma.Core.ValueParam :=
+    baseValueParams ++ (match etaValueParam? with | some p => #[p] | none => #[])
+
+  let closedBody := fullValueParams.foldl
+    (fun b vp => Soma.Core.Expr.abstractFVar b vp.uid) coreBody'
+  pure { fn with params := etaParams, valueParams := fullValueParams, body := closedBody }
 
 abbrev TypedFunctionMap := Std.HashMap String TypedFunction
 

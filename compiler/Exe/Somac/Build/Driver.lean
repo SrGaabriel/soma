@@ -53,7 +53,7 @@ def generateOutput
     (targetSpec : TargetSpec)
     : IO (Except String Unit) := do
   let ext := outputPath.extension
-  let tools := External.defaultTools
+  let tools ← External.mkToolPaths
   let optLevel := opts.resolvedOptLevel
   let llvmTarget := some targetSpec.llvmTarget
 
