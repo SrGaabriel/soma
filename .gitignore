@@ -242,7 +242,10 @@ $RECYCLE.BIN/
 
 zig-cache/
 zig-out/
+
 build/
+!haoma/src/build
+
 build-*/
 docgen_tmp/
 
