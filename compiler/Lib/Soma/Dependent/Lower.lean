@@ -17,6 +17,16 @@ private def mkLowerError (diag : DiagBuilder) (msg : String) (span : Span)
     primary := diag.primary span msg
     helps := match help with | some h => [h] | none => [] }
 
+private def mkDuplicateDefinitionError (diag : DiagBuilder) (name : String)
+    (previousSpan currentSpan : Span) : Diagnostic :=
+  { severity := severity .lower
+    code := some "E1043"
+    message := s!"duplicate definition of `{name}`"
+    primary := diag.primary currentSpan s!"`{name}` redefined here"
+    secondary := [diag.label previousSpan s!"`{name}` first defined here"
+                    Soma.LabelStyle.definition]
+    helps := ["each top-level name must be unique within a module — rename one or remove the duplicate"] }
+
 structure Result where
   module : Soma.Core.UntypedModule
   diagnostics : Diagnostics
@@ -484,8 +494,23 @@ def lowerModule (ast : Syntax.Module) (diag : DiagBuilder) : Result :=
     let mut typeClasses : Array Soma.Core.TypeClassMeta := #[]
     let mut abbreviations : Array Soma.Core.TypeAbbrev := #[]
     let mut diagnostics : Diagnostics := #[]
+    let mut seenTopLevel : Std.HashMap String Span := {}
 
     for decl in ast.decls do
+      let mut isDuplicate := false
+      match decl.name? with
+      | some qn =>
+        match seenTopLevel.get? qn.name with
+        | some prevSpan =>
+          diagnostics :=
+            diagnostics.push (mkDuplicateDefinitionError diag qn.name prevSpan decl.span)
+          isDuplicate := true
+        | none =>
+          seenTopLevel := seenTopLevel.insert qn.name decl.span
+      | none => pure ()
+
+      if isDuplicate then continue
+
       let (fn?, fnDiags) := lowerFunctionDecl diag decl registry
       diagnostics := diagnostics ++ fnDiags
       if let some fn := fn? then

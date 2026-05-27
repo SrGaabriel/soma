@@ -135,6 +135,7 @@ private def reportStuckDrainConstraint (tc : TrackedConstraint) : TCM Unit := do
     TCM.addError (.cannotInfer
       s!"unsolved constraint after final solver drain: {other.describe}"
       other.span tc.origin)
+  TCM.modifyState (·.removeConstraint tc.constraintId)
 
 /-- Incremental driver -/
 def solveConstraints : TCM Nat := do

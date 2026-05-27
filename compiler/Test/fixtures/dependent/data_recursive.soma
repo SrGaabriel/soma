@@ -1,10 +1,6 @@
 // expect: success
 // Test: recursive algebraic data type
 
-inductive List (a : Type) where
-    | Nil
-    | Cons (front : a) (tail : List a)
-
 inductive ScottNat where
     | Zero
     | Succ (n : ScottNat)

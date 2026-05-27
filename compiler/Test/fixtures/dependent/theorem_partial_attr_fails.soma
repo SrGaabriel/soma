@@ -1,8 +1,5 @@
 // expect: error @[partial]
 
-inductive Unit where
-    | Mk
-
 @[partial]
 theorem always_fails : Unit -> Unit
     | x => always_fails x
