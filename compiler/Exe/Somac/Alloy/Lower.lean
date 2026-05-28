@@ -2359,10 +2359,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let ls ← StateT.lift get
     let lhsTy := ls.func.getLocalType lhsVal |>.getD nodeTy
     let rhsTy := ls.func.getLocalType rhsVal |>.getD nodeTy
-    -- Both operands must be arithmetic for a valid binary op
     if !lhsTy.isArithmetic || !rhsTy.isArithmetic then
-      let resultTy := (← get).expectedResultTy.getD nodeTy
-      StateT.lift (LowerM.emitInst (.copy (.const (.undef resultTy.close))) resultTy)
+      let _ ← StateT.lift (LowerM.emitPanic nodeTy
+        s!"Alloy.lowerNode: .op2 {repr op} requires arithmetic operands; got lhs={repr lhsTy} rhs={repr rhsTy}. This typically means a polymorphic `primop.eq`/`primop.le` was applied to a non-primitive type without a typeclass instance")
+      panic! s!"Alloy.lowerNode: .op2 {repr op} on non-arithmetic operands lhs={repr lhsTy} rhs={repr rhsTy}"
     else
       -- Pick the best operand type: prefer non-unit
       let operandTy :=

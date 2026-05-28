@@ -1,5 +1,5 @@
-use base::prim::{+, -, *, ==, <=}
-use base::core::{Option, Monad, >>=, pure}
+use base::prim::{+, -, *, <=}
+use base::core::{Option, Monad, >>=, pure, BEq, ==}
 use base::prim::{List, Bool, Int32}
 
 def head {a : Type} : [a] -> Option a
@@ -119,7 +119,7 @@ def drop_while {a : Type} : (a -> Bool) -> [a] -> [a]
 def split_at {a : Type} : Int32 -> [a] -> ([a], [a])
     | n, xs => (take n xs, drop n xs)
 
-def elem {a : Type} : a -> [a] -> Bool
+def elem {a : Type} {{BEq a}} : a -> [a] -> Bool
     | x, (y:ys) => if x == y then true else elem x ys
     | _, [] => false
 

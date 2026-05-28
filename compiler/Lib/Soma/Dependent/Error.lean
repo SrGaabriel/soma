@@ -91,6 +91,7 @@ inductive UnifyFailure where
       (reduced : Option (Value × Value))
       (trace : Array Soma.Attach.UnfoldStep)
       (implicits : Option (String × Array Soma.Attach.InsertedImplicit))
+      (frozenPp : Soma.Core.PpContext)
   /-- Occurs check failed -/
   | occursCheck
       (metaId : MetaId)
@@ -148,8 +149,8 @@ private def pathDetail (path : Path) (roots : Option (Value × Value)) : String 
 
 /-- One-line message describing the failure -/
 def message (pp : Soma.Core.PpContext) : UnifyFailure → String
-  | .headMismatch v1 v2 path _ _ _ =>
-      s!"cannot unify `{Soma.Core.Value.pp pp v1}` with `{Soma.Core.Value.pp pp v2}`{pathSuffix path none}"
+  | .headMismatch v1 v2 path _ _ _ frozenPp =>
+      s!"cannot unify `{Soma.Core.Value.pp frozenPp v1}` with `{Soma.Core.Value.pp frozenPp v2}`{pathSuffix path none}"
   | .occursCheck m v path roots =>
       s!"infinite type: `?m{m.id}` would contain itself via `{Soma.Core.Value.pp pp v}`{pathSuffix path roots}"
   | .rigidMismatch n1 n2 path roots =>
@@ -167,11 +168,11 @@ def message (pp : Soma.Core.PpContext) : UnifyFailure → String
 
 /-- Multi-sentence explanation of the failure -/
 def detailedMessage (pp : Soma.Core.PpContext) : UnifyFailure → String
-  | .headMismatch v1 v2 path _ _ _ =>
+  | .headMismatch v1 v2 path _ _ _ frozenPp =>
       let suf :=
         if path.isEmpty then ""
         else s!" The obstruction lies in the {path.describe}."
-      s!"The types `{Soma.Core.Value.pp pp v1}` and `{Soma.Core.Value.pp pp v2}` have incompatible structure and cannot be unified.{suf}"
+      s!"The types `{Soma.Core.Value.pp frozenPp v1}` and `{Soma.Core.Value.pp frozenPp v2}` have incompatible structure and cannot be unified.{suf}"
   | .occursCheck m v path roots =>
       s!"Solving `?m{m.id}` would create an infinite type because `?m{m.id}` appears in its own solution `{Soma.Core.Value.pp pp v}`. " ++
       "This usually means a type annotation is needed to break the cycle." ++ pathDetail path roots
@@ -518,14 +519,15 @@ def toDiagnostic (ctx : DiagContext) (pp : Soma.Core.PpContext)
     let vpp (v : Soma.Core.Value) : String := Soma.Core.Value.pp pp v
     let npp (n : Soma.Core.Neutral) : String := Soma.Core.Neutral.pp pp n
     let attachments : List Psychopomp.Attachment := match failure with
-      | .headMismatch v1 v2 _ reduced trace implicits =>
-        let mismatchAttach := Soma.Attach.typeMismatch (vpp v1) (vpp v2)
+      | .headMismatch v1 v2 _ reduced trace implicits frozenPp =>
+        let fvpp (v : Soma.Core.Value) : String := Soma.Core.Value.pp frozenPp v
+        let mismatchAttach := Soma.Attach.typeMismatch (fvpp v1) (fvpp v2)
         let defEqAttach : List Psychopomp.Attachment := match reduced with
           | some (r1, r2) =>
-            let s1 := vpp v1
-            let s2 := vpp v2
-            let rs1 := vpp r1
-            let rs2 := vpp r2
+            let s1 := fvpp v1
+            let s2 := fvpp v2
+            let rs1 := fvpp r1
+            let rs2 := fvpp r2
             if rs1 == s1 && rs2 == s2 then [] else [Soma.Attach.defEqHint rs1 rs2]
           | none => []
         let unfoldAttach : List Psychopomp.Attachment :=
@@ -962,9 +964,9 @@ def toDiagnosticDecorated (ctx : DiagContext) (pp : Soma.Core.PpContext)
     let (v1, v2) := roots.getD fallback
     Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx pp v1 v2 src d (path := path)
   match e with
-  | .unificationFailed (.headMismatch v1 v2 path _ _ _) _ span _ _ =>
+  | .unificationFailed (.headMismatch v1 v2 path _ _ _ frozenPp) _ span _ _ =>
     let src := s!"{span.start.line}:{span.start.column}"
-    Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx pp v1 v2 src baseDiag (path := path)
+    Soma.Diagnostic.Pretty.Substrate.decorateBinary ctx frozenPp v1 v2 src baseDiag (path := path)
   | .unificationFailed (.rigidMismatch n1 n2 path roots) _ span _ _ =>
     let src := s!"{span.start.line}:{span.start.column}"
     decorateWithRoots ctx path roots

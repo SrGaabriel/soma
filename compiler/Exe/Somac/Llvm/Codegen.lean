@@ -2732,6 +2732,18 @@ def addRuntimeDeclarations : CodegenM Unit := do
 
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
+        name := "soma_string_eq"
+        retTy := .i1
+        params := #[
+          { name := "a", ty := .ptr, attrs := #[s!"byval({strTyStr})"] },
+          { name := "b", ty := .ptr, attrs := #[s!"byval({strTyStr})"] }
+        ]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
         name := "soma_int_to_string"
         retTy := .void
         params := #[
@@ -2787,6 +2799,18 @@ def addRuntimeDeclarations : CodegenM Unit := do
       ModuleBuilder.addFunc {
         name := "soma_strcat"
         retTy := coercedStrTy
+        params := #[
+          { name := "a", ty := coercedStrTy },
+          { name := "b", ty := coercedStrTy }
+        ]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_string_eq"
+        retTy := .i1
         params := #[
           { name := "a", ty := coercedStrTy },
           { name := "b", ty := coercedStrTy }
@@ -3145,7 +3169,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     "llvm.memcpy.p0.p0.i64", "llvm.memset.p0.i64",
     "soma_pool_alloc_raw", "soma_pool_free_raw",
     "soma_from_cstring", "soma_to_cstring",
-    "soma_strcat", "soma_int_to_string",
+    "soma_strcat", "soma_string_eq", "soma_int_to_string",
     "soma_apply", "soma_dup_typed", "soma_proj0", "soma_proj1",
     "soma_clone_closure", "soma_clone_heap_value_for_dup",
     "soma_clone_flat_array_view", "soma_alloc_view", "soma_free_view"

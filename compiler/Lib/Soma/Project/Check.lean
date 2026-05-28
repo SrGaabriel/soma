@@ -679,11 +679,16 @@ def buildGlobalsAndInstances
     match g.getDef fn.name with
     | some _ => g
     | none =>
+      let intr : Option Soma.Core.Intrinsic :=
+        match fn.attrs.intrinsic with
+        | some tag => Soma.Core.Intrinsic.fromTag? tag
+        | none => fn.attrs.extern.map Soma.Core.Intrinsic.extern
       g.registerAnonymous {
         name := fn.name
         type := fn.fnType
         value := none
         isConstructor := false
+        intrinsic := intr
         origin := Soma.Dependent.DeclarationOrigin.instanceMethod
       }
 

@@ -3,7 +3,7 @@ error[E1001]: type mismatch
    |
 13 |
 14 | def x : Int32 := id "hello"
-   |                     ------- cannot unify `String` with `?m2`
+   |                     ------- cannot unify `String` with `Int32`
    |
    ,-> <expected at 14:21>:1:1
    |
@@ -12,13 +12,13 @@ error[E1001]: type mismatch
    |
    ,-> <actual at 14:21>:1:1
    |
- 1 | ?m2
-   | --- actual type
+ 1 | Int32
+   | ----- actual type
    |
-   = note: The types `String` and `?m2` have incompatible structure and cannot be unified.
+   = note: The types `String` and `Int32` have incompatible structure and cannot be unified.
    = help: add type annotations to help the compiler infer types
    = type mismatch:
        expected: String
-         actual: ?m2
+         actual: Int32
    = unify trace:
        (no steps recorded)

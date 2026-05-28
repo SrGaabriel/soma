@@ -81,6 +81,10 @@ def addNode (n : Node) (ty : Value) : LowerT M NodeId :=
 def addEra : LowerT M NodeId :=
   addNode .era unitTy
 
+/-- Add a USE (strict evaluation point) node with the continuation's result type -/
+def addUse (ty : Value) : LowerT M NodeId :=
+  addNode .use ty
+
 /-- Add a DUP node with a label and type -/
 def addDup (label : Label) (ty : Value) : LowerT M NodeId :=
   addNode (.dup label) ty
@@ -284,6 +288,17 @@ partial def lowerTree {M : Type → Type} [Monad M] [MonadGraph M]
       -- The resolved type should now be accurate thanks to pre-caching
       pure (binding.id, binding.name, port, ty)
 
+    let stBefore ← LowerT.getState
+    let mut unconsumedPorts : Array PortId := #[]
+    for column in [:stBefore.scrutinees.size] do
+      let rootOcc : Occurrence := ⟨column, #[]⟩
+      match stBefore.occurrenceCache.get? rootOcc with
+      | some _ => pure ()
+      | none =>
+        let scrutPort := stBefore.scrutinees[column]!
+        unconsumedPorts := unconsumedPorts.push scrutPort
+        LowerT.cacheOccurrence rootOcc scrutPort unitTy
+
     -- Compute ownership budgets per binding, duplication stays lazy in caller lowering
     let finalBindings ← resolvedBindings.foldlM (init := #[]) fun acc (id, name, port, ty) =>
       let count := usageCounts.getD id 1
@@ -295,7 +310,16 @@ partial def lowerTree {M : Type → Type} [Monad M] [MonadGraph M]
         pure (acc.push (id, name, port, count, ty))
 
     -- Call the arm body lowering callback (lifted to LowerT)
-    StateT.lift (lowerArm armIndex ⟨finalBindings⟩)
+    let armPort ← StateT.lift (lowerArm armIndex ⟨finalBindings⟩)
+
+    let resultTy ← LowerT.getResultType
+    let mut currentPort := armPort
+    for scrutPort in unconsumedPorts do
+      let useNode ← LowerT.addUse resultTy
+      LowerT.connect ⟨useNode, ⟨1⟩⟩ scrutPort
+      LowerT.connect ⟨useNode, ⟨2⟩⟩ currentPort
+      currentPort := PortId.principal useNode
+    pure currentPort
 
   | .switch occurrence kind cases default =>
     let (scrutPort, scrutTy) ← resolveOccurrence occurrence

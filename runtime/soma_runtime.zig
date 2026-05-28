@@ -994,6 +994,18 @@ pub export fn soma_to_cstring(str: SomaString) ?[*:0]u8 {
     return @ptrCast(buf);
 }
 
+pub export fn soma_string_eq(a: SomaString, b: SomaString) bool {
+    if (a.len != b.len) return false;
+    if (a.len == 0) return true;
+    const a_bytes = somaStringBytes(a) orelse return false;
+    const b_bytes = somaStringBytes(b) orelse return false;
+    var i: u32 = 0;
+    while (i < a.len) : (i += 1) {
+        if (a_bytes[i] != b_bytes[i]) return false;
+    }
+    return true;
+}
+
 pub export fn soma_strcat(a: SomaString, b: SomaString) SomaString {
     const len_a = somaStringLen(a);
     const len_b = somaStringLen(b);

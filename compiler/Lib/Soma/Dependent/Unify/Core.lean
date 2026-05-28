@@ -333,7 +333,7 @@ private def buildHeadMismatch (vLeaf1 vLeaf2 : Value) : TCM UnifyFailure := do
       let rendered ← renderInsertedImplicits pp impls
       pure (some (surface, rendered))
     | none => pure none
-  return UnifyFailure.headMismatch v1 v2 path reduced trace implicits
+  return UnifyFailure.headMismatch v1 v2 path reduced trace implicits pp
 
 def throwUnifyError (v1 v2 : Value) (_msg : String := "") : TCM Unit := do
   let span ← TCM.getSpan

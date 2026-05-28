@@ -503,28 +503,41 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
 
   let (generatedParams, valueParams, coreBody') ←
     withMethodSignaturePrefix sigPrefix (methodFn.params.map (·.name)) methodFn.span do
-      let bodyIsProof ← Soma.Dependent.valueInPropUniverse resultType
-      let checked ←
-        if bodyIsProof then
-          TCM.inErasedContext (Soma.Dependent.checkSyntax methodFn.body resultType)
-        else
-          Soma.Dependent.checkSyntax methodFn.body resultType
-      Soma.Dependent.drainConstraints
-      let zonked ← zonkExpr checked
-      pure zonked.betaReduce
+      if methodFn.isExternStub then
+        Soma.Dependent.drainConstraints
+        pure (Soma.Core.TypedFunction.externBody methodFn.name)
+      else
+        let bodyIsProof ← Soma.Dependent.valueInPropUniverse resultType
+        let checked ←
+          if bodyIsProof then
+            TCM.inErasedContext (Soma.Dependent.checkSyntax methodFn.body resultType)
+          else
+            Soma.Dependent.checkSyntax methodFn.body resultType
+        Soma.Dependent.drainConstraints
+        let zonked ← zonkExpr checked
+        pure zonked.betaReduce
   let expectedType' ← zonkValue expectedType
 
-  -- Build the unfoldable method value over the full semantic telescope
-  let mut lambdaExpr := coreBody'
-  for i in [:valueParams.size] do
-    let idx := valueParams.size - 1 - i
-    let vp := valueParams[idx]!
-    let domExpr ← do
-      let zonkedTy ← zonkValue vp.type
-      pure (Soma.Core.quoteExpr0 zonkedTy)
-    lambdaExpr := lambdaExpr.abstractFVar vp.uid
-    lambdaExpr := .lam vp.binder vp.name domExpr lambdaExpr
-  let methodVal ← TCM.evalExpr lambdaExpr
+  let (lambdaExpr, methodVal) ←
+    if methodFn.isExternStub then
+      let typeExpr ← do
+        let zonkedTy ← zonkValue expectedType'
+        pure (Soma.Core.quoteExpr0 zonkedTy)
+      let constExpr := Soma.Core.Expr.const methodFn.name typeExpr
+      let val ← TCM.evalExpr constExpr
+      pure (constExpr, val)
+    else
+      let mut lam := coreBody'
+      for i in [:valueParams.size] do
+        let idx := valueParams.size - 1 - i
+        let vp := valueParams[idx]!
+        let domExpr ← do
+          let zonkedTy ← zonkValue vp.type
+          pure (Soma.Core.quoteExpr0 zonkedTy)
+        lam := lam.abstractFVar vp.uid
+        lam := .lam vp.binder vp.name domExpr lam
+      let val ← TCM.evalExpr lam
+      pure (lam, val)
 
   return {
     value := methodVal

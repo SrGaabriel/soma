@@ -1,5 +1,10 @@
-use base::prim::{IO}
+use base::prim::{IO, Int32, Pair}
 use base::string::{String}
 
-@[extern]
-def puts : String -> IO ()
+@[extern "puts"]
+def c_puts : String -> Int32
+
+def puts (s : String) : IO ()
+    | w =>
+        let _ := c_puts s in
+        Pair::Mk w ()

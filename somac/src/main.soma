@@ -1,7 +1,7 @@
 use stdlib::program::{get_args}
-use stdlib::collections::{mapM_}
+use stdlib::collections::{any}
 
 def main : IO () := compose
     bind args <- get_args
-    mapM_ (\arg -> puts (arg)) args
-    puts "Hello, World!"
+    let some_has := any (\arg -> arg == "hello") args
+    when some_has (puts "You said hello!")

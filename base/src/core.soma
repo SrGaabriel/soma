@@ -1,7 +1,23 @@
-use base::prim::{Int32, List}
+use base::prim::{Int32, Int8, Int16, Int64, Word8, Word16, Word32, Word64, Float, Double, List, Bool}
 use base::prop::{Eq, cong}
 use base::string::{String}
 use base::list::{list_append, list_append_assoc, list_append_right_id}
+
+class BEq (a : Type) where
+    {==} : a -> a -> Bool
+
+instance : BEq Int32  where @[intrinsic "primop.eq"] def {==} : Int32  -> Int32  -> Bool
+instance : BEq Int8   where @[intrinsic "primop.eq"] def {==} : Int8   -> Int8   -> Bool
+instance : BEq Int16  where @[intrinsic "primop.eq"] def {==} : Int16  -> Int16  -> Bool
+instance : BEq Int64  where @[intrinsic "primop.eq"] def {==} : Int64  -> Int64  -> Bool
+instance : BEq Word8  where @[intrinsic "primop.eq"] def {==} : Word8  -> Word8  -> Bool
+instance : BEq Word16 where @[intrinsic "primop.eq"] def {==} : Word16 -> Word16 -> Bool
+instance : BEq Word32 where @[intrinsic "primop.eq"] def {==} : Word32 -> Word32 -> Bool
+instance : BEq Word64 where @[intrinsic "primop.eq"] def {==} : Word64 -> Word64 -> Bool
+instance : BEq Float  where @[intrinsic "primop.eq"] def {==} : Float  -> Float  -> Bool
+instance : BEq Double where @[intrinsic "primop.eq"] def {==} : Double -> Double -> Bool
+instance : BEq Bool   where @[intrinsic "primop.eq"] def {==} : Bool   -> Bool   -> Bool
+instance : BEq String where @[extern "soma_string_eq"] def {==} : String -> String -> Bool
 
 @[extern "soma_int_to_string"]
 def int_to_string : Int32 -> String
@@ -81,3 +97,7 @@ instance {a : Type} {{d : Display a}} : Display (Option a) where
     def display : Option a -> String
         | Option::Some value => "Some(" <> d.display value <> ")"
         | Option::None => "None"
+
+def when {a : Type} {m : Type -> Type} {{Monad m}} : Bool -> m a -> m ()
+    | true, action => action >>= (\x_ -> pure ())
+    | false, _ => pure ()
