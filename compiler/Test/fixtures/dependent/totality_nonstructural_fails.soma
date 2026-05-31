@@ -1,0 +1,9 @@
+// expect: error termination check
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+def grow : List Nat -> Nat
+    | List::Nil => Nat::Zero
+    | List::Cons h t => grow (List::Cons (Nat::Succ h) t)

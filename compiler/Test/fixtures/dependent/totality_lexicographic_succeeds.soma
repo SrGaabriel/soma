@@ -1,0 +1,16 @@
+// expect: success
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+def ack : Nat -> Nat -> Nat
+    | Nat::Zero, n => Nat::Succ n
+    | Nat::Succ m, Nat::Zero => ack m (Nat::Succ Nat::Zero)
+    | Nat::Succ m, Nat::Succ n => ack m (ack (Nat::Succ m) n)
+
+def drain : List Nat -> Nat
+    | List::Nil => Nat::Zero
+    | List::Cons h t => match h
+        | Nat::Zero => Nat::Zero
+        | Nat::Succ hp => drain (List::Cons hp t)

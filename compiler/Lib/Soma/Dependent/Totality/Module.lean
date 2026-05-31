@@ -1,5 +1,6 @@
 import Soma.Core.Function
 import Soma.Dependent.Totality.Core
+import Soma.Dependent.Totality.Structure
 import Soma.Dependent.Totality.CallMatrix
 import Soma.Dependent.Totality.Check
 import Soma.Dependent.Error
@@ -34,23 +35,16 @@ private def functionInfoOf (fn : TypedFunction) (span : Span) : FunctionInfo :=
   { name := fn.name
     markedTotal := fn.attrs.total
     status := .isUnknown
-    params := fn.params.map (·.2)
+    params := fn.valueParams.map (·.name)
+    paramIds := fn.valueParams.map (·.uid)
     fnType := fn.fnType
     span := span }
 
-/-- Skip checking functions that are not meaningfully recursive -/
+/-- Functions that are not meaningfully checkable (foreign/intrinsic) -/
 private def needsCheck (fn : TypedFunction) : Bool :=
   fn.attrs.intrinsic.isNone ∧ fn.attrs.extern.isNone
 
-/-- Run the matrix-based termination analysis for a mutual group -/
-private def verifyGroup (fns : Array FunctionInfo) (bodies : Array Expr) : Bool × String :=
-  checkMatrixTermination fns bodies
-
-/-- Attempt to prove a single function terminates using the structural decrease checker -/
-private def verifySingle (fnInfo : FunctionInfo) (body : Expr) : TotalityCheckResult :=
-  checkFunctionTotality fnInfo body
-
-/-- Is a return-type value "definitely uninhabited" at the module level -/
+/-- Whether a return-type value is "definitely uninhabited" at the module level -/
 private partial def returnTypeIsUninhabited (ty : Value) : TCM Bool := do
   let ty' ← force ty
   match ty' with
@@ -70,32 +64,11 @@ private partial def returnTypeIsUninhabited (ty : Value) : TCM Bool := do
 private def terminationError (fnInfo : FunctionInfo) (reason : String) : TCError :=
   .terminationCheckFailed fnInfo.name reason fnInfo.span #[] #[]
 
-/-- Produce the final per-SCC verdicts -/
-private def finalizeScc (sccFns : Array (FunctionInfo × TypedFunction × Expr))
-    (ok : Bool) (reason : String)
-    : Array FunctionTotality :=
-  sccFns.map fun (info, fn, _) =>
-    if ok then
-      { name := info.name, status := .isTotal, span := info.span, error := none }
-    else if fn.attrs.partial_ then
-      { name := info.name, status := .isPartial, span := info.span, error := none }
-    else
-      { name := info.name, status := .isPartial, span := info.span,
-        error := some (terminationError info reason) }
-
 /-- Run the totality pass for an entire module -/
 def runTotalityChecks
     (typed : Array TypedFunction)
     (spans : Std.HashMap String Span)
     : TCM ModuleTotalityResult := do
-  let active : Array (FunctionInfo × TypedFunction × Expr) :=
-    typed.filterMap fun fn =>
-      if needsCheck fn then
-        let span := spans.getD fn.name.display Span.uninhabited
-        some (functionInfoOf fn span, fn, fn.body)
-      else
-        none
-
   let mut registry := TotalityRegistry.empty
   let mut outcomes : Std.HashMap String FunctionTotality := {}
   for fn in typed do
@@ -105,57 +78,47 @@ def runTotalityChecks
       outcomes := outcomes.insert fn.name.display
         { name := fn.name, status := .isTotal, span := span, error := none }
 
-  let infos := active.map (·.1)
-  let bodies := active.map (·.2.2)
-  if active.isEmpty then
+  let activeFns := typed.filter needsCheck
+  if activeFns.isEmpty then
     return { registry, outcomes, errors := #[] }
 
-  -- SCC decomposition over the call graph of all active functions
-  let graph := buildCallGraph infos bodies
-  let sccs := findSCCs graph
+  let allTargets : Std.HashSet String :=
+    activeFns.foldl (init := ({} : Std.HashSet String)) fun s fn => s.insert fn.name.display
+  let prepared : Array (TypedFunction × PreparedFn) :=
+    activeFns.map fun fn =>
+      let span := spans.getD fn.name.display Span.uninhabited
+      (fn, prepareFunction (functionInfoOf fn span) allTargets fn.body)
+
+  let names := prepared.map (·.2.info.name.display)
+  let calleesOf := prepared.map (·.2.analysis.calls.map (·.callee))
+  let graph := CallGraph.build names calleesOf
+  let sccs := graph.sccs
+
+  let byName : Std.HashMap String (TypedFunction × PreparedFn) :=
+    prepared.foldl (fun m e => m.insert e.2.info.name.display e) {}
 
   let mut errors : Array TCError := #[]
-
-  let findTriple (name : String) : Option (FunctionInfo × TypedFunction × Expr) :=
-    active.find? fun (info, _, _) => info.name.display == name
-
   for scc in sccs do
-    let sccTriples : Array (FunctionInfo × TypedFunction × Expr) :=
-      scc.filterMap findTriple
-    if sccTriples.isEmpty then continue
-
-    let sccInfos := sccTriples.map (·.1)
-    let sccBodies := sccTriples.map (·.2.2)
-
-    let (ok, reason) :=
-      match sccTriples.toList with
-      | [(info, _, body)] =>
-        let result := verifySingle info body
-        match result.status with
-        | .isTotal => (true, "structural recursion")
-        | _ =>
-          let reason :=
-            match result.recursiveCalls.findSome? (fun c =>
-              match c.decrease with
-              | .notFound r => some r
-              | _ => none) with
-            | some r => r
-            | none => "recursion is not structurally decreasing"
-          (false, reason)
-      | _ => verifyGroup sccInfos sccBodies
-
-    let verdicts := finalizeScc sccTriples ok reason
-    for v in verdicts do
-      registry := registry.register v.name.display v.status
-      outcomes := outcomes.insert v.name.display v
-      match v.error with
+    let members : Array (TypedFunction × PreparedFn) := scc.filterMap byName.get?
+    if members.isEmpty then continue
+    let verdict := checkComponent (members.map (·.2))
+    for (fn, pf) in members do
+      let status := if verdict.ok then .isTotal else .isPartial
+      let err? :=
+        if verdict.ok then none
+        else if fn.attrs.partial_ then none
+        else some (terminationError pf.info verdict.reason)
+      registry := registry.register pf.info.name.display status
+      outcomes := outcomes.insert pf.info.name.display
+        { name := pf.info.name, status, span := pf.info.span, error := err? }
+      match err? with
       | some e => errors := errors.push e
-      | none   => pure ()
+      | none => pure ()
 
-  for (info, fn, _) in active do
+  for (fn, pf) in prepared do
     if fn.attrs.partial_ then
       if (← returnTypeIsUninhabited fn.fnType) then
-        errors := errors.push (.partialInhabitsUninhabited info.name info.span)
+        errors := errors.push (.partialInhabitsUninhabited pf.info.name pf.info.span)
 
   return { registry, outcomes, errors }
 

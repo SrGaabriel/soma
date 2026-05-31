@@ -27,6 +27,7 @@ structure FunctionInfo where
   markedTotal : Bool
   status : TotalityStatus
   params : Array String
+  paramIds : Array Unique
   fnType : Value
   span : Span
 
@@ -36,193 +37,76 @@ instance : Inhabited FunctionInfo where
     markedTotal := false
     status := .isPartial
     params := #[]
+    paramIds := #[]
     fnType := Value.vType .zero
     span := Span.uninhabited
   }
 
-/-- A path through a pattern structure -/
-inductive StructurePath where
-  | root -- The scrutinee itself
-  | fst (parent : StructurePath) -- First of pair/tuple
-  | snd (parent : StructurePath) -- Second of pair/tuple
-  | field (parent : StructurePath) (name : String) -- Record field
-  | ctorArg (parent : StructurePath) (ctor : String) (idx : Nat) -- Constructor argument
+/-- A single structural projection step into a value -/
+inductive Proj where
+  | con (ctor : String) (idx : Nat)
+  | variant (label : String) (idx : Nat)
+  | field (name : String)
+  | tuple (idx : Nat)
+  deriving Repr, BEq, Hashable, Inhabited
+
+/-- A sequence of projections from a parameter -/
+abbrev AccessPath := List Proj
+
+/-- Is `p` a (not necessarily strict) prefix of `q`? -/
+def AccessPath.isPrefixOf : AccessPath → AccessPath → Bool
+  | [], _ => true
+  | _ :: _, [] => false
+  | a :: as, b :: bs => a == b && AccessPath.isPrefixOf as bs
+
+/-- A structural position -/
+structure Prov where
+  root : Nat
+  path : AccessPath
+  deriving Repr, BEq, Hashable, Inhabited
+
+namespace Prov
+
+/-- Extend a position by one projection -/
+def extend (p : Prov) (proj : Proj) : Prov := { p with path := p.path ++ [proj] }
+
+/-- Extend a position by several projections -/
+def extendAll (p : Prov) (projs : AccessPath) : Prov := { p with path := p.path ++ projs }
+
+instance : ToString Prov where
+  toString p := Id.run do
+    let mut s := s!"p{p.root}"
+    for proj in p.path do
+      s := s ++ (match proj with
+        | .con c i => s!".{c}[{i}]"
+        | .variant l i => s!".{l}<{i}>"
+        | .field n => s!".{n}"
+        | .tuple i => s!".{i}")
+    return s
+
+end Prov
+
+/-- The relation between two structural positions on a recursive call -/
+inductive SizeRel where
+  | lt
+  | le
   deriving Repr, BEq, Inhabited
 
-namespace StructurePath
+namespace SizeRel
 
-/-- Compute the depth of a path (number of constructor unwrappings) -/
-def depth : StructurePath → Nat
-  | .root => 0
-  | .fst p => p.depth -- Projection: same depth
-  | .snd p => p.depth -- Projection: same depth
-  | .field p _ => p.depth -- Projection: same depth
-  | .ctorArg p _ _ => p.depth + 1 -- Constructor unwrap: +1 depth
+/-- `lt` dominates `le` when several witnesses are available for the same pair -/
+def join : SizeRel → SizeRel → SizeRel
+  | .lt, _ => .lt
+  | _, .lt => .lt
+  | .le, .le => .le
 
-/-- Pretty print a path for debugging -/
-def toString : StructurePath → String
-  | .root => "root"
-  | .fst p => s!"{p.toString}.fst"
-  | .snd p => s!"{p.toString}.snd"
-  | .field p n => s!"{p.toString}.{n}"
-  | .ctorArg p c i => s!"{p.toString}.{c}[{i}]"
+/-- Sequential composition along a call path -/
+def compose : SizeRel → SizeRel → SizeRel
+  | .lt, _ => .lt
+  | _, .lt => .lt
+  | .le, .le => .le
 
-instance : ToString StructurePath := ⟨toString⟩
-
-end StructurePath
-
-/-- Complete information about a pattern-bound variable -/
-structure BindingInfo where
-  name : String -- The variable name
-  paramIdx : Nat -- Which function parameter this came from
-  paramName : String -- Name of that parameter
-  path : StructurePath -- Path through the pattern to this binding
-  depth : Nat -- Precomputed depth for efficiency
-  deriving Repr, Inhabited
-
-namespace BindingInfo
-
-/-- Is this binding strictly smaller than its source parameter? -/
-def isSmaller (b : BindingInfo) : Bool := b.depth > 0
-
-end BindingInfo
-
-/-- Result of comparing a recursive call argument to the original pattern -/
-inductive StructuralCmp where
-  | smaller (reason : String)   -- Strictly smaller (terminates!)
-  | equal                       -- Same size (continue lexicographic check)
-  | larger                      -- Larger (fails unless earlier arg was smaller)
-  | unknown                     -- Can't determine
-  deriving Repr, BEq, Inhabited
-
-namespace StructuralCmp
-
-def isSmaller : StructuralCmp → Bool
-  | .smaller _ => true
-  | _ => false
-
-def isEqual : StructuralCmp → Bool
-  | .equal => true
-  | _ => false
-
-end StructuralCmp
-
-/-- A decrease witness for termination checking -/
-inductive DecreaseWitness where
-  | arg (paramIdx : Nat) (reason : String) -- Decrease on a specific argument
-  | lex (witnesses : Array DecreaseWitness) -- Lexicographic decrease
-  | linear (description : String) -- Decrease on a linear measure under path-condition guards
-  | notFound (reason : String) -- No decrease found
-  deriving Repr, Inhabited
-
-/-- The termination checking context -/
-structure TerminationContext where
-  /-- Function parameters -/
-  params : Array String
-  /-- Map from variable name to binding info -/
-  bindings : Std.HashMap String BindingInfo := {}
-  /-- The current function being checked -/
-  currentFn : Option FunctionInfo := none
-  deriving Inhabited
-
-namespace TerminationContext
-
-def empty : TerminationContext := { params := #[] }
-
-/-- Create a context from function parameters -/
-def fromParams (params : Array String) : TerminationContext :=
-  let bindings := params.foldl (init := ({}, 0)) fun (acc, idx) name =>
-    let info : BindingInfo := {
-      name := name
-      paramIdx := idx
-      paramName := name
-      path := .root
-      depth := 0
-    }
-    (acc.insert name info, idx + 1)
-  { params := params, bindings := bindings.1 }
-
-/-- Look up binding info for a variable -/
-def lookup (ctx : TerminationContext) (name : String) : Option BindingInfo :=
-  ctx.bindings.get? name
-
-/-- Add a new binding (from pattern matching) -/
-def addBinding (ctx : TerminationContext) (info : BindingInfo) : TerminationContext :=
-  { ctx with bindings := ctx.bindings.insert info.name info }
-
-/-- Add multiple bindings -/
-def addBindings (ctx : TerminationContext) (infos : Array BindingInfo) : TerminationContext :=
-  infos.foldl (fun c i => c.addBinding i) ctx
-
-end TerminationContext
-
-/-- Information about a recursive call -/
-structure RecursiveCallInfo where
-  callSpan : Span
-  callee : QualifiedName
-  argNames : Array String
-  decrease : DecreaseWitness
-
-instance : Inhabited RecursiveCallInfo where
-  default := {
-    callSpan := Span.uninhabited
-    callee := dummyName
-    argNames := #[]
-    decrease := .notFound ""
-  }
-
-/-- State for termination checking -/
-structure TermState where
-  currentFn : Option FunctionInfo := none
-  ctx : TerminationContext := TerminationContext.empty
-  recursiveCalls : Array RecursiveCallInfo := #[]
-  errors : Array TCError := #[]
-  deriving Inhabited
-
-/-- Termination checking monad -/
-abbrev TermM := StateT TermState (Except TCError)
-
-namespace TermM
-
-def run (m : TermM α) (state : TermState := {}) : Except TCError (α × TermState) :=
-  m state
-
-def getState : TermM TermState := get
-def modifyState (f : TermState → TermState) : TermM Unit := modify f
-
-def addError (e : TCError) : TermM Unit :=
-  modifyState fun s => { s with errors := s.errors.push e }
-
-def getCurrentFn : TermM (Option FunctionInfo) := do
-  return (← getState).currentFn
-
-def setCurrentFn (fn : FunctionInfo) : TermM Unit :=
-  modifyState fun s => { s with
-    currentFn := some fn
-    ctx := TerminationContext.fromParams fn.params
-  }
-
-def getContext : TermM TerminationContext := do
-  return (← getState).ctx
-
-def modifyContext (f : TerminationContext → TerminationContext) : TermM Unit :=
-  modifyState fun s => { s with ctx := f s.ctx }
-
-def addBindings (infos : Array BindingInfo) : TermM Unit :=
-  modifyContext (·.addBindings infos)
-
-def recordRecursiveCall (info : RecursiveCallInfo) : TermM Unit :=
-  modifyState fun s => { s with recursiveCalls := s.recursiveCalls.push info }
-
-/-- Run an action with additional bindings, then restore the context -/
-def withBindings (bindings : Array BindingInfo) (action : TermM α) : TermM α := do
-  let saved := (← getState).ctx
-  addBindings bindings
-  let result ← action
-  modifyState fun s => { s with ctx := saved }
-  return result
-
-end TermM
+end SizeRel
 
 /-- Registry of function totality status -/
 structure TotalityRegistry where
@@ -240,12 +124,5 @@ def lookup (reg : TotalityRegistry) (name : String) : Option TotalityStatus :=
   reg.functions.get? name
 
 end TotalityRegistry
-
-/-- Result of totality checking -/
-structure TotalityCheckResult where
-  status : TotalityStatus
-  errors : Array TCError
-  recursiveCalls : Array RecursiveCallInfo
-  deriving Inhabited
 
 end Soma.Dependent.Totality

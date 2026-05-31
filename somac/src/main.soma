@@ -1,7 +1,30 @@
+use base::core::{Display}
 use stdlib::program::{get_args}
-use stdlib::collections::{any}
+use stdlib::collections::{any, map, mapM_}
+
+inductive Token where
+    | TStr
+    | TNum
+    | TBool
+    | TVar
+
+instance : Display Token where
+    def display : Token -> String
+        | Token::TStr => "TStr"
+        | Token::TNum => "TNum"
+        | Token::TBool => "TBool"
+        | Token::TVar => "TVar"
+
+def lex (s : String) : Token := compose
+    if s == "hello" then Token::TStr
+    else if s == "world" then Token::TStr
+    else if s == "true" then Token::TBool
+    else Token::TVar
 
 def main : IO () := compose
     bind args <- get_args
     let some_has := any (\arg -> arg == "hello") args
+    let lexed := map lex args
+    puts ("Lexed")
+    mapM_ (\token -> puts (display token)) lexed
     when some_has (puts "You said hello!")

@@ -1,295 +1,136 @@
 import Soma.Dependent.Totality.Core
-import Soma.Dependent.Totality.TermShape
-import Soma.Dependent.Totality.LinArith
+import Soma.Dependent.Totality.Structure
 import Soma.Dependent.Totality.CallMatrix
-import Soma.Dependent.Totality.Positivity
+import Soma.Dependent.Totality.LinArith
 import Soma.Core.Expr
 
 namespace Soma.Dependent.Totality
 
 open Soma.Core
-open Soma.Syntax (Span)
+open Soma (Unique)
 
-/-- Collect the application spine from nested binary apps -/
-private partial def collectAppSpine' (e : Soma.Core.Expr) : Soma.Core.Expr × List Soma.Core.Expr :=
-  match e with
-  | .app fn arg =>
-    let (head, args) := collectAppSpine' fn
-    (head, args ++ [arg])
-  | _ => (e, [])
+/-- A function prepared for component analysis -/
+structure PreparedFn where
+  info : FunctionInfo
+  body : Expr
+  analysis : FnAnalysis
+  paramIdx : Std.HashMap Unique Nat
+  deriving Inhabited
 
-/-- Get a variable name from an Expr for scrutinee parameter matching -/
-private def exprVarName? : Soma.Core.Expr → Option String
-  | .fvar id _ => some id.original
-  | .const name _ => some name.display
-  | _ => none
+/-- Map a parameter unique-id array to a position index -/
+def mkParamIdx (params : Array Unique) : Std.HashMap Unique Nat :=
+  params.foldl (init := ({}, 0)) (fun (m, i) u => (m.insert u i, i + 1)) |>.1
 
-/-- Analyze a case arm and extract all bindings introduced by the pattern (Expr version). -/
-private def analyzePatternFromArmExpr (patternName : String) (scrutineeParam : Option (Nat × String))
-    (armBody : Soma.Core.Expr) (existingParams : Array String) : Array BindingInfo :=
-  match scrutineeParam with
-  | none => #[]
-  | some (paramIdx, paramName) =>
-    let usedVars := collectExprVars armBody
-    let newVars := usedVars.filter fun v => !existingParams.contains v
-    newVars.toArray.map fun name => {
-      name := name
-      paramIdx := paramIdx
-      paramName := paramName
-      path := .ctorArg .root patternName 0
-      depth := 1
-    }
+/-- Analyze one function up-front (dimensions + every call to any group member) -/
+def prepareFunction (info : FunctionInfo) (allTargets : Std.HashSet String) (body : Expr)
+    : PreparedFn :=
+  { info, body
+    analysis := analyzeFunction info.paramIds allTargets body
+    paramIdx := mkParamIdx info.paramIds }
 
-/-- Check if a recursive call terminates -/
-def checkRecursiveCallStructural (args : List Soma.Core.Expr) (ctx : TerminationContext)
-    (linCtx : LinCtx) : DecreaseWitness :=
-  let argShapes := args.map analyzeExprShape
-
-  -- Try lexicographic comparison across arguments
-  let rec go (shapes : List TermShape) (idx : Nat) : DecreaseWitness :=
-    match shapes with
-    | [] => fallbackToLinear "all arguments are equal or no relationship found"
-    | shape :: rest =>
-      if h : idx < ctx.params.size then
-        let paramName := ctx.params[idx]
-        let cmp := compareTermToParam shape idx paramName ctx
-
-        match cmp with
-        | .smaller reason =>
-          .arg idx reason
-        | .equal =>
-          go rest (idx + 1)
-        | .larger =>
-          fallbackCheck argShapes idx
-        | .unknown =>
-          fallbackCheck argShapes idx
-      else
-        fallbackCheck argShapes idx
-
-  go argShapes 0
-where
-  /-- Fallback: check if any argument at all is smaller -/
-  fallbackCheck (shapes : List TermShape) (failedIdx : Nat) : DecreaseWitness :=
-    let rec search (ss : List TermShape) (idx : Nat) : Option (Nat × String) :=
-      match ss with
-      | [] => none
-      | shape :: rest =>
-        let vars := shape.collectVars
-        let allSmaller := vars.all fun v =>
-          match ctx.lookup v with
-          | some info => info.isSmaller
-          | none => false
-        let anySmaller := vars.any fun v =>
-          match ctx.lookup v with
-          | some info => info.isSmaller
-          | none => false
-        if anySmaller && allSmaller then
-          some (idx, s!"argument {idx} uses only smaller bindings")
-        else if anySmaller then
-          some (idx, s!"argument {idx} uses at least one smaller binding")
-        else
-          search rest (idx + 1)
-
-    match search shapes 0 with
-    | some (idx, reason) => .arg idx reason
-    | none => fallbackToLinear s!"no decreasing argument found (failed at position {failedIdx})"
-
-  fallbackToLinear (structuralReason : String) : DecreaseWitness :=
-    match findLinearDecrease ctx.params args linCtx ctx.bindings with
-    | some w => .linear w.description
-    | none => .notFound structuralReason
-
-/-- Find which parameter a scrutinee corresponds to -/
-private def findScrutineeParam (scrutinee : Soma.Core.Expr) (params : Array String) : Option (Nat × String) :=
-  match exprVarName? scrutinee with
-  | some name =>
-    match params.findIdx? (· == name) with
-    | some idx => some (idx, name)
-    | none => none
-  | none => none
-
-/-- Check termination for a function body -/
-partial def checkTermination (fnInfo : FunctionInfo) (body : Soma.Core.Expr) : TermM Unit := do
-  TermM.setCurrentFn fnInfo
-  checkTerm body LinCtx.empty
-where
-  /-- Check a term for termination -/
-  checkTerm (t : Soma.Core.Expr) (linCtx : LinCtx) : TermM Unit := do
-    match t with
-    | .bvar _ => pure ()
-    | .fvar _ _ => pure ()
-    | .mvar _ => pure ()
-    | .tyvar _ _ => pure ()
-    | .const name _ =>
-      let fnInfo? ← TermM.getCurrentFn
-      match fnInfo? with
-      | some fnInfo =>
-        if name.display == fnInfo.name.display then
-          TermM.recordRecursiveCall {
-            callSpan := Span.uninhabited
-            callee := fnInfo.name
-            argNames := #[]
-            decrease := .notFound "self-reference has no arguments to decrease on"
-          }
-      | none => pure ()
-    | .lit _ => pure ()
-    | .sort _ => pure ()
-    | .rowSort => pure ()
-    | .labelSort => pure ()
-    | .rowEmpty => pure ()
-    | .labelLit _ => pure ()
-    | .panic _ => pure ()
-    | .proj _ _ _ => pure ()
-
-    | .app _ _ =>
-      let (head, args) := collectAppSpine' t
-      match head with
-      | .const name _ =>
-        let fnInfo? ← TermM.getCurrentFn
-        match fnInfo? with
-        | some fnInfo =>
-          if name.display == fnInfo.name.display then
-            let ctx ← TermM.getContext
-            let witness := checkRecursiveCallStructural args ctx linCtx
-            let argNames := args.filterMap (fun e =>
-              exprVarName? e) |>.toArray
-            TermM.recordRecursiveCall {
-              callSpan := Span.uninhabited
-              callee := fnInfo.name
-              argNames := argNames
-              decrease := witness
-            }
+/-- Build the size-change graphs for every call internal to a component and run the termination test -/
+def structuralTerminates (group : Array PreparedFn) : Bool :=
+  let idxOf : Std.HashMap String Nat :=
+    group.foldl (init := ({}, 0)) (fun (m, i) pf => (m.insert pf.info.name.display i, i + 1)) |>.1
+  let edges : Array SizeMatrix := Id.run do
+    let mut es : Array SizeMatrix := #[]
+    for i in [:group.size] do
+      let pf := group[i]!
+      for call in pf.analysis.calls do
+        match idxOf.get? call.callee with
+        | some j =>
+          if hj : j < group.size then
+            es := es.push (SizeMatrix.ofCall pf.paramIdx i j pf.analysis.dims group[j].analysis.dims call)
         | none => pure ()
-      | _ => checkTerm head linCtx
-      for arg in args do
-        checkTerm arg linCtx
+    return es
+  sizeChangeTerminates edges
 
-    | .lam _ _ _ body => checkTerm body linCtx
+/-- A recursive call captured with its guard context for the linear measure -/
+private structure GuardedCall where
+  args : List Expr
+  ctx : LinCtx
+  deriving Inhabited
 
-    | .let_ _ ty val body =>
-      checkTerm ty linCtx
-      checkTerm val linCtx
-      checkTerm body linCtx
+/-- Collect self-calls of `target` together with the path-condition context that holds at each call site -/
+private partial def collectGuardedCalls (target : String) (params : Array String)
+    (ctx : LinCtx) (e : Expr) (acc : Array GuardedCall) : Array GuardedCall :=
+  let collectSpine (e : Expr) : Expr × List Expr :=
+    let rec go (e : Expr) (as : List Expr) : Expr × List Expr :=
+      match e with
+      | .app fn arg => go fn (arg :: as)
+      | _ => (e, as)
+    go e []
+  match e with
+  | .app _ _ =>
+    let (head, args) := collectSpine e
+    let acc := match head with
+      | .const name _ => if name.display == target then acc.push { args, ctx } else acc
+      | _ => collectGuardedCalls target params ctx head acc
+    args.foldl (fun a arg => collectGuardedCalls target params ctx arg a) acc
+  | .const name _ =>
+    if name.display == target then acc.push { args := [], ctx } else acc
+  | .if_ c t el =>
+    let acc := collectGuardedCalls target params ctx c acc
+    let atom? := analyzeCondAtom c params
+    let thenCtx := match atom? with | some a => ctx.addAtom a | none => ctx
+    let elseCtx := match atom? with | some a => ctx.addAtom a.negate | none => ctx
+    let acc := collectGuardedCalls target params thenCtx t acc
+    collectGuardedCalls target params elseCtx el acc
+  | .lam _ _ d b =>
+    collectGuardedCalls target params ctx b (collectGuardedCalls target params ctx d acc)
+  | .let_ _ t v b =>
+    let acc := collectGuardedCalls target params ctx t acc
+    let acc := collectGuardedCalls target params ctx v acc
+    collectGuardedCalls target params ctx b acc
+  | .«case» scruts _ arms =>
+    let acc := scruts.foldl (fun a s => collectGuardedCalls target params ctx s a) acc
+    arms.foldl (fun a arm => collectGuardedCalls target params ctx arm.body a) acc
+  | .construct _ _ args _ => args.foldl (fun a x => collectGuardedCalls target params ctx x a) acc
+  | .inject _ args _ => args.foldl (fun a x => collectGuardedCalls target params ctx x a) acc
+  | .fieldAccess x _ _ => collectGuardedCalls target params ctx x acc
+  | .ann x t => collectGuardedCalls target params ctx t (collectGuardedCalls target params ctx x acc)
+  | _ => acc
 
-    | .if_ cond then_ else_ =>
-      checkTerm cond linCtx
-      let ctx ← TermM.getContext
-      let posAtom? := analyzeCondAtom cond ctx.params ctx.bindings
-      let thenCtx := match posAtom? with
-        | some a => linCtx.addAtom a
-        | none => linCtx
-      let elseCtx := match posAtom? with
-        | some a => linCtx.addAtom a.negate
-        | none => linCtx
-      checkTerm then_ thenCtx
-      checkTerm else_ elseCtx
+/-- Try to prove a single (non-mutual) function terminates -/
+def numericTerminates (pf : PreparedFn) : Option String :=
+  let params := pf.info.params
+  let arity := params.size
+  let calls := collectGuardedCalls pf.info.name.display params LinCtx.empty pf.body #[]
+  if calls.isEmpty then none
+  else
+    let pairs : List (Nat × Nat) :=
+      (List.range arity).flatMap fun i =>
+        (List.range arity).filterMap fun j => if i == j then none else some (i, j)
+    pairs.findSome? fun (i, j) =>
+      let measure := (LinForm.ofParam j).sub (LinForm.ofParam i)
+      let okForAll := calls.all fun c =>
+        let argArr := c.args.toArray
+        match (argArr[i]?.bind (analyzeLinForm · params)),
+              (argArr[j]?.bind (analyzeLinForm · params)) with
+        | some argI, some argJ =>
+          let afterCall := argJ.sub argI
+          entailsNonneg c.ctx measure && entailsNonneg c.ctx ((measure.sub afterCall).sub (LinForm.ofConst 1))
+        | _, _ => false
+      if okForAll then some s!"linear measure {measure.toDisplay}" else none
 
-    | .pi _ _ _ dom cod =>
-      checkTerm dom linCtx
-      checkTerm cod linCtx
+/-- Outcome of checking one strongly-connected component -/
+structure SccVerdict where
+  ok : Bool
+  reason : String
+  deriving Inhabited
 
-    | .recordTy row => checkTerm row linCtx
-    | .variantTy row => checkTerm row linCtx
-
-    | .rowExtend label ty tail =>
-      checkTerm label linCtx
-      checkTerm ty linCtx
-      checkTerm tail linCtx
-
-    | .record fields =>
-      for (_, t) in fields do
-        checkTerm t linCtx
-
-    | .recordUpdate base updates =>
-      checkTerm base linCtx
-      for (_, t) in updates do
-        checkTerm t linCtx
-
-    | .fieldAccess e _ _ => checkTerm e linCtx
-
-    | .inject _ args _ =>
-      for arg in args do
-        checkTerm arg linCtx
-
-    | .construct _ _ args _ =>
-      for arg in args do
-        checkTerm arg linCtx
-
-    | .«case» scruts _ arms =>
-      for scrut in scruts do
-        checkTerm scrut linCtx
-
-      -- Use the first scrutinee for parameter matching
-      let scrutinee := scruts[0]?
-      let fnInfo? ← TermM.getCurrentFn
-      let paramInfo := match fnInfo?, scrutinee with
-        | some fnInfo, some s => findScrutineeParam s fnInfo.params
-        | _, _ => none
-
-      for arm in arms do
-        let patName := match arm.patterns[0]? with
-          | some (.ctor name _ _) => name.display
-          | _ => "_"
-        let armBody := arm.body
-        match paramInfo with
-        | some (paramIdx, paramName) =>
-          let ctx ← TermM.getContext
-          let bindings := analyzePatternFromArmExpr patName (some (paramIdx, paramName))
-                           armBody ctx.params
-          TermM.withBindings bindings do
-            checkTerm armBody linCtx
-        | none =>
-          checkTerm armBody linCtx
-
-    | .closure _ caps _ =>
-      for cap in caps do
-        checkTerm cap linCtx
-
-    | .array elements _ =>
-      for e in elements do
-        checkTerm e linCtx
-
-    | .tuple elements =>
-      for e in elements do
-        checkTerm e linCtx
-
-    | .dataTy _ params =>
-      for p in params do
-        checkTerm p linCtx
-
-    | .ann expr ty =>
-      checkTerm expr linCtx
-      checkTerm ty linCtx
-
-/-- Verify all recursive calls are well-founded -/
-def verifyRecursiveCalls (fnInfo : FunctionInfo) : TermM Bool := do
-  let s ← TermM.getState
-  let mut allOk := true
-
-  for call in s.recursiveCalls do
-    match call.decrease with
-    | .arg _ _ => pure ()
-    | .lex _ => pure ()
-    | .linear _ => pure ()
-    | .notFound reason =>
-      allOk := false
-      TermM.addError (.terminationCheckFailed fnInfo.name reason call.callSpan #[] #[])
-
-  return allOk
-
-/-- Check totality for a function marked @[total] -/
-def checkFunctionTotality (fnInfo : FunctionInfo) (body : Soma.Core.Expr) : TotalityCheckResult :=
-  match (do
-    checkTermination fnInfo body
-    let ok ← verifyRecursiveCalls fnInfo
-    return ok
-  ).run with
-  | .ok (ok, state) =>
-    if ok then
-      { status := .isTotal, errors := state.errors, recursiveCalls := state.recursiveCalls }
-    else
-      { status := .isPartial, errors := state.errors, recursiveCalls := state.recursiveCalls }
-  | .error e =>
-    { status := .isPartial, errors := #[e], recursiveCalls := #[] }
+/-- Decide termination for one component -/
+def checkComponent (group : Array PreparedFn) : SccVerdict :=
+  if structuralTerminates group then
+    { ok := true, reason := "structural recursion" }
+  else if group.size == 1 then
+    match numericTerminates group[0]! with
+    | some why => { ok := true, reason := why }
+    | none =>
+      { ok := false
+        reason := "no structural size-change or numeric measure decreases on every recursive call" }
+  else
+    { ok := false
+      reason := "no shared dimension descends around every cycle" }
 
 end Soma.Dependent.Totality

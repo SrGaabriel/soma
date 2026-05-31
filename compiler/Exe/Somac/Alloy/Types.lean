@@ -222,10 +222,8 @@ partial def alignment (ty : Ty n) (ptrBytes : Nat) : Nat :=
   | .ptr _ | .rawPtr | .funcPtr _ _ => ptrBytes
   | .struct fields => fields.foldl (fun acc (_, t) => max acc (t.alignment ptrBytes)) 1
   | .array elem _ => elem.alignment ptrBytes
-  | .tagged tag variants =>
-      let maxAlign := variants.foldl (fun acc (_, fields) =>
-        max acc (fields.foldl (fun a t => max a (t.alignment ptrBytes)) 1)) 1
-      max (tag.alignment ptrBytes) maxAlign
+  | .tagged _ _ =>
+      ptrBytes
   | .closure _ _ => ptrBytes
   | .var _ => ptrBytes
 
@@ -251,10 +249,8 @@ partial def sizeBytes (ty : Ty n) (ptrBytes : Nat) : Nat :=
   | .funcPtr _ _ => ptrBytes
   | .struct fields => alignedFieldsSize (fields.map fun (_, t) => t) ptrBytes
   | .array elem size => sizeBytes elem ptrBytes * size
-  | .tagged tag variants =>
-      let maxPayload := variants.foldl (fun acc (_, fields) =>
-        max acc (alignedFieldsSize fields ptrBytes)) 0
-      sizeBytes tag ptrBytes + maxPayload
+  | .tagged _ _ =>
+      alignedFieldsSize (n := n) #[Ty.prim .u32, Ty.rawPtr] ptrBytes
   | .closure _ _ => ptrBytes * 2
   | .var _ => ptrBytes
 end

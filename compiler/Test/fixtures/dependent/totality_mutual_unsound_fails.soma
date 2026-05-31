@@ -1,0 +1,13 @@
+// expect: error termination check
+
+inductive Nat where
+    | Zero
+    | Succ (n : Nat)
+
+def f : Nat -> Nat -> Nat
+    | Nat::Zero, _ => Nat::Zero
+    | Nat::Succ x, y => g x (Nat::Succ y)
+
+def g : Nat -> Nat -> Nat
+    | _, Nat::Zero => Nat::Zero
+    | x, Nat::Succ y => f (Nat::Succ x) y

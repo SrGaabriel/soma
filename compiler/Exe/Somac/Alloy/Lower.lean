@@ -1025,6 +1025,8 @@ structure NodeState (n : Nat) where
   listTypedLocals : Std.HashSet Nat := {}
   /-- Anonymous LAM node ID → graph book index mapping -/
   anonLamBookIdx : Std.HashMap Nat Nat := {}
+  /-- Anonymous LAM node ID → ordered free variables it captures -/
+  anonLamCaptures : Std.HashMap Nat (Array CNodeId) := {}
   /-- Target pointer width in bytes -/
   ptrBytes : Nat := 8
   /-- Type abbreviation environment for unfolding parameterized aliases -/
@@ -1418,9 +1420,21 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     | some bookIdx =>
       let ls ← StateT.lift get
       let funcRef := buildFuncRefFromBookRef graph bookIdx (some funcIdMap) ls.ctxIntrinsics
-      let unitEnv ← StateT.lift (LowerM.emitInst
-        (.copy (.const (.undef (.prim .unit)))) (.prim .unit))
-      StateT.lift (LowerM.emitInst (.makeClosure funcRef 0 (.local unitEnv)) .rawPtr)
+      let captures := ns.anonLamCaptures.get? nodeId.id |>.getD #[]
+      if captures.isEmpty then
+        let unitEnv ← StateT.lift (LowerM.emitInst
+          (.copy (.const (.undef (.prim .unit)))) (.prim .unit))
+        StateT.lift (LowerM.emitInst (.makeClosure funcRef 0 (.local unitEnv)) .rawPtr)
+      else
+        let firstCap := captures[0]!
+        let firstVal ← lowerOperandWithMap graph ⟨firstCap, ⟨1⟩⟩ funcIdMap
+        let initClosure ← StateT.lift (LowerM.emitInst
+          (.makeClosure funcRef 1 (.local firstVal)) .rawPtr)
+        let remaining := captures.extract 1 captures.size
+        remaining.foldlM (init := initClosure) fun acc capLam => do
+          let capVal ← lowerOperandWithMap graph ⟨capLam, ⟨1⟩⟩ funcIdMap
+          StateT.lift (LowerM.emitInst
+            (.callClosure (.local acc) #[.local capVal] .rawPtr) .rawPtr)
     | none =>
       lowerPort 2
 
@@ -2065,16 +2079,30 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         if let some bookIdx := ns.anonLamBookIdx.get? fnPort.node.id then
           let ls ← StateT.lift get
           let funcRef := buildFuncRefFromBookRef graph bookIdx (some funcIdMap) ls.ctxIntrinsics
-          -- 0 user captures, unit env sentinel
-          let unitEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.undef (.prim .unit)))) (.prim .unit))
+          let captures := ns.anonLamCaptures.get? fnPort.node.id |>.getD #[]
           let fnNodeTy := graph.getNode fnPort.node |>.map (·.ty)
           let typeArgs? := (graph.getDefinition bookIdx).bind fun def_ =>
             fnNodeTy.bind fun concTy => extractCallTypeArgs def_.ty concTy ctx
-          match typeArgs? with
-          | some typeArgs =>
-            StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs 0 (.local unitEnv)) .rawPtr)
-          | none =>
-            StateT.lift (LowerM.emitInst (.makeClosure funcRef 0 (.local unitEnv)) .rawPtr)
+          if captures.isEmpty then
+            let unitEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.undef (.prim .unit)))) (.prim .unit))
+            match typeArgs? with
+            | some typeArgs =>
+              StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs 0 (.local unitEnv)) .rawPtr)
+            | none =>
+              StateT.lift (LowerM.emitInst (.makeClosure funcRef 0 (.local unitEnv)) .rawPtr)
+          else
+            let firstCap := captures[0]!
+            let firstVal ← lowerOperandWithMap graph ⟨firstCap, ⟨1⟩⟩ funcIdMap
+            let initClosure ← match typeArgs? with
+              | some typeArgs =>
+                StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs 1 (.local firstVal)) .rawPtr)
+              | none =>
+                StateT.lift (LowerM.emitInst (.makeClosure funcRef 1 (.local firstVal)) .rawPtr)
+            let remaining := captures.extract 1 captures.size
+            remaining.foldlM (init := initClosure) fun acc capLam => do
+              let capVal ← lowerOperandWithMap graph ⟨capLam, ⟨1⟩⟩ funcIdMap
+              StateT.lift (LowerM.emitInst
+                (.callClosure (.local acc) #[.local capVal] .rawPtr) .rawPtr)
         else
           -- Check if the LAM is a definition root: find its book index
           let bookIdx? := graph.book.findIdx? fun d => d.root == fnPort.node
@@ -2097,10 +2125,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       else
         let headVal ← lowerPort 1
         let tailVal ← lowerPort 2
-        let elemSz := listElemSizeFromValueType entry.ty ctx (← get).ptrBytes
-        let headTy := match listElemValueType entry.ty ctx.primTypes with
+        let headTy := ((← StateT.lift get).func.getLocalType headVal).getD <|
+          match listElemValueType entry.ty ctx.primTypes with
           | some elemVal => convertValueTypeWithMapping elemVal ctx
           | none => getPortType 1 (.prim .i64)
+        let elemSz := listElemSize headTy (← get).ptrBytes
         let headAlloca ← StateT.lift (LowerM.emitInst (.alloca headTy) (.ptr headTy))
         StateT.lift (LowerM.emitVoid (.store (.local headAlloca) (.local headVal)))
         let elemSizeConst ← StateT.lift (LowerM.emitInst
@@ -2621,6 +2650,99 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
 end
 
+/-- Walk a LAM chain's body subgraph and collect every outer LAM whose VAR port is referenced from inside the chain -/
+partial def collectFreeLamVars (graph : CGraph) (chainStart : CNodeId)
+    (chainArity : Nat) : Array CNodeId := Id.run do
+  let mut chainLams : Std.HashSet Nat := {}
+  let mut current := chainStart
+  let mut bodyRoot? : Option CNodeId := none
+  let mut chainVisited : Std.HashSet Nat := {}
+  for _ in [:chainArity] do
+    if chainVisited.contains current.id then break
+    chainVisited := chainVisited.insert current.id
+    chainLams := chainLams.insert current.id
+    match graph.getNode current with
+    | some entry =>
+      match entry.node with
+      | .lam _ =>
+        match entry.getPort ⟨2⟩ with
+        | some bodyPort =>
+          bodyRoot? := some bodyPort.node
+          current := bodyPort.node
+        | none => bodyRoot? := none; break
+      | _ => break
+    | none => break
+
+  let some bodyRoot := bodyRoot? | return #[]
+
+  let mut visited : Std.HashSet Nat := {}
+  let mut nestedLamsInBody : Std.HashSet Nat := {}
+  let mut portRefSet : Std.HashSet Nat := {}
+  let mut portRefs : Array CNodeId := #[]
+  let mut worklist : Array CNodeId := #[bodyRoot]
+  let mut fuel : Nat := 200000
+
+  while !worklist.isEmpty && fuel > 0 do
+    fuel := fuel - 1
+    let nodeId := worklist.back!
+    worklist := worklist.pop
+    if visited.contains nodeId.id then continue
+    visited := visited.insert nodeId.id
+
+    let some entry := graph.getNode nodeId | continue
+
+    let entryIsLam : Bool := match entry.node with
+      | .lam _ => true
+      | _ => false
+    if entryIsLam && !chainLams.contains nodeId.id then
+      nestedLamsInBody := nestedLamsInBody.insert nodeId.id
+
+    for portIdx in [:entry.ports.size] do
+      if entryIsLam && chainLams.contains nodeId.id && portIdx == 0 then
+        continue
+      match entry.getPort ⟨portIdx⟩ with
+      | none => pure ()
+      | some target =>
+        let targetIsLamPort1 : Bool :=
+          if target.port.idx == 1 then
+            match graph.getNode target.node with
+            | some te => match te.node with
+              | .lam _ => true
+              | _ => false
+            | none => false
+          else false
+        if targetIsLamPort1 then
+          if !portRefSet.contains target.node.id then
+            portRefSet := portRefSet.insert target.node.id
+            portRefs := portRefs.push target.node
+        else
+          worklist := worklist.push target.node
+
+  let mut freeVars : Array CNodeId := #[]
+  for lam in portRefs do
+    if chainLams.contains lam.id then continue
+    if nestedLamsInBody.contains lam.id then continue
+    match graph.getNode lam with
+    | some lamEntry =>
+      match lamEntry.node with
+      | .lam true => pure ()
+      | .lam false => freeVars := freeVars.push lam
+      | _ => pure ()
+    | none => pure ()
+
+  freeVars
+
+/-- Prepend one Pi domain per capture to a function type -/
+def prependCaptureDomainsToType (graph : CGraph) (captures : Array CNodeId)
+    (origType : Value) : Value :=
+  captures.foldr (init := origType) fun capLam acc =>
+    match graph.getNode capLam with
+    | some capEntry =>
+      match capEntry.ty.piDomain? with
+      | some capDom => Value.arrow capDom acc
+      | none => acc
+    | none => acc
+
 /-- Count the arity of a LAM chain starting from a node -/
 def countLamChainArity (graph : CGraph) (root : CNodeId) : Nat := Id.run do
   let mut current := root
@@ -2675,6 +2797,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {})
+    (anonLamCaptures : Std.HashMap Nat (Array CNodeId) := {})
     (wiredRole : Option WiredFunc := none)
     (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
     : Func n :=
@@ -2699,13 +2822,23 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
   let sig : Signature n := { name := def_.name.symbolName, typeParamNames, params, retTy }
   let returnsZeroWidth := Ty.isZeroWidth sig.retTy
 
+  let captures := anonLamCaptures.get? def_.root.id |>.getD #[]
+  let captureCount := captures.size
+
   let (_, func) := LowerM.run' funcId sig intrinsics panicMsgIdx stringTy do
-    -- Normal lowering path: compile the Circuit IR body
     let rootNode := if def_.arity == 0 then def_.root
-      else (collectLamChain graph def_.root def_.arity alloyArity).1
-    let lamParams := if def_.arity == 0 then {}
-      else (collectLamChain graph def_.root def_.arity alloyArity).2
-    let initState : NodeState n := { lamParams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv, stringTy }
+      else (collectLamChain graph def_.root def_.arity (alloyArity - captureCount)).1
+    let chainParams := if def_.arity == 0 then ({} : Std.HashMap Nat Nat)
+      else (collectLamChain graph def_.root def_.arity (alloyArity - captureCount)).2
+    let mut lamParams : Std.HashMap Nat Nat := {}
+    for i in [:captureCount] do
+      lamParams := lamParams.insert captures[i]!.id i
+    for (lamId, idx) in chainParams.toList do
+      lamParams := lamParams.insert lamId (idx + captureCount)
+    let initState : NodeState n :=
+      { lamParams, tyVarMapping, primTypes, inductives
+      , expectedResultTy := some sig.retTy
+      , anonLamBookIdx, anonLamCaptures, abbrevEnv, stringTy }
     let (result, _) ← StateT.run (lowerNodeWithMap graph rootNode funcIdMap) initState
     -- Reconcile return type: the body's lowered type is ground truth
     let s ← get
@@ -2728,6 +2861,7 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {})
+    (anonLamCaptures : Std.HashMap Nat (Array CNodeId) := {})
     (wiredRole : Option WiredFunc := none)
     (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
     (metaState : Soma.Core.MetaState := .empty)
@@ -2736,7 +2870,7 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
   let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_ metaState
   -- Lower with the determined n
   let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes stringTy
-    inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv
+    inductives intrinsics panicMsgIdx anonLamBookIdx anonLamCaptures wiredRole abbrevEnv
   -- Return existentially quantified function
   ⟨n, func⟩
 
@@ -2766,10 +2900,11 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
   -- Extract anonymous LAMs as synthetic function definitions
   let mut extGraph := graph
   let mut anonLamBookIdx : Std.HashMap Nat Nat := {}
+  let mut anonLamCaptures : Std.HashMap Nat (Array CNodeId) := {}
   let mut seen : Std.HashSet Nat := {}
 
   let tryExtractLam := fun (lamNodeId : CNodeId) (extG : CGraph) (seenS : Std.HashSet Nat)
-      (lamBook : Std.HashMap Nat Nat) =>
+      (lamBook : Std.HashMap Nat Nat) (lamCaps : Std.HashMap Nat (Array CNodeId)) =>
     if !seenS.contains lamNodeId.id then
       match extG.getNode lamNodeId with
       | some fnEntry =>
@@ -2777,10 +2912,18 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
         | .lam _ =>
           let lamArity := countLamChainArity extG lamNodeId
           if lamArity > 0 then
+            let captures := collectFreeLamVars extG lamNodeId lamArity
+            let liftedTy := prependCaptureDomainsToType extG captures fnEntry.ty
+            let liftedArity := lamArity + captures.size
             let syntheticName : QualifiedName :=
               ⟨{ id := 100000 + lamNodeId.id, module := "$anon", original := s!"lambda${lamNodeId.id}" }⟩
-            let (bookIdx, g') := extG.addDefinition syntheticName lamNodeId lamArity fnEntry.ty
-            some (lamNodeId.id, bookIdx, g', lamBook.insert lamNodeId.id bookIdx)
+            let (bookIdx, g') := extG.addDefinition syntheticName lamNodeId liftedArity liftedTy
+            some
+              ( lamNodeId.id
+              , bookIdx
+              , g'
+              , lamBook.insert lamNodeId.id bookIdx
+              , lamCaps.insert lamNodeId.id captures )
           else none
         | _ => none
       | none => none
@@ -2800,11 +2943,12 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
       if tag == closureTag && arity == 2 then
         match entry.getPort ⟨1⟩ with
         | some fnPort =>
-          match tryExtractLam fnPort.node extGraph seen anonLamBookIdx with
-          | some (lamId, _, g', lamBook') =>
+          match tryExtractLam fnPort.node extGraph seen anonLamBookIdx anonLamCaptures with
+          | some (lamId, _, g', lamBook', lamCaps') =>
             seen := seen.insert lamId
             extGraph := g'
             anonLamBookIdx := lamBook'
+            anonLamCaptures := lamCaps'
             worklist := worklist.push ⟨lamId⟩
           | none => pure ()
         | none => pure ()
@@ -2812,11 +2956,12 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
     | .lam _ =>
       if !definitionRoots.contains nid then
         if !seen.contains nid then
-          match tryExtractLam ⟨nid⟩ extGraph seen anonLamBookIdx with
-          | some (lamId, _, g', lamBook') =>
+          match tryExtractLam ⟨nid⟩ extGraph seen anonLamBookIdx anonLamCaptures with
+          | some (lamId, _, g', lamBook', lamCaps') =>
             seen := seen.insert lamId
             extGraph := g'
             anonLamBookIdx := lamBook'
+            anonLamCaptures := lamCaps'
             worklist := worklist.push ⟨lamId⟩
           | none => pure ()
     | _ => pure ()
@@ -2841,11 +2986,12 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
         | .ctor tag arity =>
           if tag == closureTag && arity == 2 then
             if let some fnPort := curEntry.getPort ⟨1⟩ then
-              match tryExtractLam fnPort.node extGraph seen anonLamBookIdx with
-              | some (lamId, _, g', lamBook') =>
+              match tryExtractLam fnPort.node extGraph seen anonLamBookIdx anonLamCaptures with
+              | some (lamId, _, g', lamBook', lamCaps') =>
                 seen := seen.insert lamId
                 extGraph := g'
                 anonLamBookIdx := lamBook'
+                anonLamCaptures := lamCaps'
                 worklist := worklist.push ⟨lamId⟩
               | none => pure ()
         -- Check for APP with bare LAM argument
@@ -2855,11 +3001,12 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
               if let some argEntry := extGraph.getNode argPort.node then
                 match argEntry.node with
                 | .lam _ =>
-                  match tryExtractLam argPort.node extGraph seen anonLamBookIdx with
-                  | some (lamId, _, g', lamBook') =>
+                  match tryExtractLam argPort.node extGraph seen anonLamBookIdx anonLamCaptures with
+                  | some (lamId, _, g', lamBook', lamCaps') =>
                     seen := seen.insert lamId
                     extGraph := g'
                     anonLamBookIdx := lamBook'
+                    anonLamCaptures := lamCaps'
                     worklist := worklist.push ⟨lamId⟩
                   | none => pure ()
                 | _ => pure ()
@@ -2886,7 +3033,9 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
       if def_.reducibility != .external then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
         let wiredRole := wiredFuncs.get? def_.name.id
-        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes stringTy inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv metaState
+        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes stringTy
+          inductives intrinsics panicMsgIdx anonLamBookIdx anonLamCaptures
+          wiredRole abbrevEnv metaState
         module := module.addFunc func
 
   -- Set main function using the mapped ID
