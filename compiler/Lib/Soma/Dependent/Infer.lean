@@ -5,7 +5,6 @@ import Soma.Core.Quote
 import Soma.Core.Eval
 import Soma.Core.Primitive
 import Soma.Core.Expr
-import Soma.Dependent.Prelude
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
 import Soma.Dependent.Coverage
@@ -93,14 +92,6 @@ def vAppMotive (motive : Value) (arg : Value) : TCM Value := do
     -- For other values, create a stuck application
     return .vNeutral .type0 (.nApp (.nVar ⟨"_motive", ⟨0⟩⟩) arg)
 
-/-- Extract class information from a type that represents a type class constraint.
-    Returns the class unique ID and type arguments if the type is a class application. -/
-def extractClassInfo (ty : Value) : Option (Unique × Array Value) := do
-  match ty with
-  | .vDataType unique args =>
-    return (unique, args.toArray)
-  | _ => none
-
 private partial def isSortDomain : Value → Bool
   | .vType _ | .vRowSort | .vLabelSort => true
   | .vPi _ _ name dom cod =>
@@ -143,7 +134,7 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
       -- Handle instance parameters specially
       if binder == .instance_ then
         let forcedDom ← force dom
-        match extractClassInfo forcedDom with
+        match extractClassInfo? forcedDom with
         | some (classId, args) =>
           TCM.addPendingInstance classId args metaId span
         | none =>
@@ -230,37 +221,6 @@ partial def projectResultTypeWithMetas (ty : Value) (numExplicitArgs : Nat)
           let stepped ← applyClosure cod placeholder
           projectResultTypeWithMetas stepped (numExplicitArgs - 1) existingMetas
   | _ => return none
-
-/-- Insert implicit arguments with expected type guidance and full bidirectional propagation -/
-partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
-    (expected : Option Value) (numExplicitArgs : Nat) (span : Span)
-    : TCM (Value × Soma.Core.Expr × Array (MetaId × Value × String)) := do
-  -- Insert implicits and track the metas created
-  let (fnTy', fnExpr', implicitMetas) ← insertImplicitsCore fnTy fnExpr span
-
-  -- If we have an expected type, use it to solve implicits early
-  match expected with
-  | none =>
-    let _ ← solveConstraints
-    let finalTy ← force fnTy'
-    return (finalTy, fnExpr', implicitMetas)
-  | some expectedTy =>
-    if implicitMetas.isEmpty || numExplicitArgs > 0 then
-      let _ ← solveConstraints
-      let finalTy ← force fnTy'
-      return (finalTy, fnExpr', implicitMetas)
-    else
-      match ← projectResultTypeWithMetas fnTy' numExplicitArgs implicitMetas with
-      | some resultTy =>
-        -- Unify projected result with expected type
-        let _ ← tryUnify resultTy expectedTy
-        let _ ← solveConstraints
-        let finalTy ← force fnTy'
-        return (finalTy, fnExpr', implicitMetas)
-      | none =>
-        let _ ← solveConstraints
-        let finalTy ← force fnTy'
-        return (finalTy, fnExpr', implicitMetas)
 
 /-- Build nested Core lambdas from `(fvar, name, domainExpr)` bindings. -/
 partial def buildLambdas (bindings : List (Unique × String × Soma.Core.Expr))
@@ -601,13 +561,6 @@ partial def syntaxExprDescription : Soma.Syntax.Expr → String
   | .parens inner _ => syntaxExprDescription inner
   | .typeAnnot inner _ _ => syntaxExprDescription inner
   | _ => "<expression>"
-
-/-- Flatten a left-associative application chain -/
-partial def flattenApp : Soma.Syntax.Expr → Soma.Syntax.Expr × Array Soma.Syntax.Expr
-  | .app fn arg _ =>
-    let (head, args) := flattenApp fn
-    (head, args.push arg)
-  | e => (e, #[])
 
 /-- Flatten an application spine -/
 partial def flattenAppSpine : Soma.Syntax.Expr →

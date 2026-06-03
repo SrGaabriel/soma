@@ -5,18 +5,6 @@ namespace Soma.Dependent.Totality
 open Soma.Core
 open Soma.Syntax (Span)
 
-/-- Polarity for positivity checking -/
-inductive Polarity where
-  | positive
-  | negative
-  | mixed
-  deriving Repr, BEq, Inhabited
-
-def Polarity.flip : Polarity → Polarity
-  | .positive => .negative
-  | .negative => .positive
-  | .mixed => .mixed
-
 /-- Result of positivity check -/
 inductive PositivityResult where
   | ok
@@ -25,87 +13,64 @@ inductive PositivityResult where
 
 mutual
 
-partial def checkPositivityClosure (unique : Unique) (pol : Polarity) (clos : Closure)
-    (argTy : Value) : PositivityResult :=
-  let freshVar := Value.vNeutral argTy (.nVar ⟨clos.name, ⟨clos.env.size⟩⟩)
-  match clos.body with
-  | some body =>
-    let env' := clos.env.extend clos.name freshVar
-    let evalCtx : EvalCtx := { env := env', globals := GlobalEnv.empty, metas := MetaState.empty }
-    let bodyVal := evalCoreExpr evalCtx body
-    checkPositivityValue unique pol bodyVal
-  | none =>
-    let envVals := clos.env.values.map (·.2)
-    envVals.foldl (fun acc v =>
-      match acc with
-      | .violated _ _ => acc
-      | .ok => checkPositivityValue unique pol v
-    ) .ok
+partial def checkSP (unique : Unique) (allowed : Bool) (v : Value) : PositivityResult :=
+  match v with
+  | .vType _ | .vIntLit _ | .vFloatLit _ | .vStringLit _
+  | .vLabelLit _ | .vRowSort | .vLabelSort | .vRowEmpty => .ok
+  | .vDataType id params =>
+    if id == unique && !allowed then
+      .violated "recursive type occurs to the left of '→' (not strictly positive)" Span.uninhabited
+    else
+      checkSPList unique allowed params
+  | .vConstructor _ _ args _ => checkSPList unique allowed args
+  | .vRecord row => checkSP unique allowed row
+  | .vVariant row => checkSP unique allowed row
+  | .vRowExtend label fieldTy tail => checkSPList unique allowed [label, fieldTy, tail]
+  | .vRecordVal fields => checkSPList unique allowed (fields.map (·.2))
+  | .vNeutral _ neu => checkSPNeutral unique allowed neu
+  | .vLam _ dom body =>
+    match checkSP unique allowed dom with
+    | .violated reason span => .violated reason span
+    | .ok => checkSPClosure unique allowed body
+  | .vPi _ _ _ dom cod =>
+    match checkSP unique false dom with
+    | .violated reason span => .violated reason span
+    | .ok => checkSPClosure unique allowed cod
 
-partial def checkPositivityList (unique : Unique) (pol : Polarity)
-    (values : List Value) : PositivityResult :=
-  match values with
+partial def checkSPClosure (unique : Unique) (allowed : Bool) (clos : Closure) : PositivityResult :=
+  match clos with
+  | .const _ value => checkSP unique allowed value
+  | .term name env body =>
+    let freshVar := Value.vNeutral (Value.vType Level.zero) (.nVar ⟨name, ⟨env.size⟩⟩)
+    let env' := env.extend name freshVar
+    let evalCtx : EvalCtx := { env := env', globals := GlobalEnv.empty, metas := MetaState.empty }
+    checkSP unique allowed (evalCoreExpr evalCtx body)
+
+partial def checkSPList (unique : Unique) (allowed : Bool) : List Value → PositivityResult
   | [] => .ok
   | v :: rest =>
-    match checkPositivityValue unique pol v with
+    match checkSP unique allowed v with
     | .violated reason span => .violated reason span
-    | .ok => checkPositivityList unique pol rest
+    | .ok => checkSPList unique allowed rest
 
-partial def checkPositivityFields (unique : Unique) (pol : Polarity)
-    (fields : List (String × Value)) : PositivityResult :=
-  match fields with
-  | [] => .ok
-  | (_, v) :: rest =>
-    match checkPositivityValue unique pol v with
-    | .violated reason span => .violated reason span
-    | .ok => checkPositivityFields unique pol rest
-
-partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value) : PositivityResult :=
-  match ty with
-  | .vType _ => .ok
-  | .vIntLit _ => .ok
-  | .vFloatLit _ => .ok
-  | .vStringLit _ => .ok
-  | .vLabelLit _ => .ok
-  | .vRowSort | .vLabelSort => .ok
-
-  | .vDataType id params =>
-    if id == unique then
-      match pol with
-      | .positive => .ok
-      | .negative => .violated "type appears in negative position" Span.uninhabited
-      | .mixed => .violated "type appears in mixed position" Span.uninhabited
-    else
-      checkPositivityList unique pol params
-
-  | .vPi _ _ _ dom cod =>
-    match checkPositivityValue unique pol.flip dom with
-    | .violated reason span => .violated reason span
-    | .ok => checkPositivityClosure unique pol cod dom
-
-  | .vLam _ dom body =>
-    match checkPositivityValue unique pol dom with
-    | .violated reason span => .violated reason span
-    | .ok => checkPositivityClosure unique pol body dom
-
-  | .vRowEmpty => .ok
-
-  | .vRowExtend label fieldTy tail =>
-    match checkPositivityValue unique pol label with
-    | .violated reason span => .violated reason span
-    | .ok =>
-      match checkPositivityValue unique pol fieldTy with
+partial def checkSPNeutral (unique : Unique) (allowed : Bool) (neu : Neutral) : PositivityResult :=
+  match neu with
+  | .mk head spine =>
+    let spineArgs : List Value :=
+      spine.foldr (fun e acc => match e with | .eApp a => a :: acc | .eField _ => acc) []
+    match head with
+    | .hCase scrutinees motive arms =>
+      match checkSPList unique allowed (motive :: scrutinees.toList ++ spineArgs) with
       | .violated reason span => .violated reason span
-      | .ok => checkPositivityValue unique pol tail
+      | .ok => checkSPArms unique allowed arms
+    | _ => checkSPList unique allowed spineArgs
 
-  | .vRecord row => checkPositivityValue unique pol row
-  | .vVariant row => checkPositivityValue unique pol row
-
-  | .vConstructor _ _ args _ => checkPositivityList unique pol args
-
-  | .vNeutral _ _ => .ok
-
-  | .vRecordVal fields => checkPositivityFields unique pol fields
+partial def checkSPArms (unique : Unique) (allowed : Bool) : List ArmClosure → PositivityResult
+  | [] => .ok
+  | arm :: rest =>
+    match checkSPClosure unique allowed arm.closure with
+    | .violated reason span => .violated reason span
+    | .ok => checkSPArms unique allowed rest
 
 end
 
@@ -113,18 +78,16 @@ end
 partial def checkConstructorType (unique : Unique) (ctorTy : Value) : PositivityResult :=
   match ctorTy with
   | .vPi _ _ _ dom cod =>
-    match checkPositivityValue unique .positive dom with
+    match checkSP unique true dom with
     | .violated reason span => .violated reason span
     | .ok =>
-      let freshVar := Value.vNeutral dom (.nVar ⟨cod.name, ⟨cod.env.size⟩⟩)
-      match cod.body with
-      | some body =>
-        let env' := cod.env.extend cod.name freshVar
-        let evalCtx : EvalCtx :=
-          { env := env', globals := GlobalEnv.empty, metas := MetaState.empty }
-        let rest := evalCoreExpr evalCtx body
-        checkConstructorType unique rest
-      | none => .ok
+      match cod with
+      | .const _ rest => checkConstructorType unique rest
+      | .term name env body =>
+        let freshVar := Value.vNeutral dom (.nVar ⟨name, ⟨env.size⟩⟩)
+        let env' := env.extend name freshVar
+        let evalCtx : EvalCtx := { env := env', globals := GlobalEnv.empty, metas := MetaState.empty }
+        checkConstructorType unique (evalCoreExpr evalCtx body)
   | _ => .ok
 
 /-- Check strict positivity for a data type definition -/

@@ -341,7 +341,7 @@ def substituteMethodType (methodTypeSyntax : Soma.Syntax.Expr)
         | none => s!"$super_{cstr.className.name}"
       let dictUnique ← TCM.freshLocalId dictName
       let forcedTy ← Soma.Dependent.force cstrTy
-      match Soma.Dependent.extractClassInfo forcedTy with
+      match Soma.Dependent.extractClassInfo? forcedTy with
       | some (classId, classArgs) =>
         let resolvedValue? : Option Value ← do
           if classArgs.any valueContainsMeta then

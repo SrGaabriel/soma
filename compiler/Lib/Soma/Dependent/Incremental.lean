@@ -151,10 +151,6 @@ structure IncrementalState where
   cachedInstanceEnv : InstanceEnv := InstanceEnv.empty
   /-- Cached instance map (span -> instance info correlation) -/
   cachedInstanceMap : InstanceMap := {}
-  /-- External module dependencies: definition → set of (module name, symbol name) pairs -/
-  externalDeps : HashMap DefId (HashSet (String × String)) := {}
-  /-- Modules this module imports (for tracking what to invalidate) -/
-  importedModules : HashSet String := {}
   deriving Inhabited
 
 namespace IncrementalState
@@ -180,9 +176,7 @@ def addDependency (s : IncrementalState) (from_ to : DefId) : IncrementalState :
 
 /-- Clear dependencies for a definition (before re-computing them) -/
 def clearDeps (s : IncrementalState) (def_ : DefId) : IncrementalState :=
-  { s with
-    depGraph := s.depGraph.remove def_
-    externalDeps := s.externalDeps.erase def_ }
+  { s with depGraph := s.depGraph.remove def_ }
 
 /-- Get all dirty definitions in topological order (dependencies before dependents) -/
 def getDirtyInOrder (s : IncrementalState) : Array DefId := Id.run do
@@ -257,23 +251,6 @@ def invalidateChanged (s : IncrementalState) (currentHashes : HashMap DefId UInt
     cachedInstanceEnv := s.cachedInstanceEnv }
 
 end IncrementalState
-
-/-- Context for tracking dependencies during type checking -/
-structure DepTrackingCtx where
-  /-- Current definition being checked -/
-  currentDef : DefId
-  /-- Module name -/
-  moduleName : String
-  /-- Accumulated dependencies -/
-  deps : HashSet DefId := {}
-  deriving Inhabited
-
-/-- Monad transformer for dependency tracking -/
-abbrev DepTrackM := StateT DepTrackingCtx TCM
-
-namespace DepTrackM
-
-end DepTrackM
 
 /-- Hash a string for use in syntax hashing -/
 def hashString (s : String) : UInt64 :=

@@ -100,7 +100,6 @@ private def functionAttrsFromSyntax
   {
     inline := attrs.any fun a => a.name.name == "inline"
     noInline := attrs.any fun a => a.name.name == "noinline"
-    total := attrs.any fun a => a.name.name == "total"
     partial_ := attrs.any fun a => a.name.name == "partial"
     irreducible := attrs.any fun a => a.name.name == "irreducible"
     deprecated := none

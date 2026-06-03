@@ -104,7 +104,7 @@ def elaborateTraitMethodType
           | none => s!"$super_{cstr.className.name}"
         let dictUnique ← TCM.freshLocalId dictName
         let forcedTy ← Soma.Dependent.force cstrTy
-        match Soma.Dependent.extractClassInfo forcedTy with
+        match Soma.Dependent.extractClassInfo? forcedTy with
         | some (classId, classArgs) =>
           scBindings := scBindings.push (dictUnique, dictName, cstrTy, classId, classArgs)
         | none => pure ()

@@ -1,7 +1,6 @@
 import Soma.Core.Value
 import Soma.Core.Level
 import Soma.Core.Eval
-import Soma.Dependent.Prelude
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
 import Soma.Dependent.Error
@@ -840,27 +839,23 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
     | .ok body =>
       installSolution m spineLevels body
     | .error .occursCheck =>
-      let pruned ← tryOccursCheckPruning m spine rhs
-      if pruned then
-        markStuckOnMetaWithSpineList m spine
+      let rhsForced ← force rhs
+      let resolved ←
+        match rhsForced with
+        | .vNeutral _ neu2 =>
+          match getMetaWithSpine neu2 with
+          | some (m2, spine2) =>
+            if m == m2 then pure false
+            else tryFlexFlexIntersection m spine m2 spine2
+          | none => pure false
+        | _ => pure false
+      if resolved then pure ()
       else
-        let rhsForced ← force rhs
-        let resolved ←
-          match rhsForced with
-          | .vNeutral _ neu2 =>
-            match getMetaWithSpine neu2 with
-            | some (m2, spine2) =>
-              if m == m2 then pure false
-              else tryFlexFlexIntersection m spine m2 spine2
-            | none => pure false
-          | _ => pure false
-        if resolved then pure ()
-        else
-          let span ← TCM.getSpan
-          let path ← TCM.getPath
-          let roots ← TCM.getUnifyRoot
-          TCM.throw (.unificationFailed
-            (.occursCheck m rhs path roots) .general span #[] #[m])
+        let span ← TCM.getSpan
+        let path ← TCM.getPath
+        let roots ← TCM.getUnifyRoot
+        TCM.throw (.unificationFailed
+          (.occursCheck m rhs path roots) .general span #[] #[m])
     | .error .escapeCheck =>
       let _ ← tryPrune m spine rhs
       -- If RHS is itself a pattern flex-flex, intersection may still solve it

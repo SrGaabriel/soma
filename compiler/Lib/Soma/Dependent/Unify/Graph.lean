@@ -12,44 +12,6 @@ open Soma.Core (Value MetaId LevelVarId ConstraintId)
 open Soma.Syntax (Span)
 open Std (HashMap HashSet)
 
-/-- A cluster of related constraints -/
-structure ConstraintCluster where
-  /-- Constraint IDs in this cluster -/
-  constraintIds : Array Nat
-  /-- All metas referenced by constraints in this cluster -/
-  metas : HashSet Nat
-  /-- Priority: lower is higher priority (based on min complexity in cluster) -/
-  priority : Nat
-  deriving Inhabited
-
-namespace ConstraintCluster
-
-
-
-end ConstraintCluster
-
-/-- A solving strategy -/
-inductive SolveStrategy where
-  /-- Solve by priority (fewest unsolved metas first) -/
-  | priority
-  /-- Solve by cluster, smallest clusters first -/
-  | smallestClusterFirst
-  /-- Solve by cluster, largest clusters first (may make more progress) -/
-  | largestClusterFirst
-  deriving Inhabited, BEq
-
-/-- Result of speculative solving with a particular strategy -/
-structure SpeculativeResult where
-  /-- Number of constraints solved -/
-  solvedCount : Nat
-  /-- Number of constraints remaining -/
-  remainingCount : Nat
-  /-- Errors encountered -/
-  errorCount : Nat
-  /-- The strategy used -/
-  strategy : SolveStrategy
-  deriving Inhabited
-
 /-- Result of attempting to solve a constraint -/
 inductive SolveResult where
   /-- Constraint was solved successfully -/
@@ -76,10 +38,6 @@ structure ConstraintGraph where
   blockedOnLevelVar : HashMap Nat (Array Nat) := {}
   /-- Next constraint ID for newly created constraints -/
   nextId : Nat := 0
-  /-- Constraint clusters (lazily computed) -/
-  clusters : Option (Array ConstraintCluster) := none
-  /-- Current solving strategy -/
-  strategy : SolveStrategy := .priority
   deriving Inhabited
 
 namespace ConstraintGraph
@@ -232,113 +190,10 @@ def getConstraintsFor (g : ConstraintGraph) (mid : MetaId) : Array TrackedConstr
     | none => acc
     | some tc => acc.push tc
 
-namespace TarjanSCC
-
-/-- DFS state -/
-private structure State where
-  index : Nat := 0
-  indices : HashMap Nat Nat := {}
-  lowlinks : HashMap Nat Nat := {}
-  onStack : HashSet Nat := {}
-  stack : Array Nat := #[]
-  sccs : Array (Array Nat) := #[]
-  deriving Inhabited
-
-/-- Pop nodes off the stack until we hit `target` -/
-private partial def popScc (s : State) (target : Nat) (acc : Array Nat) : State × Array Nat :=
-  if h : s.stack.size > 0 then
-    let top := s.stack[s.stack.size - 1]'(by
-      have : s.stack.size - 1 < s.stack.size := Nat.sub_lt h (by decide)
-      exact this)
-    let s' : State := { s with
-      stack := s.stack.pop
-      onStack := s.onStack.erase top }
-    let acc' := acc.push top
-    if top == target then (s', acc')
-    else popScc s' target acc'
-  else (s, acc)
-
-/-- Tarjan's `strongconnect` step -/
-private partial def visit (graph : HashMap Nat (Array Nat)) (v : Nat) (st : State) : State := Id.run do
-  let mut s := st
-  let vIdx := s.index
-  s := { s with
-    indices := s.indices.insert v vIdx
-    lowlinks := s.lowlinks.insert v vIdx
-    index := vIdx + 1
-    stack := s.stack.push v
-    onStack := s.onStack.insert v }
-  for w in graph.getD v #[] do
-    if !s.indices.contains w then
-      s := visit graph w s
-      let lwv := s.lowlinks.getD v 0
-      let lww := s.lowlinks.getD w 0
-      if lww < lwv then
-        s := { s with lowlinks := s.lowlinks.insert v lww }
-    else if s.onStack.contains w then
-      let lwv := s.lowlinks.getD v 0
-      let idxw := s.indices.getD w 0
-      if idxw < lwv then
-        s := { s with lowlinks := s.lowlinks.insert v idxw }
-  if s.lowlinks.getD v 0 == s.indices.getD v 0 then
-    let (s', scc) := popScc s v #[]
-    return { s' with sccs := s'.sccs.push scc }
-  return s
-
-/-- Run Tarjan's SCC over the given adjacency map -/
-def run (graph : HashMap Nat (Array Nat)) (nodes : Array Nat) : Array (Array Nat) := Id.run do
-  let mut s : State := {}
-  for v in nodes do
-    if !s.indices.contains v then
-      s := visit graph v s
-  return s.sccs
-
-end TarjanSCC
-
-/-- Build the meta-to-meta dependency adjacency map from a `MetaState` -/
-def buildMetaDepGraph (metas : Soma.Core.MetaState) : HashMap Nat (Array Nat) :=
-  metas.metas.fold (init := {}) fun acc mid info =>
-    let typeDeps : Array Nat := info.dependsOn.map (·.id)
-    let solDeps : Array Nat :=
-      match info.solution with
-      | some sol => (Value.collectMetas sol).map (·.id)
-      | none => #[]
-    let merged := (typeDeps ++ solDeps).toList.eraseDups.filter (· != mid)
-    acc.insert mid merged.toArray
-
-
-
-/-- Invalidate cached clusters (call when constraints change) -/
-def invalidateClusters (g : ConstraintGraph) : ConstraintGraph :=
-  { g with clusters := none }
-
-
-/-- Get only the constraints related to a solved meta (for smart retrying).
-    This returns constraints that:
-    1. Directly reference the meta
-    2. Reference metas that depend on the solved meta
-    Instead of returning all constraints, we only return related ones. -/
+/-- Get the constraints that directly reference a meta -/
 def getRelatedConstraints (g : ConstraintGraph) (mid : MetaId) : Array Nat :=
-  -- Get direct constraints
   let directCids := g.metaToConstraints.getD mid.id {}
-
-  -- Also get constraints in the same cluster
-  match g.clusters with
-  | none =>
-    -- No clusters computed, just return direct constraints
-    directCids.fold (init := #[]) fun acc cid => acc.push cid
-  | some clusters =>
-    -- Find the cluster containing this meta and return all its constraints
-    let clusterResult := clusters.foldl (init := #[]) fun acc cluster =>
-      if acc.isEmpty && cluster.metas.contains mid.id then
-        cluster.constraintIds
-      else
-        acc
-    -- If not found in any cluster, fall back to direct constraints
-    if clusterResult.isEmpty then
-      directCids.fold (init := #[]) fun acc cid => acc.push cid
-    else
-      clusterResult
+  directCids.fold (init := #[]) fun acc cid => acc.push cid
 
 /-- Smart wake: only re-queue constraints related to the solved meta -/
 def smartWakeBlocked (g : ConstraintGraph) (mid : MetaId) : TCM ConstraintGraph := do
@@ -362,8 +217,7 @@ def smartWakeBlocked (g : ConstraintGraph) (mid : MetaId) : TCM ConstraintGraph 
       let complexity ← countUnsolvedMetas tc.metas
       g' := { g' with queue := bubbleUp (g'.queue.push (complexity, cid)) g'.queue.size }
 
-  -- Invalidate clusters since solving may have changed relationships
-  return g'.invalidateClusters
+  return g'
 
 /-- Compute the minimal unsatisfiable constraint set for a failed constraint.
     This walks the dependency graph to find which constraints contributed to the failure. -/
@@ -481,14 +335,10 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
         TCM.modifyState (·.removeConstraint tc.constraintId)
 
     let postponedSnap ← TCM.getPostponedTracked
-    let mut anyNew := false
     for tc in postponedSnap do
       if !g.constraints.contains tc.constraintId.id then
         let complexity ← ConstraintGraph.countUnsolvedMetas tc.metas
         g := g.insert tc complexity
-        anyNew := true
-    if anyNew then
-      g := g.invalidateClusters
 
   let mut unsolved : Array TrackedConstraint := #[]
   for (_, tc) in g.constraints do

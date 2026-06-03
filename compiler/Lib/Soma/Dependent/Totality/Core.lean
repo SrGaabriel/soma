@@ -3,7 +3,6 @@ import Soma.Core.Level
 import Soma.Core.Eval
 import Soma.Dependent.Monad
 import Soma.Dependent.Error
-import Soma.Dependent.Prelude
 
 namespace Soma.Dependent.Totality
 
@@ -24,7 +23,6 @@ inductive TotalityStatus where
 /-- Information about a function for totality checking -/
 structure FunctionInfo where
   name : QualifiedName
-  markedTotal : Bool
   status : TotalityStatus
   params : Array String
   paramIds : Array Unique
@@ -34,7 +32,6 @@ structure FunctionInfo where
 instance : Inhabited FunctionInfo where
   default := {
     name := dummyName
-    markedTotal := false
     status := .isPartial
     params := #[]
     paramIds := #[]

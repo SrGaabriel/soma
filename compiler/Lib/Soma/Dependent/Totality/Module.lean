@@ -33,7 +33,6 @@ structure ModuleTotalityResult where
 /-- Convert a `TypedFunction` into the `FunctionInfo` the checker expects -/
 private def functionInfoOf (fn : TypedFunction) (span : Span) : FunctionInfo :=
   { name := fn.name
-    markedTotal := fn.attrs.total
     status := .isUnknown
     params := fn.valueParams.map (·.name)
     paramIds := fn.valueParams.map (·.uid)

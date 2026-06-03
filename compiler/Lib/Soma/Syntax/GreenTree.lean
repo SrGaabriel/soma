@@ -285,37 +285,4 @@ partial def debugPrint (n : GreenNode) (indent : Nat := 0) : String :=
 
 end GreenNode
 
-/-- Builder state for constructing green trees -/
-structure GreenBuilder where
-  /-- Cache of interned nodes by hash -/
-  cache : Std.HashMap UInt64 GreenNode := {}
-  deriving Inhabited
-
-namespace GreenBuilder
-
-/-- Intern a node, returning the cached version if it exists -/
-def intern (b : GreenBuilder) (node : GreenNode) : GreenBuilder × GreenNode :=
-  let h := node.contentHash
-  match b.cache.get? h with
-  | some existing => (b, existing)
-  | none => ({ cache := b.cache.insert h node }, node)
-
-/-- Create a token node -/
-def token (b : GreenBuilder) (kind : TokenKind) (text : String) : GreenBuilder × GreenNode :=
-  b.intern (.token kind text)
-
-/-- Create an interior node -/
-def node (b : GreenBuilder) (kind : SyntaxKind) (children : Array GreenNode) : GreenBuilder × GreenNode :=
-  b.intern (GreenNode.mkNode kind children)
-
-/-- Create an error node -/
-def error (b : GreenBuilder) (msg : String) (children : Array GreenNode) : GreenBuilder × GreenNode :=
-  b.intern (GreenNode.mkError msg children)
-
-/-- Create a missing node -/
-def missing (b : GreenBuilder) (expected : SyntaxKind) : GreenBuilder × GreenNode :=
-  b.intern (.missing expected)
-
-end GreenBuilder
-
 end Soma.Syntax

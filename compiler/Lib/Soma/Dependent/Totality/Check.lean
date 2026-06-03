@@ -89,7 +89,24 @@ private partial def collectGuardedCalls (target : String) (params : Array String
   | .inject _ args _ => args.foldl (fun a x => collectGuardedCalls target params ctx x a) acc
   | .fieldAccess x _ _ => collectGuardedCalls target params ctx x acc
   | .ann x t => collectGuardedCalls target params ctx t (collectGuardedCalls target params ctx x acc)
-  | _ => acc
+  | .record fields => fields.foldl (fun a (_, x) => collectGuardedCalls target params ctx x a) acc
+  | .recordUpdate base updates =>
+    let acc := collectGuardedCalls target params ctx base acc
+    updates.foldl (fun a (_, x) => collectGuardedCalls target params ctx x a) acc
+  | .array elems _ => elems.foldl (fun a x => collectGuardedCalls target params ctx x a) acc
+  | .tuple elems => elems.foldl (fun a x => collectGuardedCalls target params ctx x a) acc
+  | .closure _ captures _ => captures.foldl (fun a x => collectGuardedCalls target params ctx x a) acc
+  | .proj _ _ _ => acc
+  | .pi _ _ _ d c => collectGuardedCalls target params ctx c (collectGuardedCalls target params ctx d acc)
+  | .rowExtend l f t =>
+    let acc := collectGuardedCalls target params ctx l acc
+    let acc := collectGuardedCalls target params ctx f acc
+    collectGuardedCalls target params ctx t acc
+  | .recordTy r => collectGuardedCalls target params ctx r acc
+  | .variantTy r => collectGuardedCalls target params ctx r acc
+  | .dataTy _ ps => ps.foldl (fun a x => collectGuardedCalls target params ctx x a) acc
+  | .bvar _ | .fvar _ _ | .mvar _ | .tyvar _ _ | .lit _ | .sort _
+  | .rowSort | .labelSort | .rowEmpty | .labelLit _ | .panic _ => acc
 
 /-- Try to prove a single (non-mutual) function terminates -/
 def numericTerminates (pf : PreparedFn) : Option String :=

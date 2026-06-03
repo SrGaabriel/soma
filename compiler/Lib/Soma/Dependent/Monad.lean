@@ -1183,7 +1183,7 @@ def postponeTracked (s : TCState) (c : Constraint)
     (origin : ConstraintOrigin := .unknown)
     (parents : Array ConstraintId := #[])
     : ConstraintId × TCState :=
-  let (cid, metas') := s.metas.registerConstraint metas levelVars
+  let (cid, metas') := s.metas.freshConstraintId
   let tc : TrackedConstraint := {
     constraint := c
     constraintId := cid
@@ -1201,8 +1201,7 @@ def postpone (s : TCState) (c : Constraint) : TCState :=
 /-- Remove a constraint by ID (after it's been solved) -/
 def removeConstraint (s : TCState) (cid : ConstraintId) : TCState :=
   let postponed' := s.postponed.filter (·.constraintId != cid)
-  let metas' := s.metas.removeConstraint cid
-  { s with postponed := postponed', metas := metas' }
+  { s with postponed := postponed' }
 
 /-- Add an error -/
 def addError (s : TCState) (e : TCError) : TCState :=

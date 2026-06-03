@@ -401,10 +401,6 @@ structure MetaInfo where
   solution : Option Value := none
   /-- The context in which it was created -/
   context : List (String × Value × Quantity)
-  /-- Metavariables that this meta depends on (occurs in its type or solution) -/
-  dependsOn : Array MetaId := #[]
-  /-- Metavariables that depend on this meta (reverse of dependsOn) -/
-  dependents : Array MetaId := #[]
   /-- When this meta was created for an implicit Pi binder's type parameter,
       the de Bruijn level of that binder -/
   piLevel : Option Nat := none
@@ -422,80 +418,17 @@ structure ConstraintId where
 instance : ToString ConstraintId where
   toString c := s!"C{c.id}"
 
-/-- Dependency tracking for postponed constraints -/
-structure MetaDependencies where
-  /-- Map from MetaId to constraint IDs that depend on it -/
-  metaToConstraints : Std.HashMap Nat (Array ConstraintId) := {}
-  /-- Map from LevelVarId to constraint IDs that depend on it -/
-  levelVarToConstraints : Std.HashMap Nat (Array ConstraintId) := {}
-  /-- Map from constraint ID to the metas it depends on -/
-  constraintToMetas : Std.HashMap Nat (Array MetaId) := {}
-  /-- Map from constraint ID to the level variables it depends on -/
-  constraintToLevelVars : Std.HashMap Nat (Array LevelVarId) := {}
-  /-- Next constraint ID -/
-  nextConstraintId : Nat := 0
-  deriving Inhabited
-
-namespace MetaDependencies
-
-/-- Register a new constraint and return its ID -/
-def registerConstraint (deps : MetaDependencies) (metas : Array MetaId)
-    (levelVars : Array LevelVarId := #[]) : ConstraintId × MetaDependencies :=
-  let cid : ConstraintId := ⟨deps.nextConstraintId⟩
-  let constraintToMetas := deps.constraintToMetas.insert cid.id metas
-  let constraintToLevelVars := deps.constraintToLevelVars.insert cid.id levelVars
-  let metaToConstraints := metas.foldl (fun acc mid =>
-    let existing := acc.getD mid.id #[]
-    acc.insert mid.id (existing.push cid)
-  ) deps.metaToConstraints
-  let levelVarToConstraints := levelVars.foldl (fun acc lv =>
-    let existing := acc.getD lv.id #[]
-    acc.insert lv.id (existing.push cid)
-  ) deps.levelVarToConstraints
-  (cid, { deps with
-    constraintToMetas := constraintToMetas
-    constraintToLevelVars := constraintToLevelVars
-    metaToConstraints := metaToConstraints
-    levelVarToConstraints := levelVarToConstraints
-    nextConstraintId := deps.nextConstraintId + 1
-  })
-
-/-- Remove a constraint from tracking (after it's been solved) -/
-def removeConstraint (deps : MetaDependencies) (cid : ConstraintId) : MetaDependencies :=
-  let metas := deps.constraintToMetas.getD cid.id #[]
-  let levelVars := deps.constraintToLevelVars.getD cid.id #[]
-  let metaToConstraints := metas.foldl (fun acc mid =>
-    let existing := acc.getD mid.id #[]
-    let filtered := existing.filter (· != cid)
-    acc.insert mid.id filtered
-  ) deps.metaToConstraints
-  let levelVarToConstraints := levelVars.foldl (fun acc lv =>
-    let existing := acc.getD lv.id #[]
-    let filtered := existing.filter (· != cid)
-    acc.insert lv.id filtered
-  ) deps.levelVarToConstraints
-  let constraintToMetas := deps.constraintToMetas.erase cid.id
-  let constraintToLevelVars := deps.constraintToLevelVars.erase cid.id
-  { deps with
-    metaToConstraints := metaToConstraints
-    levelVarToConstraints := levelVarToConstraints
-    constraintToMetas := constraintToMetas
-    constraintToLevelVars := constraintToLevelVars
-  }
-
-end MetaDependencies
-
 /-- State of all metavariables -/
 structure MetaState where
   /-- Map from MetaId to info -/
   metas : Std.HashMap Nat MetaInfo := {}
   /-- Next fresh metavariable ID -/
   nextId : Nat := 0
-  /-- Dependency tracking -/
-  dependencies : MetaDependencies := {}
+  /-- Next fresh constraint ID for postponed-constraint tracking -/
+  nextConstraintId : Nat := 0
   deriving Inhabited
 
-def MetaState.empty : MetaState := ⟨{}, 0, {}⟩
+def MetaState.empty : MetaState := ⟨{}, 0, 0⟩
 
 def MetaState.fresh (state : MetaState) (ty : Value) (ctx : List (String × Value × Quantity))
     (piLevel : Option Nat := none) (origin : MetaOrigin := .user)
@@ -530,34 +463,9 @@ def MetaState.implicitLevelMap (state : MetaState) : Std.HashMap Nat Nat :=
     | some lvl => acc.insert metaId lvl
     | none => acc
 
-/-- Register a constraint and the metas/level variables it references -/
-def MetaState.registerConstraint (state : MetaState) (metas : Array MetaId)
-    (levelVars : Array LevelVarId := #[]) : ConstraintId × MetaState :=
-  let (cid, deps') := state.dependencies.registerConstraint metas levelVars
-  (cid, { state with dependencies := deps' })
-
-/-- Remove a constraint after it's been solved -/
-def MetaState.removeConstraint (state : MetaState) (cid : ConstraintId) : MetaState :=
-  { state with dependencies := state.dependencies.removeConstraint cid }
-
-/-- Add a dependency: meta1 depends on meta2 -/
-def MetaState.addDependency (state : MetaState) (meta1 meta2 : MetaId) : MetaState :=
-  -- Update meta1's dependsOn
-  let state' := match state.metas.get? meta1.id with
-    | some info =>
-      if info.dependsOn.contains meta2 then state
-      else
-        let info' := { info with dependsOn := info.dependsOn.push meta2 }
-        { state with metas := state.metas.insert meta1.id info' }
-    | none => state
-  -- Update meta2's dependents
-  match state'.metas.get? meta2.id with
-  | some info =>
-    if info.dependents.contains meta1 then state'
-    else
-      let info' := { info with dependents := info.dependents.push meta1 }
-      { state' with metas := state'.metas.insert meta2.id info' }
-  | none => state'
+/-- Allocate a fresh constraint ID for postponed-constraint tracking -/
+def MetaState.freshConstraintId (state : MetaState) : ConstraintId × MetaState :=
+  (⟨state.nextConstraintId⟩, { state with nextConstraintId := state.nextConstraintId + 1 })
 
 /-- Result of matching a Core `Pattern` against a `Value` during NbE -/
 inductive PatMatchResult where

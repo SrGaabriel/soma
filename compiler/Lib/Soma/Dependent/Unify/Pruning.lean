@@ -1,6 +1,5 @@
 import Soma.Core.Value
 import Soma.Core.Eval
-import Soma.Dependent.Prelude
 import Soma.Dependent.Monad
 import Soma.Dependent.Unify.Core
 import Soma.Dependent.Unify.Invariants
@@ -241,106 +240,6 @@ def tryFlexFlexIntersection (m1 : MetaId) (spine1 : List Value)
     return true
   | _, _ => return false
 
-/-- Information about a twin variable pair -/
-structure TwinVar where
-  /-- The original level -/
-  originalLevel : DeBruijnLvl
-  /-- The name from the first occurrence -/
-  name1 : String
-  /-- The name from the second occurrence (may differ) -/
-  name2 : String
-  deriving Inhabited
-
-/-- Collect the "depth" at which a meta occurs in a value.
-    Depth 0 means top-level, depth 1 means under one constructor, etc.
-    Also collects which spine arguments are "in scope" at each occurrence. -/
-structure MetaOccurrence where
-  /-- Nesting depth of this occurrence -/
-  depth : Nat
-  /-- Variables that are in scope at this occurrence -/
-  scopeVars : Array DeBruijnLvl
-  deriving Inhabited
-
-mutual
-
-/-- Collect all occurrences of a meta in a value, with scope info -/
-partial def collectMetaOccurrences (m : MetaId) (v : Value) (depth : Nat)
-    (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
-  match v with
-  | .vType _ => #[]
-  | .vPi _ _ _ dom cod =>
-    collectMetaOccurrences m dom depth scope ++
-    collectMetaOccurrencesClosure m cod (depth + 1) scope
-  | .vLam _ dom body =>
-    collectMetaOccurrences m dom depth scope ++
-    collectMetaOccurrencesClosure m body (depth + 1) scope
-  | .vNeutral _ neu => collectMetaOccurrencesNeutral m neu depth scope
-  | .vRowExtend label ty tail =>
-    collectMetaOccurrences m label depth scope ++
-    collectMetaOccurrences m ty (depth + 1) scope ++
-    collectMetaOccurrences m tail depth scope
-  | .vRecord row => collectMetaOccurrences m row depth scope
-  | .vVariant row => collectMetaOccurrences m row depth scope
-  | .vRecordVal fields =>
-    fields.foldl (fun acc (_, v) =>
-      acc ++ collectMetaOccurrences m v (depth + 1) scope) #[]
-  | .vDataType _ params =>
-    params.foldl (fun acc p =>
-      acc ++ collectMetaOccurrences m p (depth + 1) scope) #[]
-  | .vConstructor _ _ args _ =>
-    args.foldl (fun acc a =>
-      acc ++ collectMetaOccurrences m a (depth + 1) scope) #[]
-  | _ => #[]
-
-partial def collectMetaOccurrencesNeutral (m : MetaId) (n : Neutral) (depth : Nat)
-    (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
-  collectMetaOccurrencesHead m n.head depth scope ++
-    n.spine.foldl (fun acc e =>
-      acc ++ collectMetaOccurrencesElim m e (depth + 1) scope) #[]
-
-partial def collectMetaOccurrencesHead (m : MetaId) (h : Head) (depth : Nat)
-    (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
-  match h with
-  | .hVar _ => #[]
-  | .hConst _ _ => #[]
-  | .hErrored => #[]
-  | .hMeta id =>
-    if id == m then #[{ depth := depth, scopeVars := scope }]
-    else #[]
-  | .hCase scrutinees motive arms =>
-    scrutinees.foldl (fun acc s =>
-      acc ++ collectMetaOccurrences m s depth scope) #[] ++
-    collectMetaOccurrences m motive depth scope ++
-    arms.foldl (fun acc arm =>
-      acc ++ collectMetaOccurrencesClosure m arm.closure (depth + 1) scope) #[]
-
-partial def collectMetaOccurrencesElim (m : MetaId) (e : Elim) (depth : Nat)
-    (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
-  match e with
-  | .eApp arg => collectMetaOccurrences m arg depth scope
-  | .eField _ => #[]
-
-partial def collectMetaOccurrencesClosure (m : MetaId) (clos : Closure) (depth : Nat)
-    (scope : Array DeBruijnLvl) : Array MetaOccurrence :=
-  match clos with
-  | .const _ value => collectMetaOccurrences m value depth scope
-  | .term _ env _ =>
-    -- The closure introduces a new variable, extend scope
-    let extendedScope := scope.push ⟨env.size⟩
-    env.values.foldl (fun acc (_, v) =>
-      acc ++ collectMetaOccurrences m v depth extendedScope) #[]
-
-end
-
-/-- Recovery hook for occurs check failures -/
-def tryOccursCheckPruning (_m : MetaId) (_spine : List Value) (_rhs : Value)
-    : TCM Bool := do
-  return false
-
-/-- Record that meta1 depends on meta2 (meta2's solution is needed to solve meta1) -/
-def recordMetaDependency (meta1 meta2 : MetaId) : TCM Unit := do
-  TCM.modifyState fun s => { s with metas := s.metas.addDependency meta1 meta2 }
-
 /-- Check if solving this meta should be deferred because its type is unsolved -/
 def shouldDeferMeta (m : MetaId) : TCM Bool := do
   match ← TCM.lookupMeta m with
@@ -351,8 +250,6 @@ def shouldDeferMeta (m : MetaId) : TCM Bool := do
     for mid in typeMetas do
       let solved ← TCM.isMetaSolved mid
       if !solved then
-        -- Record the dependency
-        recordMetaDependency m mid
         return true
     return false
 
