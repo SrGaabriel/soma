@@ -1,6 +1,0 @@
-// expect: success
-// Test: integer literal type inference
-
-def x : Int32 := 42
-def y : Int32 := 100
-def z : Int32 := 0

@@ -1,3 +1,0 @@
-// Fixture: unboundGlobal (E1009)
-
-def x : Type := SomeUnknownThing

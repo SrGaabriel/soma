@@ -1,6 +1,0 @@
-// expect: error uninhabited
-
-inductive Never : Type
-
-@[partial]
-def bomb : Never := bomb

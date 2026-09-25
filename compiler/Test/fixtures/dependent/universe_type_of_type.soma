@@ -1,4 +1,0 @@
-// expect: success
-// Test: Type of Type (universe hierarchy)
-
-def type_is_type : Type := Type

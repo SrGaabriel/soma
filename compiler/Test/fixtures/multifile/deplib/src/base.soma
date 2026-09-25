@@ -1,4 +1,0 @@
-@[intrinsic "primop.add"]
-def {+} : Int32 -> Int32 -> Int32
-
-def increment(x: Int32) -> Int32 := x + 1

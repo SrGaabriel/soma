@@ -1,2 +1,0 @@
-def make_pair : (a : Type) × a -> Int32
-    | (_, x) => x

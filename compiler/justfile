@@ -1,3 +1,0 @@
-tfresh:
-    rm -rf .lake/e2e-temp
-    lake test

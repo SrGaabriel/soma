@@ -1,5 +1,0 @@
-class Add (a : Type) where
-    add : a -> a -> a
-
-class Gt (a : Type) where
-    gt : a -> a -> Prop

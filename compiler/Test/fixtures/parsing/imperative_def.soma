@@ -1,1 +1,0 @@
-def display (str : String) : String := str

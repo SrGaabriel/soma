@@ -1,5 +1,0 @@
-// expect: success
-// Test: boolean literal type inference
-
-def t : Bool := true
-def f : Bool := false

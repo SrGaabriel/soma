@@ -1,4 +1,0 @@
-// expect: error positivity
-
-inductive Bad where
-    | Mk : ((Bad -> Bool) -> Bad) -> Bad

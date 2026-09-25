@@ -1,7 +1,0 @@
-// expect: success
-
-def linear_id : (1 x : Int32) -> Int32
-    | x => x
-
-def linear_pair_first : (1 x : Int32) -> Int32 -> Int32
-    | x, _ => x

@@ -1,5 +1,0 @@
-// expect: error @[partial]
-
-@[partial]
-theorem always_fails : Unit -> Unit
-    | x => always_fails x

@@ -1,2 +1,0 @@
-// expect: error mismatch
-def x := [1, "hello"]

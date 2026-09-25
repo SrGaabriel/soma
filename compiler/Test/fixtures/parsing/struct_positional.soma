@@ -1,2 +1,0 @@
-record Path where
-	value : String

@@ -1,3 +1,0 @@
-// Fixture: unboundVariable (E1008)
-
-def x : Type := undefined_variable

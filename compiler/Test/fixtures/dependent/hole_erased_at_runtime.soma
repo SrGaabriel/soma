@@ -1,4 +1,0 @@
-// expect: error erased
-
-def leak_erased : (0 x : Int32) -> Int32
-    | x => x

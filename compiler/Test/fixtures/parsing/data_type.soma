@@ -1,3 +1,0 @@
-inductive Maybe (a : Type) where
-    | Nothing
-    | Just (value : a)

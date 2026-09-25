@@ -1,2 +1,0 @@
-def show : {{Display a}} -> a -> String
-    | x => display x

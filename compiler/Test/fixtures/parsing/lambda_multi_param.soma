@@ -1,1 +1,0 @@
-def fold := foldl (\acc x -> acc + x) 0

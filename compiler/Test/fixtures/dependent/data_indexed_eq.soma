@@ -1,9 +1,0 @@
-// expect: success
-// Test: propositional equality (Eq a b)
-
-inductive Eq (a : Type) (b : Type) where
-  | Refl : Eq a a
-
-def int_eq_int : Eq Int32 Int32 := Eq::Refl
-
-def bool_eq_bool : Eq Bool Bool := Eq::Refl

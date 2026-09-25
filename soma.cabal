@@ -1,0 +1,33 @@
+cabal-version:      3.14
+name:               soma
+version:            0.1.0.0
+license:            Apache-2.0
+license-file:       LICENSE
+author:             Gabriel
+maintainer:         gabriel@minatel.dev
+category:           Programming Language
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+
+common warnings
+  ghc-options:
+    -Wall
+    -fprof-auto
+    -rtsopts
+
+library
+    import:           warnings
+    exposed-modules:  Soma
+    build-depends:    base ^>=4.20.2.0
+    hs-source-dirs:   compiler/lib
+    default-language: Haskell2010
+
+executable soma
+    import:           warnings
+    main-is:          Main.hs
+    build-depends:
+        base ^>=4.20.2.0,
+        soma
+
+    hs-source-dirs:   compiler/app
+    default-language: Haskell2010

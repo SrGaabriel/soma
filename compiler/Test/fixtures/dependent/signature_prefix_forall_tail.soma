@@ -1,8 +1,0 @@
-// expect: success
-// Test:  binders are context; all explicit signature binders are scrutinees
-
-def const_poly (a : Type) : a -> (b : Type) -> b -> a
-  | x, _, _ => x
-
-def ret_const (a : Type) : a -> (b : Type) -> b -> a
-  | x, _, _ => x

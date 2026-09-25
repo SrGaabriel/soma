@@ -1,6 +1,0 @@
-// expect: success
-// Test: nested pair types
-
-def nested : ((Int32, Int32), Int32) := ((1, 2), 3)
-
-def triple : (Int32, Int32, Int32) := (1, 2, 3)

@@ -1,7 +1,0 @@
-// expect: success
-// Test: simple identity function - basic function lowering
-
-def id : Int32 -> Int32
-    | x => x
-
-def test : Int32 := id 42

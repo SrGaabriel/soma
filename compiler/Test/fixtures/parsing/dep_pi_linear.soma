@@ -1,2 +1,0 @@
-def use_once : (1 a : Type) -> a -> a
-    | _, x  => x

@@ -1,7 +1,0 @@
-// expect: success
-
-class Eq (a : Type) where
-    eq : a -> a -> Bool
-
-def equal (a : Type) : {{Eq a}} -> a -> a -> Bool
-    | x, y => eq x y

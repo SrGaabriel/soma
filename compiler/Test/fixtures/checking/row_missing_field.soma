@@ -1,3 +1,0 @@
-// expect: error unexpected field
-
-def bad : Int32 := { y := 1 }.x

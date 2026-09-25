@@ -1,5 +1,0 @@
-// Fixture: typo correction quick fix
-
-def undefined_variable : Type := Type
-
-def x : Type := undefned_variable

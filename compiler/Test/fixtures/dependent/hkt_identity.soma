@@ -1,5 +1,0 @@
-// expect: success
-// Test: higher-kinded type - identity for type constructors
-
-def identity (f : Type -> Type) (a : Type) : f a -> f a
-    | x => x

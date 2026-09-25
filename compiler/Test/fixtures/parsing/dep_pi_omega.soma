@@ -1,2 +1,0 @@
-def use_many : (ω a : Type) -> a -> a
-    | _, x  => x

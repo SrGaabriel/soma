@@ -1,8 +1,0 @@
-// expect: success
-// Test: nested explicit Pi binders on the right of `::` are scrutinees
-
-def id_int : Int32 -> Int32
-  | x => x
-
-def tail_fn : Int32 -> (y : Int32) -> Int32
-  | _, y  => id_int y

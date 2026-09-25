@@ -1,3 +1,0 @@
-// expect: error unexpected field
-
-def bad : < Ok::Int32 > := .Err "this case doesn't exist"

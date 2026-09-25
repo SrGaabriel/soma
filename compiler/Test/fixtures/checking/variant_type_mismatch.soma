@@ -1,3 +1,0 @@
-// expect: error type mismatch
-
-def bad : < Ok::Int32 > := .Ok "not an int"
