@@ -2,6 +2,8 @@ module Soma.Syntax.Kind where
 
 import Maple.Green (RawKind)
 
-number, star :: RawKind
-number = 0
-star = 1
+tEof, tNumber, tStar, tUnknown :: RawKind
+tEof = 0
+tNumber = 1
+tStar = 2
+tUnknown = 3

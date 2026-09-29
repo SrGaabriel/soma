@@ -4,20 +4,48 @@ module Soma.Syntax.Lexer where
 
 import Control.Monad.State
 import Control.Monad.Writer
-import Data.Text (Text)
+import Data.Char (isNumber)
 import qualified Data.Text as T
-import Soma.Diagnostic (Diagnostic)
 import Maple.Green (RawKind)
+import Soma.Diagnostic (Diagnostic)
+import Soma.Syntax.Kind
+import Soma.Util (maybeM, safeIndex)
 
 data LexerState = LexerState
-    { lxText :: Text
+    { lxText :: T.Text
     , lxCursor :: Int
     }
 
 type LexerT m = StateT LexerState (WriterT [Diagnostic] m)
 
-next :: (Monad m) => LexerT m Char
-next = do
+peek :: (Monad m) => LexerT m (Maybe Char)
+peek = do
     (LexerState{lxText, lxCursor}) <- get
-    pure $ T.index lxText lxCursor
+    pure $ safeIndex lxText lxCursor
 
+bump :: (Monad m) => LexerT m (Maybe Char)
+bump = do
+    (LexerState{lxText, lxCursor}) <- get
+    modify' (\s -> s{lxCursor = lxCursor + 1})
+    pure $ safeIndex lxText lxCursor
+
+bumpWhile :: (Monad m) => (Char -> Bool) -> LexerT m ()
+bumpWhile f = do
+    b <- peek
+    case b of
+        Just c | f c -> bump *> bumpWhile f
+        _ -> pure ()
+
+lex :: (Monad m) => LexerT m RawKind
+lex = maybeM tEof lexChar (bump)
+
+lexChar :: (Monad m) => Char -> LexerT m RawKind
+lexChar '*' = pure tStar
+lexChar c
+    | isNumber c = lexNumber c
+lexChar _ = pure tUnknown
+
+lexNumber :: (Monad m) => Char -> LexerT m RawKind
+lexNumber _leading = do
+    _ <- bumpWhile isNumber
+    pure tNumber
