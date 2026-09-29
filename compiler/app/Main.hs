@@ -1,5 +1,9 @@
 module Main (main) where
 
+import Somac.Cli (cli, runCli)
+
 main :: IO ()
 main = do
-    putStrLn "Hello, Haskell!"
+    cli <- runCli
+    putStrLn $ show cli
+    pure ()
