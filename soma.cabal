@@ -17,10 +17,23 @@ common warnings
 
 library
   import: warnings
-  exposed-modules: Soma
+  exposed-modules:
+    Soma
+    Soma.Text
+    Soma.Diagnostic
+    Soma.Syntax.Kind
+    Soma.Syntax.Lexer
+
   build-depends:
     base ^>=4.20.2.0,
-    maple
+    hashable ^>=1.5.1.0,
+    maple,
+    mtl ^>=2.3.1,
+    symbolize ^>=1.0.3,
+    text ^>=2.1,
+    text-rope ^>=0.3,
+    unordered-containers >=0.2.21,
+    vector ^>=0.13.1
 
   hs-source-dirs: compiler/lib
   default-language: Haskell2010

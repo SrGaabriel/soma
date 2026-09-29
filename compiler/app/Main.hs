@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Somac.Cli (cli, runCli)
+import Somac.Cli (runCli)
 
 main :: IO ()
 main = do
