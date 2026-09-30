@@ -2,6 +2,7 @@
 
 module Soma.Syntax.Lexer where
 
+import Control.Monad.Identity
 import Control.Monad.State
 import Control.Monad.Writer
 import Data.Char (isNumber)
@@ -49,3 +50,13 @@ lexNumber :: (Monad m) => Char -> LexerT m RawKind
 lexNumber _leading = do
     _ <- bumpWhile isNumber
     pure tNumber
+
+runLexerT :: (Monad m) => LexerState -> LexerT m a -> m (a, [Diagnostic])
+runLexerT st lexer = do
+    ((result, _), diag) <- runWriterT (runStateT lexer st)
+    pure (result, diag)
+
+runLexer :: LexerState -> LexerT Identity a -> (a, [Diagnostic])
+runLexer st lexer =
+    let ((result, _), diag) = runIdentity $ runWriterT (runStateT lexer st)
+    in (result, diag)

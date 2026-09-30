@@ -2,20 +2,16 @@
 
 module Lexer (spec) where
 
-import Control.Monad.State (evalStateT)
-import Control.Monad.Writer (runWriterT)
-import Data.Functor.Identity (Identity, runIdentity)
+import Data.Functor.Identity (Identity)
 import qualified Data.Text as T
 import Maple.Green (RawKind)
 import Soma.Syntax.Kind
-import Soma.Syntax.Lexer (LexerState (..), LexerT)
+import Soma.Syntax.Lexer (LexerState (..), LexerT, runLexer)
 import qualified Soma.Syntax.Lexer as Lexer
 import Test.Hspec (Spec, describe, it, shouldBe)
 
 lexAll :: T.Text -> [RawKind]
-lexAll input =
-    fst . runIdentity . runWriterT
-        $ evalStateT go LexerState{lxText = input, lxCursor = 0}
+lexAll input = fst $ runLexer LexerState{lxText = input, lxCursor = 0} go
   where
     go :: LexerT Identity [RawKind]
     go = do
