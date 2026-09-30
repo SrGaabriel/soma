@@ -1,16 +1,17 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Soma.Syntax.Lexer where
+module Soma.Syntax.Lexer (LexerT, next, peek, runLexer, runLexerT) where
 
 import Control.Monad.Identity
-import Control.Monad.State
-import Control.Monad.Writer
+import Control.Monad.State.Strict
+import Control.Monad.Writer.Strict
 import Data.Char (isNumber)
 import qualified Data.Text as T
 import Maple.Green (RawKind)
 import Soma.Diagnostic (Diagnostic)
 import Soma.Syntax.Kind
 import Soma.Util (maybeM, safeIndex)
+import Data.Text (Text)
 
 data LexerState = LexerState
     { lxText :: T.Text
@@ -19,8 +20,13 @@ data LexerState = LexerState
 
 type LexerT m = StateT LexerState (WriterT [Diagnostic] m)
 
-peek :: (Monad m) => LexerT m (Maybe Char)
-peek = do
+data Token = Token {
+    tKind :: !RawKind,
+    tText :: Text
+}
+
+peekChar :: (Monad m) => LexerT m (Maybe Char)
+peekChar = do
     (LexerState{lxText, lxCursor}) <- get
     pure $ safeIndex lxText lxCursor
 
@@ -32,13 +38,16 @@ bump = do
 
 bumpWhile :: (Monad m) => (Char -> Bool) -> LexerT m ()
 bumpWhile f = do
-    b <- peek
+    b <- peekChar
     case b of
         Just c | f c -> bump *> bumpWhile f
         _ -> pure ()
 
-lex :: (Monad m) => LexerT m RawKind
-lex = maybeM tEof lexChar (bump)
+next :: (Monad m) => LexerT m RawKind
+next = maybeM tEof lexChar (bump)
+
+peek :: (Monad m) => LexerT m RawKind
+peek = maybeM tEof lexChar (peekChar)
 
 lexChar :: (Monad m) => Char -> LexerT m RawKind
 lexChar '*' = pure tStar

@@ -23,6 +23,7 @@ library
     Soma.Diagnostic
     Soma.Syntax.Kind
     Soma.Syntax.Lexer
+    Soma.Syntax.Parser
 
   build-depends:
     base ^>=4.20.2.0,
