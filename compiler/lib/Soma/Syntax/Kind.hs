@@ -1,10 +1,26 @@
+{-# LANGUAGE DeriveAnyClass #-}
+
 module Soma.Syntax.Kind where
 
+import Data.Data (Data)
+import Maple.Ast (SyntaxKind (toRaw))
 import Maple.Green (RawKind)
 
+data Kind
+    = -- Tokens
+      KEof
+    | KNumber
+    | KStar
+    | KUnknown
+    | -- Nodes
+      KRoot
+    | KMul
+    deriving (Eq, Show, Enum, Data)
+    deriving anyclass (SyntaxKind)
+
 tRoot, tEof, tNumber, tStar, tUnknown :: RawKind
-tRoot = -1
-tEof = 0
-tNumber = 1
-tStar = 2
-tUnknown = 3
+tRoot = toRaw KRoot
+tEof = toRaw KEof
+tNumber = toRaw KNumber
+tStar = toRaw KStar
+tUnknown = toRaw KUnknown

@@ -1,4 +1,1 @@
-def stuff (a : Nat) (b : Nat) :=
-    let x := a
-    let y := b
-    x * y
+def id (a : Nat) : Nat := a

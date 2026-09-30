@@ -3,4 +3,4 @@ packages: .
 source-repository-package
   type: git
   location: https://github.com/SrGaabriel/maple
-  tag: 92c54a108f39768906faa5871f755e91714b3e96
+  tag: 8917852d75fc0ab3d530ed2d5223a7dfdf9ca7a5
