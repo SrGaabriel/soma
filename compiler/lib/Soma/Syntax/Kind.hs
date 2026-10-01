@@ -11,6 +11,9 @@ data Kind
       KEof
     | KNumber
     | KStar
+    | KWhitespace
+    | KNewline
+    | KSemicolon
     | KUnknown
     | -- Nodes
       KRoot
@@ -24,3 +27,8 @@ tEof = toRaw KEof
 tNumber = toRaw KNumber
 tStar = toRaw KStar
 tUnknown = toRaw KUnknown
+
+isTrivia :: Kind -> Bool
+isTrivia KWhitespace = True
+isTrivia KNewline = True
+isTrivia _ = False

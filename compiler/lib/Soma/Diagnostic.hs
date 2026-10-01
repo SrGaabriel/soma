@@ -13,6 +13,7 @@ data Label = Label
     { labRange :: Range
     , labMessage :: Maybe Text
     }
+    deriving (Show, Eq)
 
 data Diagnostic = Diagnostic
     { diagSeverity :: Severity
@@ -23,3 +24,4 @@ data Diagnostic = Diagnostic
     , diagNotes :: [Text]
     , diagHelps :: [Text]
     }
+    deriving (Show, Eq)

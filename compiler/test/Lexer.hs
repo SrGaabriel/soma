@@ -9,4 +9,7 @@ import Test.Hspec (Spec, describe, it, shouldBe)
 spec :: Spec
 spec = describe "Lexer" $ do
     it "lexes 2*2"
-        $ map (tKind) (lexAll "2*2") `shouldBe` [tNumber, tStar, tNumber, tEof]
+        $ do
+            let (tokens, diag) = lexAll "2*2"
+            diag `shouldBe` []
+            (map tKind tokens) `shouldBe` [tNumber, tStar, tNumber, tEof]

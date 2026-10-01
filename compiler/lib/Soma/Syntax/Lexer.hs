@@ -41,6 +41,7 @@ data Token = Token
     { tKind :: !RawKind
     , tText :: Text
     }
+    deriving (Show, Eq)
 
 next :: (Monad m) => LexerT m Token
 next = do
@@ -117,8 +118,8 @@ runLexerT lxRest lexer = do
 runLexer :: Text -> LexerT Identity a -> (a, [Diagnostic])
 runLexer text = runIdentity . runLexerT text
 
-lexAll :: T.Text -> [Token]
-lexAll input = fst $ runLexer input go
+lexAll :: T.Text -> ([Token], [Diagnostic])
+lexAll input = runLexer input go
   where
     go :: LexerT Identity [Token]
     go = do
