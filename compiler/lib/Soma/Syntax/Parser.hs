@@ -38,7 +38,7 @@ eatTrivia = do
 
 parseRoot :: Parser ()
 parseRoot = do
-    M.startNode tRoot
+    M.startNode kRoot
     parseUntil KEof parseDecl
     M.finishNode
     pure ()

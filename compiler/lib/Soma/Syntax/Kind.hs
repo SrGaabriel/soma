@@ -11,6 +11,8 @@ data Kind
       KEof
     | KNumber
     | KStar
+    | KDef
+    | KIdent
     | KWhitespace
     | KNewline
     | KSemicolon
@@ -21,12 +23,14 @@ data Kind
     deriving (Eq, Show, Enum, Data)
     deriving anyclass (SyntaxKind)
 
-tRoot, tEof, tNumber, tStar, tUnknown :: RawKind
-tRoot = toRaw KRoot
-tEof = toRaw KEof
-tNumber = toRaw KNumber
-tStar = toRaw KStar
-tUnknown = toRaw KUnknown
+kRoot, kEof, kNumber, kStar, kDef, kIdent, kUnknown :: RawKind
+kRoot = toRaw KRoot
+kEof = toRaw KEof
+kNumber = toRaw KNumber
+kStar = toRaw KStar
+kDef = toRaw KDef
+kIdent = toRaw KIdent
+kUnknown = toRaw KUnknown
 
 isTrivia :: Kind -> Bool
 isTrivia KWhitespace = True

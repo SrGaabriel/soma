@@ -1,4 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Soma.Syntax.Lexer (
     LexerT,
@@ -16,7 +17,7 @@ module Soma.Syntax.Lexer (
 import Control.Monad.Identity
 import Control.Monad.State.Strict
 import Control.Monad.Writer.Strict
-import Data.Char (isNumber)
+import Data.Char (isAlpha, isAlphaNum, isNumber)
 import Data.Sequence (Seq (..), (|>))
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
@@ -89,22 +90,37 @@ charToken :: RawKind -> Char -> Token
 charToken k c = Token k $ T.singleton c
 
 eofToken :: Token
-eofToken = emptyToken tEof
+eofToken = emptyToken kEof
 
 unknownToken :: Text -> Token
-unknownToken text = Token tUnknown text
+unknownToken text = Token kUnknown text
 
 lexToken :: (Monad m) => LexerT m Token
 lexToken = maybeM eofToken lexChar peekChar
 
 lexChar :: (Monad m) => Char -> LexerT m Token
-lexChar c@'*' = charToken tStar c <$ bumpChar
+lexChar c@'*' = charToken kStar c <$ bumpChar
 lexChar c
     | isNumber c = lexNumber
+    | isAlpha c = lexWord
 lexChar c = unknownToken (T.singleton c) <$ bumpChar
 
 lexNumber :: (Monad m) => LexerT m Token
-lexNumber = Token tNumber <$> bumpWhile isNumber
+lexNumber = Token kNumber <$> bumpWhile isNumber
+
+lexWord :: (Monad m) => LexerT m Token
+lexWord = do
+    word <- bumpWhile isIdentifierLike
+    let kind = case word of
+            "def" -> kDef
+            _ -> kIdent
+    pure $ Token kind word
+
+isIdentifierLike :: Char -> Bool
+isIdentifierLike '_' = True
+isIdentifierLike '\'' = True
+isIdentifierLike c | isAlphaNum c = True
+isIdentifierLike _ = False
 
 runLexerT :: (Monad m) => Text -> LexerT m a -> m (a, [Diagnostic])
 runLexerT lxRest lexer = do
@@ -126,6 +142,6 @@ lexAll input = runLexer input go
     go :: LexerT Identity [Token]
     go = do
         token@(Token{tKind}) <- next
-        if tKind == tEof
+        if tKind == kEof
             then pure [token]
             else (token :) <$> go
