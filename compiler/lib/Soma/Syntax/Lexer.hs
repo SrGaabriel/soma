@@ -88,9 +88,11 @@ emptyToken k = Token k T.empty
 charToken :: RawKind -> Char -> Token
 charToken k c = Token k $ T.singleton c
 
-unknownToken, eofToken :: Token
-unknownToken = emptyToken tUnknown
+eofToken :: Token
 eofToken = emptyToken tEof
+
+unknownToken :: Text -> Token
+unknownToken text = Token tUnknown text
 
 lexToken :: (Monad m) => LexerT m Token
 lexToken = maybeM eofToken lexChar peekChar
@@ -99,7 +101,7 @@ lexChar :: (Monad m) => Char -> LexerT m Token
 lexChar c@'*' = charToken tStar c <$ bumpChar
 lexChar c
     | isNumber c = lexNumber
-lexChar _ = unknownToken <$ bumpChar
+lexChar c = unknownToken (T.singleton c) <$ bumpChar
 
 lexNumber :: (Monad m) => LexerT m Token
 lexNumber = Token tNumber <$> bumpWhile isNumber

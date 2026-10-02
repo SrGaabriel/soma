@@ -1,4 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE Strict #-}
 
 module Soma.Syntax.Parser where
 
@@ -33,21 +34,24 @@ incoming = (fromRaw . tKind) <$> (lift peek)
 eatTrivia :: Parser ()
 eatTrivia = do
     inc <- incoming
-    when (isTrivia inc) bump *> eatTrivia
+    when (isTrivia inc) (bump *> eatTrivia)
 
 parseRoot :: Parser ()
 parseRoot = do
     M.startNode tRoot
-    parseDecl
+    parseUntil KEof parseDecl
     M.finishNode
     pure ()
 
 parseDecl :: Parser ()
-parseDecl = do
-    eatTrivia
-    _inc <- incoming
-    case tKind of
-        _ -> pure ()
+parseDecl = bump
+
+parseUntil :: Kind -> Parser () -> Parser ()
+parseUntil end parser = do
+    inc <- incoming
+    if inc == end
+        then pure ()
+        else (parser >> parseUntil end parser)
 
 runParser :: Text -> NodeCache -> Parser a -> IO ((GreenNode, NodeCache), [Diagnostic])
 runParser text cache parser = do

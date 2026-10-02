@@ -9,7 +9,7 @@ import qualified Data.Text.IO as TIO
 import qualified Data.Vector.Strict as V
 import Maple.Ast (fromRaw)
 import Maple.Cache (mkCache)
-import Maple.Green (Green (GNode, GToken), GreenNode (GreenNode, gnChildren, gnKind), GreenToken (GreenToken, gtKind, gtSymbol))
+import Maple.Green (Green (GNode, GToken), GreenNode (GreenNode, gnChildren, gnKind, gnWidth), GreenToken (GreenToken, gtKind, gtSymbol))
 import Soma.Syntax.Kind (Kind)
 import Soma.Syntax.Lexer (lexAll)
 import Soma.Syntax.Parser (parseRoot, runParser)
@@ -46,3 +46,7 @@ spec = describe "basic.soma" $ do
         ((root, _), diag) <- runParser basicSource mkCache parseRoot
         TIO.putStrLn (T.unlines (renderNode 0 root))
         diag `shouldBe` []
+
+    it "parses with the same tree size as source length" $ do
+        ((GreenNode{gnWidth}, _), _) <- runParser basicSource mkCache parseRoot
+        gnWidth `shouldBe` (T.length basicSource)

@@ -38,6 +38,7 @@ library
     unordered-containers >=0.2.21,
     vector ^>=0.13.1
 
+  default-extensions: Strict StrictData
   hs-source-dirs: compiler/lib
   default-language: GHC2024
 
@@ -52,6 +53,7 @@ executable soma
   other-modules:
     Somac.Cli
 
+  default-extensions: Strict StrictData
   hs-source-dirs: compiler/app
   default-language: GHC2024
 
