@@ -22,7 +22,6 @@ import Data.Sequence (Seq (..), (|>))
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as T
-import Maple.Green (RawKind)
 import Soma.Diagnostic (Diagnostic)
 import Soma.Syntax.Kind
 import Soma.Util (maybeM)
@@ -39,8 +38,8 @@ mkLexerState txt = LexerState{lxRest = txt, lxCursor = 0, lxBuffer = Seq.empty}
 type LexerT m = StateT LexerState (WriterT [Diagnostic] m)
 
 data Token = Token
-    { tKind :: !RawKind
-    , tText :: Text
+    { tKind :: !Kind
+    , tText :: !Text
     }
     deriving (Show, Eq)
 
@@ -64,6 +63,9 @@ peekNth n = do
             modify' (\s -> s{lxBuffer = lxBuffer s |> t})
             peekNth n
 
+peekNthChar :: (Monad m) => Int -> LexerT m (Maybe Char)
+peekNthChar i = gets (fmap fst . T.uncons . lxRest)
+
 peekChar :: (Monad m) => LexerT m (Maybe Char)
 peekChar = gets (fmap fst . T.uncons . lxRest)
 
@@ -83,38 +85,49 @@ bumpWhile f = do
     modify' (\s -> s{lxRest = rest, lxCursor = lxCursor + T.length taken})
     pure taken
 
-emptyToken :: RawKind -> Token
+emptyToken :: Kind -> Token
 emptyToken k = Token k T.empty
 
-charToken :: RawKind -> Char -> Token
+charToken :: Kind -> Char -> Token
 charToken k c = Token k $ T.singleton c
 
 eofToken :: Token
-eofToken = emptyToken kEof
+eofToken = emptyToken KEof
 
 unknownToken :: Text -> Token
-unknownToken text = Token kUnknown text
+unknownToken text = Token KUnknown text
 
 lexToken :: (Monad m) => LexerT m Token
 lexToken = maybeM eofToken lexChar peekChar
 
 lexChar :: (Monad m) => Char -> LexerT m Token
-lexChar c@'*' = charToken kStar c <$ bumpChar
+lexChar c@'*' = charToken KStar c <$ bumpChar
+lexChar c@'(' = charToken KLParen c <$ bumpChar
+lexChar c@')' = charToken KRParen c <$ bumpChar
+lexChar c@':' = charToken KColon c <$ bumpChar
 lexChar c
     | isNumber c = lexNumber
     | isAlpha c = lexWord
+    | isWhitespace c = lexWhitespace
 lexChar c = unknownToken (T.singleton c) <$ bumpChar
 
+lexWhitespace :: (Monad m) => LexerT m Token
+lexWhitespace = Token KWhitespace <$> bumpWhile isWhitespace
+
 lexNumber :: (Monad m) => LexerT m Token
-lexNumber = Token kNumber <$> bumpWhile isNumber
+lexNumber = Token KNumber <$> bumpWhile isNumber
 
 lexWord :: (Monad m) => LexerT m Token
 lexWord = do
     word <- bumpWhile isIdentifierLike
     let kind = case word of
-            "def" -> kDef
-            _ -> kIdent
+            "def" -> KDef
+            _ -> KIdent
     pure $ Token kind word
+
+isWhitespace :: Char -> Bool
+isWhitespace ' ' = True
+isWhitespace _ = False
 
 isIdentifierLike :: Char -> Bool
 isIdentifierLike '_' = True
@@ -142,6 +155,6 @@ lexAll input = runLexer input go
     go :: LexerT Identity [Token]
     go = do
         token@(Token{tKind}) <- next
-        if tKind == kEof
+        if tKind == KEof
             then pure [token]
             else (token :) <$> go

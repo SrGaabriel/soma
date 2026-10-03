@@ -12,4 +12,4 @@ spec = describe "Lexer" $ do
         $ do
             let (tokens, diag) = lexAll "2*2"
             diag `shouldBe` []
-            (map tKind tokens) `shouldBe` [kNumber, kStar, kNumber, kEof]
+            (map tKind tokens) `shouldBe` [KNumber, KStar, KNumber, KEof]

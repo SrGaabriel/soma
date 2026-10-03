@@ -3,8 +3,7 @@
 module Soma.Syntax.Kind where
 
 import Data.Data (Data)
-import Maple.Ast (SyntaxKind (toRaw))
-import Maple.Green (RawKind)
+import Maple.Ast (SyntaxKind)
 
 data Kind
     = -- Tokens
@@ -16,21 +15,16 @@ data Kind
     | KWhitespace
     | KNewline
     | KSemicolon
+    | KLParen
+    | KRParen
+    | KColon
+    | KColonEq
     | KUnknown
     | -- Nodes
       KRoot
     | KMul
     deriving (Eq, Show, Enum, Data)
     deriving anyclass (SyntaxKind)
-
-kRoot, kEof, kNumber, kStar, kDef, kIdent, kUnknown :: RawKind
-kRoot = toRaw KRoot
-kEof = toRaw KEof
-kNumber = toRaw KNumber
-kStar = toRaw KStar
-kDef = toRaw KDef
-kIdent = toRaw KIdent
-kUnknown = toRaw KUnknown
 
 isTrivia :: Kind -> Bool
 isTrivia KWhitespace = True

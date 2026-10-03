@@ -7,7 +7,7 @@ import Control.Monad
 import Control.Monad.State.Strict
 import Control.Monad.Writer.Strict
 import Data.Text (Text)
-import Maple.Ast (fromRaw)
+import Maple.Ast (SyntaxKind (toRaw))
 import Maple.Builder (runBuilderT)
 import Maple.Builder qualified as M (BuilderT, finishNode, startNode, token)
 import Maple.Cache (NodeCache)
@@ -25,20 +25,23 @@ type Parser = M.BuilderT (LexerT (StateT ParserState (WriterT [Diagnostic] IO)))
 bump :: Parser ()
 bump = do
     (Token{tKind, tText}) <- lift next
-    M.token tKind tText
+    M.token (toRaw tKind) tText
     pure ()
 
 incoming :: Parser Kind
-incoming = (fromRaw . tKind) <$> (lift peek)
+incoming = tKind <$> (lift peek)
 
 eatTrivia :: Parser ()
 eatTrivia = do
     inc <- incoming
     when (isTrivia inc) (bump *> eatTrivia)
 
+startNode :: Kind -> Parser ()
+startNode = M.startNode . toRaw
+
 parseRoot :: Parser ()
 parseRoot = do
-    M.startNode kRoot
+    startNode KRoot
     parseUntil KEof parseDecl
     M.finishNode
     pure ()

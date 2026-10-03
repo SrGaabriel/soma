@@ -1,1 +1,1 @@
-def id (a : Nat) : Nat := a
+def id  (a : Nat) : Nat := a
