@@ -1,1 +1,7 @@
-def id  (a : Nat) : Nat := a
+def id (a : Nat) : Nat := a
+
+def test (num : Int) : Int := {
+    let x = id 5;
+    let y = id 10;
+    x + y
+}

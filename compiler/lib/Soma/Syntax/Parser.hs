@@ -47,7 +47,17 @@ parseRoot = do
     pure ()
 
 parseDecl :: Parser ()
-parseDecl = bump
+parseDecl = do
+    inc <- incoming
+    case inc of
+        KDefKw -> parseDef
+        _ -> bump
+
+parseDef :: Parser ()
+parseDef = do
+    startNode KDef
+    bump
+    M.finishNode
 
 parseUntil :: Kind -> Parser () -> Parser ()
 parseUntil end parser = do

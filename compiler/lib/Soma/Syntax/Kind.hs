@@ -10,19 +10,22 @@ data Kind
       KEof
     | KNumber
     | KStar
-    | KDef
+    | KDefKw
     | KIdent
     | KWhitespace
     | KNewline
     | KSemicolon
     | KLParen
     | KRParen
+    | KLBrace
+    | KRBrace
     | KColon
     | KColonEq
     | KUnknown
     | -- Nodes
       KRoot
     | KMul
+    | KDef
     deriving (Eq, Show, Enum, Data)
     deriving anyclass (SyntaxKind)
 

@@ -24,7 +24,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Soma.Diagnostic (Diagnostic)
 import Soma.Syntax.Kind
-import Soma.Util (maybeM)
+import Soma.Util (maybeM, safeIndex)
 
 data LexerState = LexerState
     { lxRest :: !Text
@@ -64,7 +64,9 @@ peekNth n = do
             peekNth n
 
 peekNthChar :: (Monad m) => Int -> LexerT m (Maybe Char)
-peekNthChar i = gets (fmap fst . T.uncons . lxRest)
+peekNthChar n = do
+    LexerState{lxRest} <- get
+    pure $ safeIndex lxRest n
 
 peekChar :: (Monad m) => LexerT m (Maybe Char)
 peekChar = gets (fmap fst . T.uncons . lxRest)
@@ -104,7 +106,14 @@ lexChar :: (Monad m) => Char -> LexerT m Token
 lexChar c@'*' = charToken KStar c <$ bumpChar
 lexChar c@'(' = charToken KLParen c <$ bumpChar
 lexChar c@')' = charToken KRParen c <$ bumpChar
-lexChar c@':' = charToken KColon c <$ bumpChar
+lexChar c@'{' = charToken KLBrace c <$ bumpChar
+lexChar c@'}' = charToken KRBrace c <$ bumpChar
+lexChar c@'\n' = charToken KNewline c <$ bumpChar
+lexChar c@':' = do
+    peekNext <- peekNthChar 1
+    case peekNext of
+        Just '=' -> bumpChar *> (bumpChar >> (pure $ Token KColonEq ":="))
+        _ -> charToken KColon c <$ bumpChar
 lexChar c
     | isNumber c = lexNumber
     | isAlpha c = lexWord
@@ -121,7 +130,7 @@ lexWord :: (Monad m) => LexerT m Token
 lexWord = do
     word <- bumpWhile isIdentifierLike
     let kind = case word of
-            "def" -> KDef
+            "def" -> KDefKw
             _ -> KIdent
     pure $ Token kind word
 
