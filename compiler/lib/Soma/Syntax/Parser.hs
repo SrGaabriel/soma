@@ -12,21 +12,36 @@ import Maple.Builder (runBuilderT)
 import Maple.Builder qualified as M (BuilderT, finishNode, startNode, token)
 import Maple.Cache (NodeCache)
 import Maple.Green (GreenNode)
-import Soma.Diagnostic (Diagnostic)
+import Maple.Position (Range)
+import Soma.Diagnostic (Diagnostic, Label (Label, labFile, labMessage, labRange))
+import Soma.File (SourceFile (srcContent))
 import Soma.Syntax.Kind
 import Soma.Syntax.Lexer (LexerT, Token (Token, tKind, tText), next, peek, runLexerT)
 
 data ParserState = ParserState
-    {
+    { srcFile :: !SourceFile
     }
 
 type Parser = M.BuilderT (LexerT (StateT ParserState (WriterT [Diagnostic] IO)))
+
+label :: Range -> Text -> Parser Label
+label range msg = do
+    src <- gets srcFile
+    pure Label{labRange = range, labMessage = msg, labFile = src}
 
 bump :: Parser ()
 bump = do
     (Token{tKind, tText}) <- lift next
     M.token (toRaw tKind) tText
     pure ()
+
+consume :: Kind -> Parser ()
+consume kind = do
+    inc <- incoming
+    unless (inc == kind)
+        $ diag
+        $ "Expected " <> show kind <> ", but got " <> show inc
+    bump
 
 incoming :: Parser Kind
 incoming = tKind <$> (lift peek)
@@ -66,11 +81,12 @@ parseUntil end parser = do
         then pure ()
         else (parser >> parseUntil end parser)
 
-runParser :: Text -> NodeCache -> Parser a -> IO ((GreenNode, NodeCache), [Diagnostic])
-runParser text cache parser = do
+runParser :: SourceFile -> NodeCache -> Parser a -> IO ((GreenNode, NodeCache), [Diagnostic])
+runParser src cache parser = do
     let s =
             ParserState
-                {
+                { srcFile = src
                 }
+    let text = srcContent src
     (((nc, diag), _s'), diag') <- runWriterT $ runStateT (runLexerT text $ runBuilderT cache parser) s
     pure (nc, diag <> diag')

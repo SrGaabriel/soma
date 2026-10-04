@@ -20,6 +20,7 @@ library
   exposed-modules:
     Soma
     Soma.Diagnostic
+    Soma.File
     Soma.Syntax.Kind
     Soma.Syntax.Lexer
     Soma.Syntax.Parser
@@ -29,16 +30,20 @@ library
   build-depends:
     base ^>=4.20.2.0,
     containers ^>=0.8,
+    diagnose,
     hashable ^>=1.5.1.0,
     maple,
     mtl ^>=2.3.1,
     symbolize ^>=1.0.3,
     text ^>=2.1,
     text-rope ^>=0.3,
-    unordered-containers >=0.2.21,
+    unordered-containers ^>=0.2,
     vector ^>=0.13.1
 
-  default-extensions: Strict StrictData
+  default-extensions:
+    Strict
+    StrictData
+
   hs-source-dirs: compiler/lib
   default-language: GHC2024
 
@@ -53,7 +58,10 @@ executable soma
   other-modules:
     Somac.Cli
 
-  default-extensions: Strict StrictData
+  default-extensions:
+    Strict
+    StrictData
+
   hs-source-dirs: compiler/app
   default-language: GHC2024
 

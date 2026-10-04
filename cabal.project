@@ -4,3 +4,8 @@ source-repository-package
   type: git
   location: https://github.com/SrGaabriel/maple
   tag: 772bafd6fa8a91ab9d50d1468f13f40ccdccc753
+
+source-repository-package
+  type: git
+  location: https://github.com/SrGaabriel/diagnose
+  tag: 8f744c71452ca6518c1346b1f80a2881409d4d35
