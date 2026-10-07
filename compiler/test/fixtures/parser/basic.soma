@@ -1,0 +1,2 @@
+def id (a : Nat) : Nat := a
+

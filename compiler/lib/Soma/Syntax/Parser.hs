@@ -17,7 +17,9 @@ import Maple.Position (Range)
 import Soma.Diagnostic (Diagnostic, Label (Label, labFile, labMessage, labRange), Severity (SError), mkDiag)
 import Soma.File (SourceFile (srcContent))
 import Soma.Syntax.Kind
-import qualified Soma.Syntax.Lexer as L
+import Soma.Syntax.Lexer (Token (Token))
+import Soma.Syntax.Lexer qualified as L
+import Soma.Pretty (Pretty(pretty))
 
 data ParserState = ParserState
     { srcFile :: !SourceFile
@@ -39,14 +41,24 @@ bump = do
     M.token (toRaw tKind) tText
     when (isTrivia tKind) bump
 
+eatTrivia :: Parser ()
+eatTrivia = do
+    Token{tKind, tText} <- lift $ L.peek
+    when
+        (isTrivia tKind)
+        ( lift L.next
+            >> M.token (toRaw tKind) tText
+            >> eatTrivia
+        )
+
 consume :: Kind -> Parser ()
 consume kind = do
     t@L.Token{tKind} <- peek
     unless (tKind == kind) $ do
         let range = L.tRange t
         diag <-
-            ( mkError ("expected " <> T.show kind <> ", but got " <> T.show tKind)
-                <$> label range ("expected " <> T.show kind <> " here")
+            ( mkError ("expected " <> pretty kind <> ", but got " <> pretty tKind)
+                <$> label range ("expected " <> pretty kind <> " here")
             )
         lift $ tell [diag]
     bump
@@ -67,8 +79,8 @@ parseRoot :: Parser ()
 parseRoot = do
     startNode KRoot
     parseUntil KEof parseDecl
+    eatTrivia
     M.finishNode
-    pure ()
 
 parseDecl :: Parser ()
 parseDecl = do

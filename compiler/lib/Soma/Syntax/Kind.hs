@@ -1,9 +1,12 @@
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Soma.Syntax.Kind where
 
 import Data.Data (Data)
+import Data.Text (Text)
 import Maple.Ast (SyntaxKind)
+import Soma.Pretty (Pretty (pretty))
 
 data Kind
     = -- Tokens
@@ -26,7 +29,7 @@ data Kind
       KRoot
     | KMul
     | KDef
-    deriving (Eq, Enum, Data)
+    deriving (Show, Eq, Enum, Data)
     deriving anyclass (SyntaxKind)
 
 isTrivia :: Kind -> Bool
@@ -34,22 +37,23 @@ isTrivia KWhitespace = True
 isTrivia KNewline = True
 isTrivia _ = False
 
-instance Show Kind where
-    show KEof = "end of file"
-    show KNumber = "number"
-    show KStar = "'*'"
-    show KDefKw = "'def'"
-    show KIdent = "identifier"
-    show KWhitespace = "whitespace"
-    show KNewline = "newline"
-    show KSemicolon = "';'"
-    show KLParen = "'('"
-    show KRParen = "')'"
-    show KLBrace = "'{'"
-    show KRBrace = "'}'"
-    show KColon = "':'"
-    show KColonEq = "':='"
-    show KUnknown = "unknown"
-    show KRoot = "root"
-    show KMul = "multiplication"
-    show KDef = "function definition"
+instance Pretty Kind where
+    pretty :: Kind -> Text
+    pretty KEof = "end of file"
+    pretty KNumber = "number"
+    pretty KStar = "'*'"
+    pretty KDefKw = "'def'"
+    pretty KIdent = "identifier"
+    pretty KWhitespace = "whitespace"
+    pretty KNewline = "newline"
+    pretty KSemicolon = "';'"
+    pretty KLParen = "'('"
+    pretty KRParen = "')'"
+    pretty KLBrace = "'{'"
+    pretty KRBrace = "'}'"
+    pretty KColon = "':'"
+    pretty KColonEq = "':='"
+    pretty KUnknown = "unknown"
+    pretty KRoot = "root"
+    pretty KMul = "multiplication"
+    pretty KDef = "function definition"
