@@ -4,7 +4,7 @@ import Data.Text (Text)
 import Error.Diagnose (Marker (Where), Note (Note), Position (Position), Report (Err), TabSize (TabSize), WithUnicode (WithUnicode), addFile, addReport, stdout)
 import Error.Diagnose.Diagnostic (printDiagnostic)
 import Error.Diagnose.Style (defaultStyle)
-import Maple.Position (Range (Range))
+import Maple.Position (Range (Range), posRowCol)
 import Soma.File (SourceFile (SourceFile, srcContent, srcPath))
 
 data Severity
@@ -61,8 +61,8 @@ withPrimary primary diag = diag{diagPrimary = primary}
 addSecondary :: Label -> Diagnostic -> Diagnostic
 addSecondary secondary diag = diag{diagSecondaries = diagSecondaries diag ++ [secondary]}
 
-print :: Diagnostic -> IO ()
-print
+report :: Diagnostic -> IO ()
+report
     ( Diagnostic
             { diagMessage
             , diagCode
@@ -81,15 +81,19 @@ print
                         (\label@Label{labMessage} -> (labelPosition label, Where labMessage))
                         diagSecondaries
             helps = map Note diagHelps
-            report =
+            report_ =
                 Err
                     diagCode
                     diagMessage
                     positions
                     helps
             diagnostic = addFile mempty srcPath srcContent
-            diagnostic' = addReport diagnostic report
+            diagnostic' = addReport diagnostic report_
         in printDiagnostic stdout WithUnicode (TabSize 4) defaultStyle diagnostic'
 
+reportAll :: [Diagnostic] -> IO ()
+reportAll diags = mapM_ report diags
+
 labelPosition :: Label -> Position
-labelPosition Label{labFile = SourceFile{srcPath}, labRange = (Range p1 p2)} = Position (2, 3) (5, 6) srcPath
+labelPosition Label{labFile = SourceFile{srcPath, srcContent}, labRange = (Range p1 p2)} =
+    Position (posRowCol srcContent p1) (posRowCol srcContent p2) srcPath

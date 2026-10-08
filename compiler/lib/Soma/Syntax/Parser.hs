@@ -1,4 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Strict #-}
 
 module Soma.Syntax.Parser where
@@ -6,28 +7,31 @@ module Soma.Syntax.Parser where
 import Control.Monad
 import Control.Monad.State.Strict
 import Control.Monad.Writer.Strict
-import Data.Text (Text)
+import Data.Text qualified as T
 import Maple.Ast (SyntaxKind (toRaw))
 import Maple.Builder (runBuilderT)
 import Maple.Builder qualified as M (BuilderT, finishNode, startNode, token)
 import Maple.Cache (NodeCache)
 import Maple.Green (GreenNode)
 import Maple.Position (Range)
-import Soma.Diagnostic (Diagnostic, Label (Label, labFile, labMessage, labRange))
+import Soma.Diagnostic (Diagnostic, Label (Label, labFile, labMessage, labRange), Severity (SError), mkDiag)
 import Soma.File (SourceFile (srcContent))
 import Soma.Syntax.Kind
-import Soma.Syntax.Lexer (LexerT, Token (Token, tKind, tText), next, peek, runLexerT)
+import Soma.Syntax.Lexer (LexerT, Token (Token, tKind, tText), next, peek, runLexerT, tRange)
 
 data ParserState = ParserState
     { srcFile :: !SourceFile
     }
 
-type Parser = M.BuilderT (LexerT (StateT ParserState (WriterT [Diagnostic] IO)))
+type Parser = M.BuilderT (LexerT (StateT ParserState IO))
 
-label :: Range -> Text -> Parser Label
+label :: Range -> T.Text -> Parser Label
 label range msg = do
-    src <- gets srcFile
+    src <- lift $ lift $ gets srcFile
     pure Label{labRange = range, labMessage = msg, labFile = src}
+
+mkError :: T.Text -> Label -> Diagnostic
+mkError = mkDiag SError
 
 bump :: Parser ()
 bump = do
@@ -37,10 +41,14 @@ bump = do
 
 consume :: Kind -> Parser ()
 consume kind = do
-    inc <- incoming
-    unless (inc == kind)
-        $ diag
-        $ "Expected " <> show kind <> ", but got " <> show inc
+    t@Token{tKind} <- lift peek
+    unless (tKind == kind) $ do
+        let range = tRange t
+        diag <-
+            ( mkError ("expected " <> T.show kind <> ", but got " <> T.show tKind)
+                <$> label range ("expected " <> T.show kind <> " here")
+            )
+        lift $ tell [diag]
     bump
 
 incoming :: Parser Kind
@@ -71,6 +79,8 @@ parseDecl = do
 parseDef :: Parser ()
 parseDef = do
     startNode KDef
+    consume KDefKw
+    consume KIdent
     bump
     M.finishNode
 
@@ -88,5 +98,5 @@ runParser src cache parser = do
                 { srcFile = src
                 }
     let text = srcContent src
-    (((nc, diag), _s'), diag') <- runWriterT $ runStateT (runLexerT text $ runBuilderT cache parser) s
-    pure (nc, diag <> diag')
+    ((nc, diag), _s') <- runStateT (runLexerT text $ runBuilderT cache parser) s
+    pure (nc, diag)

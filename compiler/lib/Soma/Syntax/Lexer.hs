@@ -5,6 +5,7 @@ module Soma.Syntax.Lexer (
     LexerT,
     LexerState,
     Token (..),
+    tRange,
     mkLexerState,
     next,
     peek,
@@ -22,9 +23,10 @@ import Data.Sequence (Seq (..), (|>))
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as T
+import Maple.Position (Range (Range), Pos)
 import Soma.Diagnostic (Diagnostic)
 import Soma.Syntax.Kind
-import Soma.Util (maybeM, safeIndex)
+import Soma.Util (safeIndex)
 
 data LexerState = LexerState
     { lxRest :: !Text
@@ -40,8 +42,15 @@ type LexerT m = StateT LexerState (WriterT [Diagnostic] m)
 data Token = Token
     { tKind :: !Kind
     , tText :: !Text
+    , tOffset :: !Pos
     }
     deriving (Show, Eq)
+
+tRange :: Token -> Range
+tRange (Token{tText, tOffset}) =
+    let start = tOffset
+        end = start + T.length tText
+    in Range start end
 
 next :: (Monad m) => LexerT m Token
 next = do
@@ -87,52 +96,63 @@ bumpWhile f = do
     modify' (\s -> s{lxRest = rest, lxCursor = lxCursor + T.length taken})
     pure taken
 
-emptyToken :: Kind -> Token
-emptyToken k = Token k T.empty
+emptyToken :: (Monad m) => Kind -> LexerT m Token
+emptyToken k = Token k T.empty <$> lxCursor <$> get
 
-charToken :: Kind -> Char -> Token
-charToken k c = Token k $ T.singleton c
+charToken :: (Monad m) => Kind -> Char -> LexerT m Token
+charToken k c = Token k (T.singleton c) <$> lxCursor <$> get
 
-eofToken :: Token
+eofToken :: (Monad m) => LexerT m Token
 eofToken = emptyToken KEof
 
-unknownToken :: Text -> Token
-unknownToken text = Token KUnknown text
+unknownToken :: (Monad m) => Text -> LexerT m Token
+unknownToken text = Token KUnknown text <$> lxCursor <$> get
 
 lexToken :: (Monad m) => LexerT m Token
-lexToken = maybeM eofToken lexChar peekChar
+lexToken = do
+    mChar <- peekChar
+    case mChar of
+        Nothing -> eofToken
+        Just c -> lexChar c
 
 lexChar :: (Monad m) => Char -> LexerT m Token
-lexChar c@'*' = charToken KStar c <$ bumpChar
-lexChar c@'(' = charToken KLParen c <$ bumpChar
-lexChar c@')' = charToken KRParen c <$ bumpChar
-lexChar c@'{' = charToken KLBrace c <$ bumpChar
-lexChar c@'}' = charToken KRBrace c <$ bumpChar
-lexChar c@'\n' = charToken KNewline c <$ bumpChar
+lexChar c@'*' = charToken KStar c <* bumpChar
+lexChar c@'(' = charToken KLParen c <* bumpChar
+lexChar c@')' = charToken KRParen c <* bumpChar
+lexChar c@'{' = charToken KLBrace c <* bumpChar
+lexChar c@'}' = charToken KRBrace c <* bumpChar
+lexChar c@'\n' = charToken KNewline c <* bumpChar
 lexChar c@':' = do
     peekNext <- peekNthChar 1
     case peekNext of
-        Just '=' -> bumpChar *> (bumpChar >> (pure $ Token KColonEq ":="))
-        _ -> charToken KColon c <$ bumpChar
+        Just '=' -> Token KColonEq ":=" <$> gets lxCursor <* bumpChar <* bumpChar
+        _ -> charToken KColon c <* bumpChar
 lexChar c
     | isNumber c = lexNumber
     | isAlpha c = lexWord
     | isWhitespace c = lexWhitespace
-lexChar c = unknownToken (T.singleton c) <$ bumpChar
+lexChar c = unknownToken (T.singleton c) <* bumpChar
 
 lexWhitespace :: (Monad m) => LexerT m Token
-lexWhitespace = Token KWhitespace <$> bumpWhile isWhitespace
+lexWhitespace = do
+    start <- gets lxCursor
+    ws <- bumpWhile isWhitespace
+    pure (Token KWhitespace ws start)
 
 lexNumber :: (Monad m) => LexerT m Token
-lexNumber = Token KNumber <$> bumpWhile isNumber
+lexNumber = do
+    start <- gets lxCursor
+    num <- bumpWhile isNumber
+    pure (Token KNumber num start)
 
 lexWord :: (Monad m) => LexerT m Token
 lexWord = do
+    start <- gets lxCursor
     word <- bumpWhile isIdentifierLike
     let kind = case word of
             "def" -> KDefKw
             _ -> KIdent
-    pure $ Token kind word
+    pure (Token kind word start)
 
 isWhitespace :: Char -> Bool
 isWhitespace ' ' = True
