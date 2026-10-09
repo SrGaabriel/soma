@@ -9,7 +9,9 @@ module Soma.Syntax.Lexer (
     mkLexerState,
     next,
     peek,
+    peekNonTrivial,
     peekNth,
+    peekNonTrivialNth,
     runLexer,
     runLexerT,
     lexAll,
@@ -23,7 +25,7 @@ import Data.Sequence (Seq (..), (|>))
 import Data.Sequence qualified as Seq
 import Data.Text (Text)
 import Data.Text qualified as T
-import Maple.Position (Range (Range), Pos)
+import Maple.Position (Pos, Range (Range))
 import Soma.Diagnostic (Diagnostic)
 import Soma.Syntax.Kind
 import Soma.Util (safeIndex)
@@ -62,6 +64,9 @@ next = do
 peek :: (Monad m) => LexerT m Token
 peek = peekNth 0
 
+peekNonTrivial :: (Monad m) => LexerT m Token
+peekNonTrivial = peekNonTrivialNth 0
+
 peekNth :: (Monad m) => Int -> LexerT m Token
 peekNth n = do
     buf <- gets lxBuffer
@@ -71,6 +76,17 @@ peekNth n = do
             t <- lexToken
             modify' (\s -> s{lxBuffer = lxBuffer s |> t})
             peekNth n
+
+peekNonTrivialNth :: (Monad m) => Int -> LexerT m Token
+peekNonTrivialNth n = do
+    buf <- gets lxBuffer
+    let nonTrivialBuf = Seq.filter (not . isTrivia . tKind) buf
+    case Seq.lookup n nonTrivialBuf of
+        Just t -> pure t
+        Nothing -> do
+            t <- lexToken
+            modify' (\s -> s{lxBuffer = lxBuffer s |> t})
+            peekNonTrivialNth n
 
 peekNthChar :: (Monad m) => Int -> LexerT m (Maybe Char)
 peekNthChar n = do
