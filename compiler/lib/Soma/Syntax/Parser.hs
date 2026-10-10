@@ -16,10 +16,10 @@ import Maple.Green (GreenNode)
 import Maple.Position (Range)
 import Soma.Diagnostic (Diagnostic, Label (Label, labFile, labMessage, labRange), Severity (SError), mkDiag)
 import Soma.File (SourceFile (srcContent))
+import Soma.Pretty (Pretty (pretty))
 import Soma.Syntax.Kind
 import Soma.Syntax.Lexer (Token (Token))
 import Soma.Syntax.Lexer qualified as L
-import Soma.Pretty (Pretty(pretty))
 
 data ParserState = ParserState
     { srcFile :: !SourceFile
@@ -35,11 +35,16 @@ label range msg = do
 mkError :: T.Text -> Label -> Diagnostic
 mkError = mkDiag SError
 
-bump :: Parser ()
+bump :: Parser Token
 bump = do
-    (L.Token{tKind, tText}) <- lift L.next
+    t@L.Token{tKind, tText} <- lift L.next
     M.token (toRaw tKind) tText
-    when (isTrivia tKind) bump
+    if isTrivia tKind
+        then bump
+        else pure t
+
+bump_ :: Parser ()
+bump_ = void bump
 
 eatTrivia :: Parser ()
 eatTrivia = do
@@ -61,7 +66,7 @@ consume kind = do
                 <$> label range ("expected " <> pretty kind <> " here")
             )
         lift $ tell [diag]
-    bump
+    bump_
 
 peek :: Parser L.Token
 peek = lift L.peekNonTrivial
@@ -87,14 +92,55 @@ parseDecl = do
     inc <- incoming
     case inc of
         KDefKw -> parseDef
-        _ -> bump
+        _ -> bump_
 
 parseDef :: Parser ()
 parseDef = do
     startNode KDef
     consume KDefKw
     consume KIdent
-    consume KLParen
+    parseUntil KColon parseBinder
+    consume KColon
+    parseType
+    consume KColonEq
+    parseExpr
+    M.finishNode
+
+parseExpr :: Parser ()
+parseExpr = consume KIdent
+
+parseBinder :: Parser ()
+parseBinder = do
+    t@Token{tKind} <- peek
+    case tKind of
+        KLParen -> do
+            startNode KExBinder
+            bump_
+            consume KIdent
+            consume KColon
+            parseType
+            consume KRParen
+            M.finishNode
+        KLBrace -> do
+            startNode KClBinder
+            bump_
+            consume KIdent
+            consume KColon
+            parseType
+            consume KRBrace
+            M.finishNode
+        _ -> do
+            let range = L.tRange t
+            diag <-
+                ( mkError ("expected binder, but got " <> pretty tKind)
+                    <$> label range ("expected binder here")
+                )
+            lift $ tell [diag]
+
+parseType :: Parser ()
+parseType = do
+    startNode KType
+    consume KIdent
     M.finishNode
 
 parseUntil :: Kind -> Parser () -> Parser ()

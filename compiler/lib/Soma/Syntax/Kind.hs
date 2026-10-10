@@ -29,6 +29,10 @@ data Kind
       KRoot
     | KMul
     | KDef
+    | KType
+    | KExBinder
+    | KImBinder
+    | KClBinder
     deriving (Show, Eq, Enum, Data)
     deriving anyclass (SyntaxKind)
 
@@ -55,5 +59,9 @@ instance Pretty Kind where
     pretty KColonEq = "':='"
     pretty KUnknown = "unknown"
     pretty KRoot = "root"
+    pretty KType = "type"
     pretty KMul = "multiplication"
     pretty KDef = "function definition"
+    pretty KClBinder = "class binder"
+    pretty KExBinder = "explicit binder"
+    pretty KImBinder = "implicit binder"
