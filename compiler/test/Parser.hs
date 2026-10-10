@@ -17,6 +17,7 @@ import Soma.Syntax.Lexer (lexAll)
 import Soma.Syntax.Parser (parseRoot, runParser)
 import System.Directory (listDirectory)
 import Test.Hspec (Spec, describe, it, runIO, shouldBe)
+import Blammo.Logging.Setup (newLoggerEnv)
 
 fixturesDir :: String
 fixturesDir = "compiler/test/fixtures/parser/"
@@ -28,6 +29,7 @@ sources = do
 
 spec :: Spec
 spec = describe "basic.soma" $ do
+    logger <- runIO newLoggerEnv
     files <- runIO sources
     forM_ files $ \src@SourceFile{srcPath, srcContent} -> do
         it (srcPath <> ": lexes without diagnostics") $ do
@@ -36,11 +38,11 @@ spec = describe "basic.soma" $ do
             diag `shouldBe` []
 
         it (srcPath <> ":parses without diagnostics") $ do
-            ((root, _), diag) <- runParser src mkCache parseRoot
+            ((root, _), diag) <- runParser logger src mkCache parseRoot
             TIO.putStrLn $ prettyGreen (showKind @Kind) root
             reportAll diag
             diag `shouldBe` []
 
         it (srcPath <> ": parses with the same tree size as source length") $ do
-            ((GreenNode{gnWidth}, _), _) <- runParser src mkCache parseRoot
+            ((GreenNode{gnWidth}, _), _) <- runParser logger src mkCache parseRoot
             gnWidth `shouldBe` (T.length srcContent)

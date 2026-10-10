@@ -21,7 +21,7 @@ library
     Soma
     Soma.Diagnostic
     Soma.File
-    Soma.Pretty
+    Soma.Print
     Soma.Syntax.Kind
     Soma.Syntax.Lexer
     Soma.Syntax.Parser
@@ -29,13 +29,14 @@ library
     Soma.Util
 
   build-depends:
-    base ^>=4.20.2.0,
+    Blammo ^>=2.1,
+    base ^>=4.22,
     containers ^>=0.8,
     diagnose,
+    directory ^>=1.3.11,
+    filepath ^>=1.5.5,
     hashable ^>=1.5.1.0,
     maple,
-    filepath ^>= 1.5.5,
-    directory ^>= 1.3.11,
     mtl ^>=2.3.1,
     symbolize ^>=1.0.3,
     text ^>=2.1,
@@ -47,6 +48,9 @@ library
     Strict
     StrictData
 
+  ghc-options:
+    -Wno-orphans
+
   hs-source-dirs: compiler/lib
   default-language: GHC2024
 
@@ -54,7 +58,7 @@ executable soma
   import: warnings
   main-is: Main.hs
   build-depends:
-    base ^>=4.20.2.0,
+    base ^>=4.22,
     optparse-applicative ^>=0.19,
     soma
 
@@ -73,13 +77,14 @@ test-suite soma-test
   type: exitcode-stdio-1.0
   main-is: Main.hs
   build-depends:
+    Blammo,
     base,
+    directory,
+    filepath,
     hspec,
     maple,
     mtl,
     soma,
-    filepath,
-    directory,
     symbolize,
     text,
     vector

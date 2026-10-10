@@ -176,3 +176,4 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/rust,linux,haskell,windows,visualstudiocode,c,cmake
 
 .direnv
+.zed

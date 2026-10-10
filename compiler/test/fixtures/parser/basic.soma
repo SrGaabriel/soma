@@ -1,2 +1,5 @@
 def id (a : Nat) {b : Type} : Nat := a
 
+def test (a : Nat) {b : Type} : Nat := {
+
+|

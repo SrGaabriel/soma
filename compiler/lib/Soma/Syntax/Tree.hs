@@ -11,5 +11,3 @@ newtype RootNode = RootNode RedNode
 
 newtype MulExpr = MulExpr RedNode
     deriving (AstNode) via (OfKind 'KMul)
-
-newtype 

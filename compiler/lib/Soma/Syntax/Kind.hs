@@ -6,7 +6,7 @@ module Soma.Syntax.Kind where
 import Data.Data (Data)
 import Data.Text (Text)
 import Maple.Ast (SyntaxKind)
-import Soma.Pretty (Pretty (pretty))
+import Soma.Print (Pretty (pretty))
 
 data Kind
     = -- Tokens
@@ -30,6 +30,7 @@ data Kind
     | KMul
     | KDef
     | KType
+    | KBlock
     | KExBinder
     | KImBinder
     | KClBinder
@@ -65,3 +66,4 @@ instance Pretty Kind where
     pretty KClBinder = "class binder"
     pretty KExBinder = "explicit binder"
     pretty KImBinder = "implicit binder"
+    pretty KBlock = "block"

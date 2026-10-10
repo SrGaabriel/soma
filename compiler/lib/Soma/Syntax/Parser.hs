@@ -16,16 +16,18 @@ import Maple.Green (GreenNode)
 import Maple.Position (Range)
 import Soma.Diagnostic (Diagnostic, Label (Label, labFile, labMessage, labRange), Severity (SError), mkDiag)
 import Soma.File (SourceFile (srcContent))
-import Soma.Pretty (Pretty (pretty))
+import Soma.Print (Pretty (pretty))
 import Soma.Syntax.Kind
 import Soma.Syntax.Lexer (Token (Token))
 import Soma.Syntax.Lexer qualified as L
+import Blammo.Logging.Setup (LoggingT, runLoggerLoggingT)
+import Blammo.Logging
 
 data ParserState = ParserState
     { srcFile :: !SourceFile
     }
 
-type Parser = M.BuilderT (L.LexerT (StateT ParserState IO))
+type Parser = M.BuilderT (L.LexerT (StateT ParserState (LoggingT IO)))
 
 label :: Range -> T.Text -> Parser Label
 label range msg = do
@@ -58,7 +60,8 @@ eatTrivia = do
 
 consume :: Kind -> Parser ()
 consume kind = do
-    t@L.Token{tKind} <- peek
+    t@L.Token{tKind} <- bump
+    logDebug $ "consume" :# ["expected" .= pretty kind, "got" .= pretty (L.tKind t)]
     unless (tKind == kind) $ do
         let range = L.tRange t
         diag <-
@@ -66,7 +69,6 @@ consume kind = do
                 <$> label range ("expected " <> pretty kind <> " here")
             )
         lift $ tell [diag]
-    bump_
 
 peek :: Parser L.Token
 peek = lift L.peekNonTrivial
@@ -107,7 +109,28 @@ parseDef = do
     M.finishNode
 
 parseExpr :: Parser ()
-parseExpr = consume KIdent
+parseExpr = do
+    t@Token{tKind} <- peek
+    case tKind of
+        KIdent -> bump_
+        KNumber -> bump_
+        KLBrace -> do
+            startNode KBlock
+            bump_
+            parseBlockBody
+            consume KRBrace
+            M.finishNode
+        _ -> do
+            let range = L.tRange t
+            diag <-
+                ( mkError ("expected expression, but got " <> pretty tKind)
+                    <$> label range ("expected expression here")
+                )
+            lift $ tell [diag]
+
+parseBlockBody :: Parser ()
+parseBlockBody = do
+    pure ()
 
 parseBinder :: Parser ()
 parseBinder = do
@@ -130,6 +153,7 @@ parseBinder = do
             consume KRBrace
             M.finishNode
         _ -> do
+            bump_
             let range = L.tRange t
             diag <-
                 ( mkError ("expected binder, but got " <> pretty tKind)
@@ -146,16 +170,15 @@ parseType = do
 parseUntil :: Kind -> Parser () -> Parser ()
 parseUntil end parser = do
     inc <- incoming
-    if inc == end
-        then pure ()
-        else (parser >> parseUntil end parser)
+    unless (inc == end)
+        (parser >> parseUntil end parser)
 
-runParser :: SourceFile -> NodeCache -> Parser a -> IO ((GreenNode, NodeCache), [Diagnostic])
-runParser src cache parser = do
+runParser :: Logger -> SourceFile -> NodeCache -> Parser a -> IO ((GreenNode, NodeCache), [Diagnostic])
+runParser logger src cache parser = do
     let s =
             ParserState
                 { srcFile = src
                 }
     let text = srcContent src
-    ((nc, diag), _s') <- runStateT (L.runLexerT text $ runBuilderT cache parser) s
+    ((nc, diag), _s') <- runLoggerLoggingT logger $ runStateT (L.runLexerT text $ runBuilderT cache parser) s
     pure (nc, diag)
