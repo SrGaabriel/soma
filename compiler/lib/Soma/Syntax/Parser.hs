@@ -4,6 +4,8 @@
 
 module Soma.Syntax.Parser where
 
+import Blammo.Logging
+import Blammo.Logging.Setup (LoggingT, runLoggerLoggingT)
 import Control.Monad
 import Control.Monad.State.Strict
 import Control.Monad.Writer.Strict
@@ -20,8 +22,6 @@ import Soma.Print (Pretty (pretty))
 import Soma.Syntax.Kind
 import Soma.Syntax.Lexer (Token (Token))
 import Soma.Syntax.Lexer qualified as L
-import Blammo.Logging.Setup (LoggingT, runLoggerLoggingT)
-import Blammo.Logging
 
 data ParserState = ParserState
     { srcFile :: !SourceFile
@@ -170,7 +170,8 @@ parseType = do
 parseUntil :: Kind -> Parser () -> Parser ()
 parseUntil end parser = do
     inc <- incoming
-    unless (inc == end)
+    unless
+        (inc == end)
         (parser >> parseUntil end parser)
 
 runParser :: Logger -> SourceFile -> NodeCache -> Parser a -> IO ((GreenNode, NodeCache), [Diagnostic])

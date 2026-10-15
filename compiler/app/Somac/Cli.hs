@@ -17,7 +17,8 @@ cli =
             "lex"
             (info (Lex <$> targetArgument "The target to lex") (progDesc "Print the tokens of TARGET"))
         )
-        <|> Compile <$> targetArgument "The target of the compilation"
+        <|> Compile
+        <$> targetArgument "The target of the compilation"
 
 runCli :: IO Cli
 runCli = execParser (info (helper <*> cli) fullDesc)

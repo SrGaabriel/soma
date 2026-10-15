@@ -1,6 +1,6 @@
 module Soma.Util where
 
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 safeIndex :: T.Text -> Int -> Maybe Char
 safeIndex t i

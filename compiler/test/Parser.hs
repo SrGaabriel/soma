@@ -4,6 +4,7 @@
 
 module Parser (spec) where
 
+import Blammo.Logging.Setup (newLoggerEnv)
 import Control.Monad (forM, forM_)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -17,7 +18,6 @@ import Soma.Syntax.Lexer (lexAll)
 import Soma.Syntax.Parser (parseRoot, runParser)
 import System.Directory (listDirectory)
 import Test.Hspec (Spec, describe, it, runIO, shouldBe)
-import Blammo.Logging.Setup (newLoggerEnv)
 
 fixturesDir :: String
 fixturesDir = "compiler/test/fixtures/parser/"

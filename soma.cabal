@@ -20,6 +20,8 @@ library
   exposed-modules:
     Soma
     Soma.Diagnostic
+    Soma.Elaborator.Core
+    Soma.Env
     Soma.File
     Soma.Print
     Soma.Syntax.Kind
