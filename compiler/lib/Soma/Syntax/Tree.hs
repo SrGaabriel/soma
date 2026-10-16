@@ -2,12 +2,95 @@
 
 module Soma.Syntax.Tree where
 
+import Control.Applicative ((<|>))
+import Data.Text (Text)
+import Data.Vector.Strict qualified as V
+import GHC.Generics (Generic, Generically (Generically))
 import Maple.Ast
-import Maple.Red (RedNode)
+import Maple.Red (Red (RNode, RToken), RedNode, RedToken, materializeChildren, tokenKind, tokenText)
 import Soma.Syntax.Kind
 
-newtype RootNode = RootNode RedNode
+-- Tokens
+
+newtype Ident = Ident RedToken
+    deriving (AstToken) via (TokenOfKind 'KIdent)
+
+newtype Number = Number RedToken
+    deriving (AstToken) via (TokenOfKind 'KNumber)
+
+identText :: Ident -> Text
+identText = tokenText . syntaxToken
+
+-- Nodes
+
+newtype Root = Root RedNode
     deriving (AstNode) via (OfKind 'KRoot)
 
-newtype MulExpr = MulExpr RedNode
-    deriving (AstNode) via (OfKind 'KMul)
+newtype Def = Def RedNode
+    deriving (AstNode) via (OfKind 'KDef)
+
+newtype Type = Type RedNode
+    deriving (AstNode) via (OfKind 'KType)
+
+newtype Block = Block RedNode
+    deriving (AstNode) via (OfKind 'KBlock)
+
+newtype ExBinder = ExBinder RedNode
+    deriving (AstNode) via (OfKind 'KExBinder)
+
+newtype ImBinder = ImBinder RedNode
+    deriving (AstNode) via (OfKind 'KImBinder)
+
+newtype ClBinder = ClBinder RedNode
+    deriving (AstNode) via (OfKind 'KClBinder)
+
+data Binder
+    = BEx ExBinder
+    | BIm ImBinder
+    | BCl ClBinder
+    deriving (Generic)
+    deriving (AstNode) via (Generically Binder)
+
+data Expr
+    = EVar Ident
+    | ELit Number
+    | EBlock Block
+
+castExpr :: Red -> Maybe Expr
+castExpr (RNode n) = EBlock <$> cast n
+castExpr (RToken t) = (EVar <$> castToken t) <|> (ELit <$> castToken t)
+
+rootDefs :: Root -> V.Vector Def
+rootDefs = children . syntax
+
+defName :: Def -> Maybe Ident
+defName = firstJust castTokenRed . fst . splitAtToken KColonEq . syntax
+
+defBinders :: Def -> V.Vector Binder
+defBinders = children . syntax
+
+defType :: Def -> Maybe Type
+defType = child . syntax
+
+defBody :: Def -> Maybe Expr
+defBody = firstJust castExpr . snd . splitAtToken KColonEq . syntax
+
+binderName :: Binder -> Maybe Ident
+binderName = childToken . syntax
+
+binderType :: Binder -> Maybe Type
+binderType = child . syntax
+
+typeName :: Type -> Maybe Ident
+typeName = childToken . syntax
+
+splitAtToken :: Kind -> RedNode -> (V.Vector Red, V.Vector Red)
+splitAtToken k n =
+    case V.findIndex isK cs of
+        Just i -> (V.take i cs, V.drop (i + 1) cs)
+        Nothing -> (cs, V.empty)
+  where
+    cs = materializeChildren n
+    raw = toRaw k
+    isK (RToken t) = tokenKind t == raw
+    isK _ = False

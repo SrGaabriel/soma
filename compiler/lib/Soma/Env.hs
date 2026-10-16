@@ -29,5 +29,3 @@ walk current (x : xs) = do
 
 resolveItem :: Namespace -> [Symbol] -> Symbol -> Maybe ItemId
 resolveItem ns path member = (HM.lookup member . nsDecls) =<< walk ns path
-
-
