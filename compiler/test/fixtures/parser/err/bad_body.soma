@@ -1,0 +1,2 @@
+def f : Nat := )
+def g : Nat := 1

@@ -1,0 +1,29 @@
+KRoot 27
+  KDef 8
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KWhitespace " "
+    KColonEq ":="
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: expected ':', found ':='
+  1:7-1:9: expected ':'
+
+error: expected expression, found 'def'
+  1:9-1:9: expected expression

@@ -27,6 +27,7 @@ library
     Soma.Syntax.Kind
     Soma.Syntax.Lexer
     Soma.Syntax.Parser
+    Soma.Syntax.TokenSet
     Soma.Syntax.Tree
     Soma.Util
 

@@ -1,0 +1,81 @@
+KRoot 83
+  KDef 38
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "id"
+    KWhitespace " "
+    KExBinder 9
+      KLParen "("
+      KIdent "a"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 3
+        KIdent "Nat"
+      KRParen ")"
+    KWhitespace " "
+    KClBinder 10
+      KLBrace "{"
+      KIdent "b"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 4
+        KIdent "Type"
+      KRBrace "}"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "a"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 43
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "test"
+    KWhitespace " "
+    KExBinder 9
+      KLParen "("
+      KIdent "a"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 3
+        KIdent "Nat"
+      KRParen ")"
+    KWhitespace " "
+    KClBinder 10
+      KLBrace "{"
+      KIdent "b"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 4
+        KIdent "Type"
+      KRBrace "}"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KBlock 4
+      KLBrace "{"
+      KNewline "\n"
+      KNewline "\n"
+      KError 1
+        KUnknown "|"
+
+error: expected '}', found unknown character '|'
+  5:1-5:2: expected '}'
+
+error: expected '}', found end of file
+  5:2-5:2: expected '}'
+  3:40-3:41: unclosed '{'

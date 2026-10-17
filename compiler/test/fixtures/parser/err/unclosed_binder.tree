@@ -1,0 +1,53 @@
+KRoot 55
+  KDef 36
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KWhitespace " "
+    KExBinder 8
+      KLParen "("
+      KIdent "a"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 3
+        KIdent "Nat"
+    KWhitespace " "
+    KClBinder 10
+      KLBrace "{"
+      KIdent "b"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 4
+        KIdent "Type"
+      KRBrace "}"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "a"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: expected ')', found '{'
+  1:16-1:17: expected ')'
+  1:7-1:8: unclosed '('

@@ -1,0 +1,43 @@
+KRoot 43
+  KDef 42
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KWhitespace " "
+    KExBinder 9
+      KLParen "("
+      KIdent "a"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 3
+        KIdent "Nat"
+      KRParen ")"
+    KWhitespace " "
+    KError 4
+      KNumber "12"
+      KWhitespace " "
+      KRParen ")"
+    KWhitespace " "
+    KClBinder 10
+      KLBrace "{"
+      KIdent "b"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 4
+        KIdent "Type"
+      KRBrace "}"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "a"
+  KNewline "\n"
+
+error: expected binder or ':', found number 12
+  1:17-1:21: expected binder or ':'

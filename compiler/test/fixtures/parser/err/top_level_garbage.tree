@@ -1,0 +1,34 @@
+KRoot 33
+  KError 12
+    KIdent "foo"
+    KWhitespace " "
+    KIdent "bar"
+    KWhitespace " "
+    KRParen ")"
+    KWhitespace " "
+    KNumber "12"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+  KError 1
+    KRBrace "}"
+  KNewline "\n"
+
+error: expected declaration, found identifier 'foo'
+  1:1-1:13: expected declaration
+
+error: expected declaration, found '}'
+  4:1-4:2: expected declaration

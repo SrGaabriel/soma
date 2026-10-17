@@ -1,0 +1,15 @@
+KRoot 13
+  KDef 12
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "a"
+  KNewline "\n"
+
+error: expected type, found ':='
+  1:9-1:11: expected type

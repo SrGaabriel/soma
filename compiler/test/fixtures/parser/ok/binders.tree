@@ -1,0 +1,35 @@
+KRoot 39
+  KDef 38
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "id"
+    KWhitespace " "
+    KExBinder 9
+      KLParen "("
+      KIdent "a"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 3
+        KIdent "Nat"
+      KRParen ")"
+    KWhitespace " "
+    KClBinder 10
+      KLBrace "{"
+      KIdent "b"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 4
+        KIdent "Type"
+      KRBrace "}"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "a"
+  KNewline "\n"

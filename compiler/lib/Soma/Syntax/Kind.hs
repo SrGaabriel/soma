@@ -1,6 +1,7 @@
 {-# LANGUAGE NoStrict #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NoStrict #-}
 
 module Soma.Syntax.Kind where
 
@@ -35,6 +36,7 @@ data Kind
     | KExBinder
     | KImBinder
     | KClBinder
+    | KError
     deriving (Show, Eq, Enum, Data)
     deriving anyclass (SyntaxKind)
 
@@ -60,6 +62,7 @@ instance Pretty Kind where
     pretty KColon = "':'"
     pretty KColonEq = "':='"
     pretty KUnknown = "unknown"
+    pretty KError = "error"
     pretty KRoot = "root"
     pretty KType = "type"
     pretty KMul = "multiplication"

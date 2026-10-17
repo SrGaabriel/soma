@@ -1,0 +1,26 @@
+KRoot 25
+  KDef 24
+    KDefKw "def"
+    KWhitespace " "
+    KExBinder 9
+      KLParen "("
+      KIdent "a"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 3
+        KIdent "Nat"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "a"
+  KNewline "\n"
+
+error: expected identifier, found '('
+  1:5-1:6: expected identifier

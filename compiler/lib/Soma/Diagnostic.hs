@@ -95,5 +95,6 @@ reportAll :: [Diagnostic] -> IO ()
 reportAll diags = mapM_ report diags
 
 labelPosition :: Label -> Position
-labelPosition Label{labFile = SourceFile{srcPath, srcContent}, labRange = (Range p1 p2)} =
-    Position (posRowCol srcContent p1) (posRowCol srcContent p2) srcPath
+labelPosition Label{labFile = SourceFile{srcPath, srcContent}, labRange = (Range p1 p2)}
+    | p1 == p2 = let (r, c) = posRowCol srcContent p1 in Position (r, c) (r, c + 1) srcPath
+    | otherwise = Position (posRowCol srcContent p1) (posRowCol srcContent p2) srcPath

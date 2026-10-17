@@ -1,0 +1,4 @@
+foo bar ) 12
+
+def g : Nat := 1
+}
