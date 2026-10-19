@@ -21,6 +21,8 @@ data Namespace = Namespace
     , nsChildren :: !(HM.HashMap Symbol Namespace)
     }
 
+newtype Unique = Unique Int
+
 walk :: Namespace -> [Symbol] -> Maybe Namespace
 walk current [] = Just current
 walk current (x : xs) = do

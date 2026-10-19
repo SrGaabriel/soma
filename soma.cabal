@@ -19,6 +19,7 @@ library
   import: warnings
   exposed-modules:
     Soma
+    Soma.Calculus
     Soma.Diagnostic
     Soma.Elaborator.Core
     Soma.Env

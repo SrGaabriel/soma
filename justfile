@@ -1,5 +1,5 @@
 run *args='':
     cabal run exes -- {{args}}
 
-format:
+fmt:
     fourmolu -i compiler

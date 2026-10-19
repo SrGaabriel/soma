@@ -36,7 +36,7 @@ data ParserState = ParserState
 type Parser = M.BuilderT (L.LexerT (StateT ParserState (LoggingT IO)))
 
 fuelLimit :: Int
-fuelLimit = 256
+fuelLimit = 2048
 
 anchors :: TokenSet
 anchors = tokenSet [KEof, KDefKw]

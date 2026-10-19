@@ -13,6 +13,7 @@ newtype TokenSet = TokenSet Word64
     deriving (Eq)
 
 instance Semigroup TokenSet where
+    (<>) :: TokenSet -> TokenSet -> TokenSet
     TokenSet a <> TokenSet b = TokenSet (a .|. b)
 
 instance Monoid TokenSet where

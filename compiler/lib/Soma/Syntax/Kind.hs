@@ -1,4 +1,3 @@
-{-# LANGUAGE NoStrict #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoStrict #-}
