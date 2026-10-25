@@ -41,13 +41,12 @@ newtype ExBinder = ExBinder RedNode
 newtype ImBinder = ImBinder RedNode
     deriving (AstNode) via (OfKind 'KImBinder)
 
-newtype ClBinder = ClBinder RedNode
-    deriving (AstNode) via (OfKind 'KClBinder)
+newtype Implicits = Implicits RedNode
+    deriving (AstNode) via (OfKind 'KImplicits)
 
 data Binder
-    = BEx ExBinder
-    | BIm ImBinder
-    | BCl ClBinder
+    = BIm ImBinder
+    | BEx ExBinder
     deriving (Generic)
     deriving (AstNode) via (Generically Binder)
 
@@ -66,8 +65,14 @@ rootDefs = children . syntax
 defName :: Def -> Maybe Ident
 defName = firstJust castTokenRed . fst . splitAtToken KColonEq . syntax
 
+defImplicits :: Def -> V.Vector ImBinder
+defImplicits = maybe V.empty (children . syntax) . (child @Implicits) . syntax
+
+defExplicits :: Def -> V.Vector ExBinder
+defExplicits = children . syntax
+
 defBinders :: Def -> V.Vector Binder
-defBinders = children . syntax
+defBinders d = fmap BIm (defImplicits d) <> fmap BEx (defExplicits d)
 
 defType :: Def -> Maybe Type
 defType = child . syntax
@@ -78,8 +83,16 @@ defBody = firstJust castExpr . snd . splitAtToken KColonEq . syntax
 binderName :: Binder -> Maybe Ident
 binderName = childToken . syntax
 
-binderType :: Binder -> Maybe Type
-binderType = child . syntax
+data Annotation
+    = Omitted
+    | Annotated (Maybe Type)
+
+binderAnnotation :: Binder -> Annotation
+binderAnnotation b = case tokenOf KColon n of
+    Just _ -> Annotated (child n)
+    Nothing -> Omitted
+  where
+    n = syntax b
 
 typeName :: Type -> Maybe Ident
 typeName = childToken . syntax

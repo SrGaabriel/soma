@@ -1,8 +1,13 @@
-KRoot 39
-  KDef 38
+KRoot 31
+  KDef 30
     KDefKw "def"
     KWhitespace " "
     KIdent "id"
+    KImplicits 3
+      KLBracket "["
+      KImBinder 1
+        KIdent "b"
+      KRBracket "]"
     KWhitespace " "
     KExBinder 9
       KLParen "("
@@ -13,16 +18,6 @@ KRoot 39
       KType 3
         KIdent "Nat"
       KRParen ")"
-    KWhitespace " "
-    KClBinder 10
-      KLBrace "{"
-      KIdent "b"
-      KWhitespace " "
-      KColon ":"
-      KWhitespace " "
-      KType 4
-        KIdent "Type"
-      KRBrace "}"
     KWhitespace " "
     KColon ":"
     KWhitespace " "

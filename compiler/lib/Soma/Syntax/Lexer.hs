@@ -137,6 +137,9 @@ lexChar c@'(' = charToken KLParen c <* bumpChar
 lexChar c@')' = charToken KRParen c <* bumpChar
 lexChar c@'{' = charToken KLBrace c <* bumpChar
 lexChar c@'}' = charToken KRBrace c <* bumpChar
+lexChar c@'[' = charToken KLBracket c <* bumpChar
+lexChar c@']' = charToken KRBracket c <* bumpChar
+lexChar c@',' = charToken KComma c <* bumpChar
 lexChar c@'\n' = charToken KNewline c <* bumpChar
 lexChar c@':' = do
     peekNext <- peekNthChar 1

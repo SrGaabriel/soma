@@ -1,0 +1,52 @@
+KRoot 46
+  KDef 27
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KImplicits 5
+      KLBracket "["
+      KImBinder 1
+        KIdent "a"
+      KComma ","
+      KWhitespace " "
+      KImBinder 1
+        KIdent "b"
+    KWhitespace " "
+    KExBinder 7
+      KLParen "("
+      KIdent "x"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 1
+        KIdent "a"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 1
+      KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "x"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: expected ']', found '('
+  1:12-1:13: expected ']'
+  1:6-1:7: unclosed '['

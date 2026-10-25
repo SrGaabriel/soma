@@ -1,0 +1,49 @@
+KRoot 45
+  KDef 26
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KWhitespace " "
+    KExBinder 7
+      KLParen "("
+      KIdent "x"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 1
+        KIdent "a"
+      KRParen ")"
+    KWhitespace " "
+    KImplicits 3
+      KLBracket "["
+      KImBinder 1
+        KIdent "b"
+      KRBracket "]"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 1
+      KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "x"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: implicit parameters must directly follow the name
+  1:15-1:16: implicit parameters must directly follow the name

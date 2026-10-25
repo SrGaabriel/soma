@@ -1,0 +1,3 @@
+def f (x : a) [b] : a := x
+
+def g : Nat := 1

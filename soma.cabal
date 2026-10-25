@@ -22,6 +22,8 @@ library
     Soma.Calculus
     Soma.Diagnostic
     Soma.Elaborator.Core
+    Soma.Elaborator.Reduce
+    Soma.Elaborator.Subst
     Soma.Env
     Soma.File
     Soma.Print
@@ -30,6 +32,7 @@ library
     Soma.Syntax.Parser
     Soma.Syntax.TokenSet
     Soma.Syntax.Tree
+    Soma.Unique
     Soma.Util
 
   build-depends:

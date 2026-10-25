@@ -1,0 +1,43 @@
+KRoot 43
+  KDef 24
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KBlock 9
+      KLBrace "{"
+      KWhitespace " "
+      KError 5
+        KIdent "x"
+        KWhitespace " "
+        KNumber "1"
+        KWhitespace " "
+        KLParen "("
+      KWhitespace " "
+      KRBrace "}"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: expected '}', found identifier 'x'
+  1:18-1:23: expected '}'

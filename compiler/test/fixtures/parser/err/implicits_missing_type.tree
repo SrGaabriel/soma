@@ -1,0 +1,50 @@
+KRoot 46
+  KDef 27
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KImplicits 11
+      KLBracket "["
+      KImBinder 3
+        KIdent "a"
+        KWhitespace " "
+        KColon ":"
+      KComma ","
+      KWhitespace " "
+      KImBinder 3
+        KIdent "b"
+        KWhitespace " "
+        KColon ":"
+      KWhitespace " "
+      KRBracket "]"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: expected type, found ','
+  1:10-1:11: expected type
+
+error: expected type, found ']'
+  1:16-1:17: expected type

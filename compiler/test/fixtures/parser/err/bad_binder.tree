@@ -1,8 +1,13 @@
-KRoot 43
-  KDef 42
+KRoot 46
+  KDef 45
     KDefKw "def"
     KWhitespace " "
     KIdent "f"
+    KImplicits 3
+      KLBracket "["
+      KImBinder 1
+        KIdent "b"
+      KRBracket "]"
     KWhitespace " "
     KExBinder 9
       KLParen "("
@@ -19,15 +24,15 @@ KRoot 43
       KWhitespace " "
       KRParen ")"
     KWhitespace " "
-    KClBinder 10
-      KLBrace "{"
-      KIdent "b"
+    KExBinder 10
+      KLParen "("
+      KIdent "c"
       KWhitespace " "
       KColon ":"
       KWhitespace " "
       KType 4
         KIdent "Type"
-      KRBrace "}"
+      KRParen ")"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
@@ -40,4 +45,4 @@ KRoot 43
   KNewline "\n"
 
 error: expected binder or ':', found number 12
-  1:17-1:21: expected binder or ':'
+  1:20-1:24: expected binder or ':'

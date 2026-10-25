@@ -1,1 +1,1 @@
-def f (a : Nat) 12 ) {b : Type} : Nat := a
+def f[b] (a : Nat) 12 ) (c : Type) : Nat := a

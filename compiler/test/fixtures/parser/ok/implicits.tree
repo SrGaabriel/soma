@@ -1,0 +1,198 @@
+KRoot 223
+  KDef 40
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "const"
+    KImplicits 6
+      KLBracket "["
+      KImBinder 1
+        KIdent "a"
+      KComma ","
+      KWhitespace " "
+      KImBinder 1
+        KIdent "b"
+      KRBracket "]"
+    KWhitespace " "
+    KExBinder 7
+      KLParen "("
+      KIdent "x"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 1
+        KIdent "a"
+      KRParen ")"
+    KWhitespace " "
+    KExBinder 7
+      KLParen "("
+      KIdent "y"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 1
+        KIdent "b"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 1
+      KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "x"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 43
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "length"
+    KImplicits 12
+      KLBracket "["
+      KImBinder 1
+        KIdent "a"
+      KComma ","
+      KWhitespace " "
+      KImBinder 7
+        KIdent "n"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KType 3
+          KIdent "Nat"
+      KRBracket "]"
+    KWhitespace " "
+    KExBinder 9
+      KLParen "("
+      KIdent "v"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 3
+        KIdent "Vec"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "n"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 36
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "trailing"
+    KImplicits 7
+      KLBracket "["
+      KImBinder 1
+        KIdent "a"
+      KComma ","
+      KWhitespace " "
+      KImBinder 1
+        KIdent "b"
+      KComma ","
+      KRBracket "]"
+    KWhitespace " "
+    KExBinder 7
+      KLParen "("
+      KIdent "x"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 1
+        KIdent "a"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 1
+      KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "x"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 21
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "none"
+    KImplicits 2
+      KLBracket "["
+      KRBracket "]"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 29
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "poly"
+    KWhitespace " "
+    KExBinder 3
+      KLParen "("
+      KIdent "a"
+      KRParen ")"
+    KWhitespace " "
+    KExBinder 7
+      KLParen "("
+      KIdent "x"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 1
+        KIdent "a"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 1
+      KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "x"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 43
+    KDefKw "def"
+    KWhitespace "  "
+    KIdent "spaced"
+    KWhitespace "  "
+    KImplicits 15
+      KLBracket "["
+      KWhitespace " "
+      KImBinder 1
+        KIdent "a"
+      KWhitespace " "
+      KComma ","
+      KImBinder 8
+        KIdent "b"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KType 4
+          KIdent "Type"
+      KWhitespace " "
+      KRBracket "]"
+    KWhitespace "  "
+    KColon ":"
+    KWhitespace "  "
+    KType 3
+      KIdent "Nat"
+    KWhitespace "  "
+    KColonEq ":="
+    KWhitespace "  "
+    KNumber "1"
+  KNewline "\n"

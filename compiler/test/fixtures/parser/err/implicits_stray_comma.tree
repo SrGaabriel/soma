@@ -1,0 +1,48 @@
+KRoot 44
+  KDef 25
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KImplicits 9
+      KLBracket "["
+      KComma ","
+      KWhitespace " "
+      KImBinder 1
+        KIdent "a"
+      KComma ","
+      KComma ","
+      KWhitespace " "
+      KImBinder 1
+        KIdent "b"
+      KRBracket "]"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: expected implicit parameter, found ','
+  1:7-1:8: expected implicit parameter
+
+error: expected implicit parameter, found ','
+  1:11-1:12: expected implicit parameter

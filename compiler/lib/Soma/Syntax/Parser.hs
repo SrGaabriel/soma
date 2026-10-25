@@ -45,7 +45,10 @@ declFirst :: TokenSet
 declFirst = tokenSet [KDefKw]
 
 binderFirst :: TokenSet
-binderFirst = tokenSet [KLParen, KLBrace]
+binderFirst = tokenSet [KLParen]
+
+implicitFirst :: TokenSet
+implicitFirst = tokenSet [KIdent]
 
 typeFirst :: TokenSet
 typeFirst = tokenSet [KIdent]
@@ -175,6 +178,25 @@ errorExpectedWith extend expected = do
     index <- getsPS psTokenIndex
     report index $ extend $ mkError ("expected " <> oneOf expected <> ", found " <> describe t) lab
 
+errorHere :: T.Text -> Parser ()
+errorHere msg = do
+    t <- peek
+    lab <- label (L.tRange t) msg
+    index <- getsPS psTokenIndex
+    report index $ mkError msg lab
+
+skipGroup :: Kind -> Parser ()
+skipGroup close = do
+    startNode KError
+    bump_
+    let go = do
+            stopped <- atAny (tokenSet [close, KColonEq] <> anchors)
+            unless stopped $ bump_ >> go
+    go
+    closed <- at close
+    when closed bump_
+    M.finishNode
+
 skipWithError :: [T.Text] -> TokenSet -> Parser ()
 skipWithError expected stop = do
     first <- peek
@@ -213,6 +235,27 @@ list end first recovery expected item = go
             | inc `member` stop -> pure ()
             | otherwise -> skipWithError expected (first <> stop) >> go
 
+sepList :: Kind -> Kind -> TokenSet -> TokenSet -> [T.Text] -> Parser () -> Parser ()
+sepList end sep first recovery expected item = go
+  where
+    stop = tokenSet [end] <> recovery <> anchors
+    go = do
+        inc <- incoming
+        if
+            | inc == end -> pure ()
+            | inc `member` first -> item >> afterItem
+            | inc == sep -> errorExpected expected >> bump_ >> go
+            | inc `member` stop -> pure ()
+            | otherwise -> skipWithError expected (first <> stop <> tokenSet [sep]) >> go
+    afterItem = do
+        inc <- incoming
+        if
+            | inc == sep -> bump_ >> go
+            | inc == end -> pure ()
+            | inc `member` first -> errorExpected [pretty sep, pretty end] >> go
+            | inc `member` stop -> pure ()
+            | otherwise -> skipWithError [pretty sep, pretty end] (first <> stop <> tokenSet [sep]) >> go
+
 parseRoot :: Parser ()
 parseRoot = do
     M.startNode (toRaw KRoot)
@@ -232,7 +275,9 @@ parseDef = do
     startNode KDef
     bump_
     _ <- expect KIdent
-    list KColon binderFirst (typeFirst <> tokenSet [KColonEq]) ["binder", pretty KColon] parseBinder
+    hasImplicits <- at KLBracket
+    when hasImplicits parseImplicits
+    list KColon (binderFirst <> tokenSet [KLBracket, KLBrace]) (typeFirst <> tokenSet [KColonEq]) ["binder", pretty KColon] parseDefBinder
     _ <- expect KColon
     parseType (tokenSet [KColonEq])
     _ <- expect KColonEq
@@ -262,19 +307,52 @@ parseBlockBody = do
     done <- atAny (tokenSet [KRBrace] <> anchors)
     unless done $ skipWithError [pretty KRBrace] (tokenSet [KRBrace])
 
+parseImplicits :: Parser ()
+parseImplicits = do
+    open <- peek
+    startNode KImplicits
+    bump_
+    sepList KRBracket KComma implicitFirst (binderFirst <> tokenSet [KColon, KColonEq]) ["implicit parameter"] parseImplicit
+    expectClosing KRBracket open
+    M.finishNode
+
+parseImplicit :: Parser ()
+parseImplicit = do
+    startNode KImBinder
+    bump_
+    annotated <- at KColon
+    when annotated $ bump_ >> parseType (tokenSet [KComma, KRBracket])
+    M.finishNode
+
+parseDefBinder :: Parser ()
+parseDefBinder = do
+    inc <- incoming
+    case inc of
+        KLBracket -> do
+            errorHere "implicit parameters must directly follow the name"
+            parseImplicits
+        KLBrace -> do
+            errorHere "implicit parameters are written as '[a, b : T]' after the name"
+            skipGroup KRBrace
+        _ -> parseBinder
+
 parseBinder :: Parser ()
 parseBinder = do
     open <- peek
-    let (kind, close) = case L.tKind open of
-            KLParen -> (KExBinder, KRParen)
-            _ -> (KClBinder, KRBrace)
-    startNode kind
+    startNode KExBinder
     bump_
     _ <- expect KIdent
-    _ <- expect KColon
-    parseType (tokenSet [close])
-    expectClosing close open
+    parseAnnotation (tokenSet [KRParen])
+    expectClosing KRParen open
     M.finishNode
+
+parseAnnotation :: TokenSet -> Parser ()
+parseAnnotation recovery = do
+    inc <- incoming
+    if
+        | inc == KColon -> bump_ >> parseType recovery
+        | inc `member` typeFirst -> errorExpected [pretty KColon] >> parseType recovery
+        | otherwise -> pure ()
 
 parseType :: TokenSet -> Parser ()
 parseType recovery = do

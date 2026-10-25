@@ -1,8 +1,13 @@
-KRoot 83
-  KDef 38
+KRoot 67
+  KDef 30
     KDefKw "def"
     KWhitespace " "
     KIdent "id"
+    KImplicits 3
+      KLBracket "["
+      KImBinder 1
+        KIdent "b"
+      KRBracket "]"
     KWhitespace " "
     KExBinder 9
       KLParen "("
@@ -13,16 +18,6 @@ KRoot 83
       KType 3
         KIdent "Nat"
       KRParen ")"
-    KWhitespace " "
-    KClBinder 10
-      KLBrace "{"
-      KIdent "b"
-      KWhitespace " "
-      KColon ":"
-      KWhitespace " "
-      KType 4
-        KIdent "Type"
-      KRBrace "}"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
@@ -34,10 +29,15 @@ KRoot 83
     KIdent "a"
   KNewline "\n"
   KNewline "\n"
-  KDef 43
+  KDef 35
     KDefKw "def"
     KWhitespace " "
     KIdent "test"
+    KImplicits 3
+      KLBracket "["
+      KImBinder 1
+        KIdent "b"
+      KRBracket "]"
     KWhitespace " "
     KExBinder 9
       KLParen "("
@@ -48,16 +48,6 @@ KRoot 83
       KType 3
         KIdent "Nat"
       KRParen ")"
-    KWhitespace " "
-    KClBinder 10
-      KLBrace "{"
-      KIdent "b"
-      KWhitespace " "
-      KColon ":"
-      KWhitespace " "
-      KType 4
-        KIdent "Type"
-      KRBrace "}"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
@@ -78,4 +68,4 @@ error: expected '}', found unknown character '|'
 
 error: expected '}', found end of file
   5:2-5:2: expected '}'
-  3:40-3:41: unclosed '{'
+  3:32-3:33: unclosed '{'

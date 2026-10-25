@@ -1,4 +1,4 @@
-KRoot 93
+KRoot 86
   KDef 18
     KDefKw "def"
     KWhitespace " "
@@ -31,22 +31,18 @@ KRoot 93
       KRBrace "}"
   KNewline "\n"
   KNewline "\n"
-  KDef 49
+  KDef 42
     KDefKw "def"
     KWhitespace "  "
     KIdent "spaced"
     KWhitespace "  "
-    KClBinder 12
-      KLBrace "{"
+    KImplicits 5
+      KLBracket "["
       KWhitespace " "
-      KIdent "a"
+      KImBinder 1
+        KIdent "a"
       KWhitespace " "
-      KColon ":"
-      KWhitespace " "
-      KType 4
-        KIdent "Type"
-      KWhitespace " "
-      KRBrace "}"
+      KRBracket "]"
     KWhitespace "  "
     KExBinder 9
       KLParen "("

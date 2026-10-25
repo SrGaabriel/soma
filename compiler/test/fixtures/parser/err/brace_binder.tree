@@ -1,0 +1,52 @@
+KRoot 52
+  KDef 33
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KWhitespace " "
+    KError 10
+      KLBrace "{"
+      KIdent "a"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KIdent "Type"
+      KRBrace "}"
+    KWhitespace " "
+    KExBinder 7
+      KLParen "("
+      KIdent "x"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KType 1
+        KIdent "a"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 1
+      KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KIdent "x"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: implicit parameters are written as '[a, b : T]' after the name
+  1:7-1:8: implicit parameters are written as '[a, b : T]' after the name

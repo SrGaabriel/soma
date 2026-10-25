@@ -13,15 +13,15 @@ KRoot 55
       KType 3
         KIdent "Nat"
     KWhitespace " "
-    KClBinder 10
-      KLBrace "{"
+    KExBinder 10
+      KLParen "("
       KIdent "b"
       KWhitespace " "
       KColon ":"
       KWhitespace " "
       KType 4
         KIdent "Type"
-      KRBrace "}"
+      KRParen ")"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
@@ -48,6 +48,6 @@ KRoot 55
     KNumber "1"
   KNewline "\n"
 
-error: expected ')', found '{'
+error: expected ')', found '('
   1:16-1:17: expected ')'
   1:7-1:8: unclosed '('

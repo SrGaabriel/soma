@@ -1,0 +1,41 @@
+KRoot 40
+  KDef 21
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KImplicits 5
+      KLBracket "["
+      KImBinder 1
+        KIdent "a"
+      KWhitespace " "
+      KImBinder 1
+        KIdent "b"
+      KRBracket "]"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: expected ',' or ']', found identifier 'b'
+  1:9-1:10: expected ',' or ']'

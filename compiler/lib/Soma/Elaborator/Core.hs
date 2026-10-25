@@ -4,11 +4,13 @@ import Control.Monad.State.Strict (MonadIO (liftIO), StateT, gets)
 import Control.Monad.Writer.Strict (WriterT)
 import Data.IORef (IORef, readIORef, writeIORef)
 import Soma.Diagnostic (Diagnostic)
-import Soma.Env (Namespace, Unique (Unique))
+import Soma.Env (Item, Namespace)
+import Soma.Unique (Unique (Unique), UniqueMap)
 
 data ElabState = ElabState
     { elabUniqueRef :: IORef Unique
     , elabNamespace :: Namespace
+    , elabItems :: !(UniqueMap Item)
     }
 
 type Elab = WriterT [Diagnostic] (StateT ElabState IO)

@@ -23,6 +23,9 @@ data Kind
     | KRParen
     | KLBrace
     | KRBrace
+    | KLBracket
+    | KRBracket
+    | KComma
     | KColon
     | KColonEq
     | KUnknown
@@ -34,7 +37,7 @@ data Kind
     | KBlock
     | KExBinder
     | KImBinder
-    | KClBinder
+    | KImplicits
     | KError
     deriving (Show, Eq, Enum, Data)
     deriving anyclass (SyntaxKind)
@@ -58,6 +61,9 @@ instance Pretty Kind where
     pretty KRParen = "')'"
     pretty KLBrace = "'{'"
     pretty KRBrace = "'}'"
+    pretty KLBracket = "'['"
+    pretty KRBracket = "']'"
+    pretty KComma = "','"
     pretty KColon = "':'"
     pretty KColonEq = "':='"
     pretty KUnknown = "unknown"
@@ -66,7 +72,7 @@ instance Pretty Kind where
     pretty KType = "type"
     pretty KMul = "multiplication"
     pretty KDef = "function definition"
-    pretty KClBinder = "class binder"
+    pretty KImplicits = "implicit parameters"
     pretty KExBinder = "explicit binder"
     pretty KImBinder = "implicit binder"
     pretty KBlock = "block"

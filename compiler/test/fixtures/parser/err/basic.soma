@@ -1,5 +1,5 @@
-def id (a : Nat) {b : Type} : Nat := a
+def id[b] (a : Nat) : Nat := a
 
-def test (a : Nat) {b : Type} : Nat := {
+def test[b] (a : Nat) : Nat := {
 
 |

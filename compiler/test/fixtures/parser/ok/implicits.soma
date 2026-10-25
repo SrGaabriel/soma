@@ -1,0 +1,11 @@
+def const[a, b] (x : a) (y : b) : a := x
+
+def length[a, n : Nat] (v : Vec) : Nat := n
+
+def trailing[a, b,] (x : a) : a := x
+
+def none[] : Nat := 1
+
+def poly (a) (x : a) : a := x
+
+def  spaced  [ a ,b : Type ]  :  Nat  :=  1

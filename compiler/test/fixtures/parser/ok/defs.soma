@@ -2,4 +2,4 @@ def one : Nat := 1
 
 def unit : Unit := {}
 
-def  spaced  { a : Type }  ( x : a )  :  a  :=  x
+def  spaced  [ a ]  ( x : a )  :  a  :=  x
