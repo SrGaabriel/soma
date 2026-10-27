@@ -3,7 +3,6 @@
 module Soma.Env where
 
 import Data.HashMap.Strict qualified as HM
-import Soma.Calculus (Term)
 import Soma.File (SourceFile)
 import Symbolize (Symbol)
 import Soma.Unique (Unique)
@@ -19,7 +18,6 @@ data Item = ItemId
     , itemName :: !Symbol
     , itemKind :: !ItemKind
     , itemParent :: Maybe Unique
-    , itemBody :: Maybe Term
     }
     deriving (Show, Eq)
 
