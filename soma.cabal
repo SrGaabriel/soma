@@ -21,7 +21,10 @@ library
     Soma
     Soma.Calculus
     Soma.Diagnostic
+    Soma.Elaborator
+    Soma.Elaborator.Context
     Soma.Elaborator.Core
+    Soma.Elaborator.Decl
     Soma.Elaborator.Reduce
     Soma.Elaborator.Subst
     Soma.Env

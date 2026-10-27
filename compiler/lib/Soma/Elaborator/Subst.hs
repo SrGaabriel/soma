@@ -1,21 +1,42 @@
 module Soma.Elaborator.Subst where
 
 import Soma.Calculus
-import Soma.Elaborator.Core (Elab)
 
-instantiate :: Term -> Term -> Int -> Elab Term
-instantiate b@(TBound bIdx) subst idx
-    | bIdx == idx = pure subst
-    | bIdx > idx = pure $ TBound $ bIdx - 1
-    | otherwise = pure b
-instantiate (TApp fn value) subst idx =
-    (TApp <$> (instantiate fn subst idx)) <*> (instantiate value subst idx)
-instantiate (TLam arg body) subst idx =
-    (TLam <$> (instantiate arg subst idx)) <*> (instantiate body subst (idx+1))
-instantiate (TLet bind fn value) subst idx =
-    (TLet <$> (instantiate bind subst idx)) <*> (instantiate fn subst idx) <*> (instantiate value subst (idx+1))
-instantiate (TPi from to) subst idx =
-    (TPi <$> (instantiate from subst idx)) <*> (instantiate to subst (idx+1))
-instantiate (TSigma f s) subst idx =
-    (TSigma <$> (instantiate f subst idx)) <*> (instantiate s subst (idx+1))
-instantiate u _subst _idx = pure u
+instantiate :: Term -> Term -> Term
+instantiate t t' = instantiateAt t t' 0
+
+instantiateAt :: Term -> Term -> Int -> Term
+instantiateAt b@(TBound bIdx) subst idx
+    | bIdx == idx = subst
+    | bIdx > idx = TBound $ bIdx - 1
+    | otherwise = b
+instantiateAt (TApp fn value) subst idx =
+    TApp (instantiateAt fn subst idx) (instantiateAt value subst idx)
+instantiateAt (TLam arg body) subst idx =
+    TLam (instantiateAt arg subst idx) (instantiateAt body subst (idx + 1))
+instantiateAt (TLet bind fn value) subst idx =
+    TLet (instantiateAt bind subst idx) (instantiateAt fn subst idx) (instantiateAt value subst (idx + 1))
+instantiateAt (TPi from to) subst idx =
+    TPi (instantiateAt from subst idx) (instantiateAt to subst (idx + 1))
+instantiateAt (TSigma f s) subst idx =
+    TSigma (instantiateAt f subst idx) (instantiateAt s subst (idx + 1))
+instantiateAt u _subst _idx = u
+
+shift :: Term -> Int -> Term
+shift term offset = shiftAt term 0 offset
+
+shiftAt :: Term -> Int -> Int -> Term
+shiftAt b@(TBound bIdx) idx offset
+    | bIdx >= idx = TBound $ idx + offset
+    | otherwise = b
+shiftAt (TApp fn value) idx offset =
+    TApp (shiftAt fn idx offset) (shiftAt value idx offset)
+shiftAt (TLam arg body) idx offset =
+    TLam (shiftAt arg idx offset) (shiftAt body (idx + 1) offset)
+shiftAt (TLet bind fn value) idx offset =
+    TLet (shiftAt bind idx offset) (shiftAt fn idx offset) (shiftAt value (idx + 1) offset)
+shiftAt (TPi from to) idx offset =
+    TPi (shiftAt from idx offset) (shiftAt to (idx + 1) offset)
+shiftAt (TSigma f s) idx offset =
+    TSigma (shiftAt f idx offset) (shiftAt s (idx + 1) offset)
+shiftAt u _subst _idx = u
