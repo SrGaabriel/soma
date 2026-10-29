@@ -5,6 +5,21 @@ import Soma.Calculus
 instantiate :: Term -> Term -> Term
 instantiate t t' = instantiateAt t t' 0
 
+{- | If we want to apply a function to a term, we have to replace
+the body's uses of De Bruijn indices
+
+So for instance: (\x.\y. x + y) 5
+Is equivalent to (\.\. i_1 + i_0) 5
+
+We have to pass the De Bruijn level (not index) of what we're looking for since
+instantiation is almost always done to the outermost binder
+
+If we do it naively we get (\. i_1 + i_0)
+But now i_1 is free and i_0 is never referenced.
+
+So every time we go inside a binding, we add 1 to what we are looking for to
+emulate De Bruijn indices, then the body (i_1 + i_0) becomes (5 + i_0)
+-}
 instantiateAt :: Term -> Term -> Int -> Term
 instantiateAt b@(TBound bIdx) subst idx
     | bIdx == idx = subst

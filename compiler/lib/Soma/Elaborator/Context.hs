@@ -13,7 +13,7 @@ data Local = Local
 newtype LocalCtx = LocalCtx {locals :: UniqueMap Local}
 
 data Meta
-    = Unsolved !Term !LocalCtx
-    | Solved !Term !Term
+    = MUnsolved !Term !LocalCtx
+    | MSolved !Term !Term
 
 newtype MetaCtx = MetaCtx {metas :: UniqueMap Meta}
