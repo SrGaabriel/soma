@@ -26,8 +26,10 @@ library
     Soma.Elaborator.Core
     Soma.Elaborator.Decl
     Soma.Elaborator.Diag
+    Soma.Elaborator.Expr
     Soma.Elaborator.Reduce
     Soma.Elaborator.Subst
+    Soma.Elaborator.Unify
     Soma.Env
     Soma.File
     Soma.Print

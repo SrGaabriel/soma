@@ -3,6 +3,7 @@ module Soma.Elaborator where
 import Data.Foldable (for_)
 import Soma.Calculus (Term (TError))
 import Soma.Elaborator.Core
+import Soma.Elaborator.Decl (elabSig, inferDecl, checkBody)
 import Soma.Elaborator.Diag (needsSignature)
 import Soma.Syntax.Tree (defType)
 import Soma.Unique (Unique)
@@ -18,7 +19,7 @@ typeOf u =
                     setItem u (SigDone ty d)
                     pure ty
                 Nothing -> do
-                    (ty, v) <- isolated (inferDef d)
+                    (ty, v) <- isolated (inferDecl d)
                     setItem u (Done ty (Just v))
                     pure ty
         SigInProgress d -> do
