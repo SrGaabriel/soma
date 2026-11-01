@@ -13,6 +13,7 @@ data Kind
     = -- Tokens
       KEof
     | KNumber
+    | KString
     | KStar
     | KDefKw
     | KIdent
@@ -51,6 +52,7 @@ instance Pretty Kind where
     pretty :: Kind -> Text
     pretty KEof = "end of file"
     pretty KNumber = "number"
+    pretty KString = "string"
     pretty KStar = "'*'"
     pretty KDefKw = "'def'"
     pretty KIdent = "identifier"

@@ -15,6 +15,7 @@ module Soma.Syntax.Lexer (
     runLexer,
     runLexerT,
     lexAll,
+    stringTerminated,
 ) where
 
 import Control.Monad.Identity
@@ -141,6 +142,7 @@ lexChar c@'[' = charToken KLBracket c <* bumpChar
 lexChar c@']' = charToken KRBracket c <* bumpChar
 lexChar c@',' = charToken KComma c <* bumpChar
 lexChar c@'\n' = charToken KNewline c <* bumpChar
+lexChar '"' = lexString
 lexChar c@':' = do
     peekNext <- peekNthChar 1
     case peekNext of
@@ -163,6 +165,25 @@ lexNumber = do
     start <- gets lxCursor
     num <- bumpWhile isNumber
     pure (Token KNumber num start)
+
+lexString :: (Monad m) => LexerT m Token
+lexString = do
+    LexerState{lxRest, lxCursor} <- get
+    let body = T.pack (scan (T.unpack (T.drop 1 lxRest)))
+        str = T.cons '"' body
+    modify' (\s -> s{lxRest = T.drop (T.length str) lxRest, lxCursor = lxCursor + T.length str})
+    pure (Token KString str lxCursor)
+  where
+    scan ('"' : _) = "\""
+    scan ('\\' : c : cs) | c /= '\n' = '\\' : c : scan cs
+    scan ('\n' : _) = []
+    scan (c : cs) = c : scan cs
+    scan [] = []
+
+stringTerminated :: Text -> Bool
+stringTerminated str = case T.unsnoc (T.drop 1 str) of
+    Just (inner, '"') -> even (T.length (T.takeWhileEnd (== '\\') inner))
+    _ -> False
 
 lexWord :: (Monad m) => LexerT m Token
 lexWord = do

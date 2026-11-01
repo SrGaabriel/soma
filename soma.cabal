@@ -72,6 +72,9 @@ executable soma
   main-is: Main.hs
   build-depends:
     base ^>=4.22,
+    Blammo,
+    text,
+    maple,
     optparse-applicative ^>=0.19,
     soma
 

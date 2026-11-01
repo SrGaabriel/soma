@@ -140,6 +140,7 @@ describe :: Token -> T.Text
 describe Token{tKind, tText} = case tKind of
     KIdent -> "identifier '" <> tText <> "'"
     KNumber -> "number " <> tText
+    KString -> "string " <> tText
     KUnknown -> "unknown character '" <> tText <> "'"
     _ -> pretty tKind
 
@@ -290,8 +291,15 @@ parseExpr recovery = do
     case inc of
         KIdent -> bump_
         KNumber -> bump_
+        KString -> parseString
         KLBrace -> parseBlock
         _ -> errRecover ["expression"] recovery
+
+parseString :: Parser ()
+parseString = do
+    t <- peek
+    unless (L.stringTerminated (L.tText t)) $ errorHere "unterminated string literal"
+    bump_
 
 parseBlock :: Parser ()
 parseBlock = do

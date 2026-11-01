@@ -14,7 +14,8 @@ data ItemKind
     deriving (Show, Eq)
 
 data Item = ItemId
-    { itemFile :: !SourceFile
+    { itemUnique :: !Unique
+    , itemFile :: !SourceFile
     , itemName :: !Symbol
     , itemKind :: !ItemKind
     , itemParent :: Maybe Unique

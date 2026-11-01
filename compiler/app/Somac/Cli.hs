@@ -5,6 +5,8 @@ import Options.Applicative (Parser, command, execParser, fullDesc, help, helper,
 data Cli
     = Compile String
     | Lex String
+    | Parse String
+    | Elaborate String
     deriving (Show)
 
 targetArgument :: String -> Parser String
@@ -16,6 +18,9 @@ cli =
         ( command
             "lex"
             (info (Lex <$> targetArgument "The target to lex") (progDesc "Print the tokens of TARGET"))
+            <> command
+                "elaborate"
+                (info (Elaborate <$> targetArgument "The target to elaborate") (progDesc "Elaborate TARGET and report diagnostics"))
         )
         <|> Compile
         <$> targetArgument "The target of the compilation"

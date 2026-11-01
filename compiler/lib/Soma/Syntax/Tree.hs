@@ -9,6 +9,7 @@ import GHC.Generics (Generic, Generically (Generically))
 import Maple.Ast
 import Maple.Red (Red (RNode, RToken), RedNode, RedToken, materializeChildren, tokenKind, tokenText)
 import Soma.Syntax.Kind
+import qualified Data.Text as T
 
 -- Tokens
 
@@ -17,6 +18,9 @@ newtype Ident = Ident RedToken
 
 newtype Number = Number RedToken
     deriving (AstToken) via (TokenOfKind 'KNumber)
+
+newtype StrLit = StrLit RedToken
+    deriving (AstToken) via (TokenOfKind 'KString)
 
 identText :: Ident -> Text
 identText = tokenText . syntaxToken
@@ -52,12 +56,13 @@ data Binder
 
 data Expr
     = EVar Ident
-    | ELit Number
+    | ENumLit Number
+    | EStrLit StrLit
     | EBlock Block
 
 castExpr :: Red -> Maybe Expr
 castExpr (RNode n) = EBlock <$> cast n
-castExpr (RToken t) = (EVar <$> castToken t) <|> (ELit <$> castToken t)
+castExpr (RToken t) = (EVar <$> castToken t) <|> (ENumLit <$> castToken t) <|> (EStrLit <$> castToken t)
 
 rootDefs :: Root -> V.Vector Def
 rootDefs = children . syntax
@@ -96,6 +101,25 @@ binderAnnotation b = case tokenOf KColon n of
 
 typeName :: Type -> Maybe Ident
 typeName = childToken . syntax
+
+strLitText :: StrLit -> Text
+strLitText = tokenText . syntaxToken
+
+numberText :: Number -> Text
+numberText = tokenText . syntaxToken
+
+strLitValue :: StrLit -> Text
+strLitValue = T.pack . unescape . T.unpack . stripQuotes . strLitText
+  where
+    stripQuotes t = maybe t fst (T.unsnoc =<< fmap snd (T.uncons t))
+    unescape ('\\' : c : cs) = escape c : unescape cs
+    unescape (c : cs) = c : unescape cs
+    unescape [] = []
+    escape 'n' = '\n'
+    escape 't' = '\t'
+    escape 'r' = '\r'
+    escape '0' = '\0'
+    escape c = c
 
 splitAtToken :: Kind -> RedNode -> (V.Vector Red, V.Vector Red)
 splitAtToken k n =

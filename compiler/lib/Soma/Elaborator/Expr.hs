@@ -2,19 +2,20 @@ module Soma.Elaborator.Expr where
 
 import Soma.Calculus
 import Soma.Elaborator.Core (Elab)
-import Soma.Syntax.Tree (Expr, Type)
+import Soma.Syntax.Tree (Expr (..), Type, numberText, strLitValue)
 
 checkExpr :: Expr -> Term -> Elab Term
-checkExpr = error "todo"
+checkExpr e _ = elabExpr e -- todo
 
 elabExpr :: Expr -> Elab Term
-elabExpr = error "todo"
+elabExpr (EStrLit lit) = pure $ TLit $ LStr $ strLitValue lit
+elabExpr (ENumLit lit) = pure $ TLit $ LNum $ numberText lit
 
 inferExpr :: Expr -> Elab (Term, Term)
 inferExpr = error "todo"
 
 elabType :: Type -> Elab Term
-elabType = error "todo"
+elabType _ = pure type0 -- todo
 
 elabMaybeType :: Maybe Type -> Elab Term
 elabMaybeType (Just t) = elabType t

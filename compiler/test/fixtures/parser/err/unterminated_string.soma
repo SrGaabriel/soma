@@ -1,0 +1,3 @@
+def s : String := "never closed
+
+def t : Nat := 1

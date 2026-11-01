@@ -1,0 +1,7 @@
+def n : Nat := 42
+
+def s : String := "hello, world"
+
+def e : String := ""
+
+def esc : String := "say \"hi\" \\"

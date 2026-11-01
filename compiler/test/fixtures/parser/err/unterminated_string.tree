@@ -1,0 +1,33 @@
+KRoot 50
+  KDef 31
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "s"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 6
+      KIdent "String"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KString "\"never closed"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "t"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: unterminated string literal
+  1:19-1:32: unterminated string literal
