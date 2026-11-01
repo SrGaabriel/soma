@@ -1,16 +1,21 @@
+{-# LANGUAGE MonadComprehensions #-}
+
 module Soma.Elaborator.Core where
 
 import Control.Monad.Reader (ReaderT, asks)
-import Control.Monad.State.Strict (MonadIO (liftIO), StateT, get, modify', put)
+import Control.Monad.State.Strict (MonadIO (liftIO), StateT, get, gets, modify', put)
 import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
-import Soma.Calculus (Term)
+import Soma.Calculus
 import Soma.Diagnostic (Diagnostic)
-import Soma.Elaborator.Context (MetaCtx (MetaCtx))
-import Soma.Env (Namespace)
+import Soma.Elaborator.Context (Local (Local, localUnique), LocalCtx (LocalCtx), MetaCtx (MetaCtx), resolveLocal)
+import Soma.Env (Item (ItemId, itemUnique), Namespace, resolveItem)
 import Soma.File (SourceFile)
 import Soma.Syntax.Tree (Def)
 import Soma.Unique (Unique (Unique), UniqueMap)
 import Soma.Unique qualified as U
+import Symbolize (Symbol)
+import Control.Applicative ((<|>))
+import Control.Monad (guard)
 
 data Decl = Decl
     { declFile :: !SourceFile
@@ -34,13 +39,19 @@ data GlobalEnv = GlobalEnv
 
 data DeclState = DeclState
     { declMetas :: !MetaCtx
+    , declLocals :: !LocalCtx
     , declDiags :: ![Diagnostic]
     }
 
 type Elab = ReaderT GlobalEnv (StateT DeclState IO)
 
 emptyDeclState :: DeclState
-emptyDeclState = DeclState{declMetas = MetaCtx U.empty, declDiags = []}
+emptyDeclState =
+    DeclState
+        { declMetas = MetaCtx U.empty
+        , declLocals = LocalCtx U.empty
+        , declDiags = []
+        }
 
 mkUnique :: Elab Unique
 mkUnique = do
@@ -86,3 +97,10 @@ unfoldConst :: Unique -> Elab (Maybe Term)
 unfoldConst u = do
     f <- asks envUnfold
     f u
+
+resolveName :: [Symbol] -> Symbol -> Elab (Maybe Term)
+resolveName path member =
+    [ (guard (null path) *> (TFree . localUnique <$> resolveLocal locals member))
+        <|> (TConst . itemUnique <$> resolveItem ns path member)
+    | locals <- gets declLocals
+    , ns <- asks envNamespace

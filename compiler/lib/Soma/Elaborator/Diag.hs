@@ -8,6 +8,11 @@ import Soma.Diagnostic (Diagnostic, Label (Label, labFile, labMessage, labRange)
 import Soma.Elaborator.Core (Decl (Decl, declFile, declSyntax))
 import Soma.Syntax.Tree (defName, identText)
 
+unknownVariable :: String -> Diagnostic
+unknownVariable name =
+    mkDiag SError ("unknown variable `" <> name <> "`") $
+        Label{labFile = Nothing, labRange = Nothing, labMessage = "not in scope"}
+
 needsSignature :: Decl -> Diagnostic
 needsSignature Decl{declFile, declSyntax} =
     withHelps ["add a type signature to `" <> name <> "`"] $
