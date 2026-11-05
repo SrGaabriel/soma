@@ -1,11 +1,12 @@
 module Soma.Diagnostic where
 
+import Data.List (nub)
 import Data.Text (Text)
 import Error.Diagnose (Marker (Where), Note (Note), Position (Position), Report (Err), TabSize (TabSize), WithUnicode (WithUnicode), addFile, addReport, stdout)
 import Error.Diagnose.Diagnostic (printDiagnostic)
 import Error.Diagnose.Style (defaultStyle)
-import Maple.Position (Range (Range), posRowCol)
-import Soma.File (SourceFile (SourceFile, srcContent, srcPath))
+import Maple.Position (Range (Range), Span (Span, spanTree), posRowCol)
+import Soma.File (FileId, Files, SourceFile (SourceFile, srcContent, srcPath), lookupFile)
 
 data Severity
     = SError
@@ -14,8 +15,7 @@ data Severity
     deriving (Show, Eq)
 
 data Label = Label
-    { labFile :: SourceFile
-    , labRange :: Range
+    { labSpan :: Span
     , labMessage :: Text
     }
     deriving (Show, Eq)
@@ -61,40 +61,25 @@ withPrimary primary diag = diag{diagPrimary = primary}
 addSecondary :: Label -> Diagnostic -> Diagnostic
 addSecondary secondary diag = diag{diagSecondaries = diagSecondaries diag ++ [secondary]}
 
-report :: Diagnostic -> IO ()
-report
-    ( Diagnostic
-            { diagMessage
-            , diagCode
-            , diagSecondaries
-            , diagPrimary =
-                primary@Label
-                    { labMessage = pMessage
-                    , labFile = SourceFile{srcPath, srcContent}
-                    }
-            , diagHelps
-            }
-        ) =
-        let positions =
-                (labelPosition primary, Where pMessage)
-                    : map
-                        (\label@Label{labMessage} -> (labelPosition label, Where labMessage))
-                        diagSecondaries
-            helps = map Note diagHelps
-            report_ =
-                Err
-                    diagCode
-                    diagMessage
-                    positions
-                    helps
-            diagnostic = addFile mempty srcPath srcContent
-            diagnostic' = addReport diagnostic report_
-        in printDiagnostic stdout WithUnicode (TabSize 4) defaultStyle diagnostic'
+report :: Files -> Diagnostic -> IO ()
+report files Diagnostic{diagMessage, diagCode, diagPrimary, diagSecondaries, diagHelps} =
+    printDiagnostic stdout WithUnicode (TabSize 4) defaultStyle diagnostic
+  where
+    labels = diagPrimary : diagSecondaries
+    sources = foldl' addSource mempty (nub (map labelFile labels))
+    addSource d fileId = let SourceFile{srcPath, srcContent} = lookupFile files fileId in addFile d srcPath srcContent
+    marker label@Label{labMessage} = (labelPosition files label, Where labMessage)
+    diagnostic = addReport sources (Err diagCode diagMessage (map marker labels) (map Note diagHelps))
 
-reportAll :: [Diagnostic] -> IO ()
-reportAll diags = mapM_ report diags
+reportAll :: Files -> [Diagnostic] -> IO ()
+reportAll files = mapM_ (report files)
 
-labelPosition :: Label -> Position
-labelPosition Label{labFile = SourceFile{srcPath, srcContent}, labRange = (Range p1 p2)}
+labelFile :: Label -> FileId
+labelFile = spanTree . labSpan
+
+labelPosition :: Files -> Label -> Position
+labelPosition files Label{labSpan = Span fileId (Range p1 p2)}
     | p1 == p2 = let (r, c) = posRowCol srcContent p1 in Position (r, c) (r, c + 1) srcPath
     | otherwise = Position (posRowCol srcContent p1) (posRowCol srcContent p2) srcPath
+  where
+    SourceFile{srcPath, srcContent} = lookupFile files fileId

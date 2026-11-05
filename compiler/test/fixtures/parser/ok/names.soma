@@ -1,0 +1,7 @@
+def simple : T := x
+
+def qualified : T := a::b
+
+def nested : T := a::b::c
+
+def spaced : T := a :: b

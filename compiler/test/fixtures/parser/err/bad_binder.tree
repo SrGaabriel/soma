@@ -41,7 +41,8 @@ KRoot 46
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
-    KIdent "a"
+    KName 1
+      KIdent "a"
   KNewline "\n"
 
 error: expected binder or ':', found number 12

@@ -3,7 +3,7 @@
 module Soma.Env where
 
 import Data.HashMap.Strict qualified as HM
-import Soma.File (SourceFile)
+import Soma.File (FileId)
 import Symbolize (Symbol)
 import Soma.Unique (Unique)
 
@@ -15,7 +15,7 @@ data ItemKind
 
 data Item = ItemId
     { itemUnique :: !Unique
-    , itemFile :: !SourceFile
+    , itemFile :: !FileId
     , itemName :: !Symbol
     , itemKind :: !ItemKind
     , itemParent :: Maybe Unique

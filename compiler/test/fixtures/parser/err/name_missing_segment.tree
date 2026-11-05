@@ -1,0 +1,36 @@
+KRoot 43
+  KDef 23
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "trailing"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 1
+      KIdent "T"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 3
+      KIdent "a"
+      KColonColon "::"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 17
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "next"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KType 1
+      KIdent "T"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "b"
+  KNewline "\n"
+
+error: expected identifier, found 'def'
+  1:24-1:24: expected identifier

@@ -13,20 +13,26 @@ import Data.List (isSuffixOf, sort)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Vector.Strict as V
+import Maple.Ast (cast)
 import Maple.Cache (mkCache)
 import Maple.Green (Green (GNode, GToken), GreenNode (GreenNode, gnChildren), GreenToken (GreenToken, gtSymbol))
-import Maple.Position (Range (Range), posRowCol)
+import Maple.Position (Range (Range), Span (Span), TreeId (TreeId), posRowCol)
 import Maple.Print (prettyGreen, showKind)
-import Soma.Diagnostic (Diagnostic (Diagnostic, diagMessage, diagPrimary, diagSecondaries), Label (Label, labMessage, labRange))
-import Soma.File (SourceFile (SourceFile, srcContent, srcPath), readSource)
+import Maple.Red (materializeRoot)
+import Soma.Diagnostic (Diagnostic (Diagnostic, diagMessage, diagPrimary, diagSecondaries), Label (Label, labMessage, labSpan))
+import Soma.File (SourceFile (SourceFile, srcContent, srcId, srcPath), readSource)
 import Soma.Syntax.Kind (Kind (KEof))
 import Soma.Syntax.Lexer (Token (tKind, tText), lexAll)
 import Soma.Syntax.Parser (parseRoot, runParser)
+import Soma.Syntax.Tree (Expr (EVar), Name (Name), defBody, identText, rootDefs)
 import Symbolize (unintern)
 import System.Directory (doesFileExist, listDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath (replaceExtension, (</>))
 import Test.Hspec (Spec, describe, expectationFailure, it, runIO, shouldBe, shouldNotBe)
+
+testFile :: TreeId
+testFile = TreeId 0
 
 fixturesDir :: FilePath
 fixturesDir = "compiler/test/fixtures/parser"
@@ -35,7 +41,7 @@ sources :: FilePath -> IO [SourceFile]
 sources sub = do
     let dir = fixturesDir </> sub
     files <- sort . filter (".soma" `isSuffixOf`) <$> listDirectory dir
-    forM files $ \file -> readSource (dir </> file)
+    forM files $ \file -> readSource testFile (dir </> file)
 
 parse :: Logger -> SourceFile -> IO (GreenNode, [Diagnostic])
 parse logger src = do
@@ -55,7 +61,7 @@ renderDiag src Diagnostic{diagMessage, diagPrimary, diagSecondaries} =
         $ ("error: " <> diagMessage)
             : map (\l -> "  " <> renderLabel l) (diagPrimary : diagSecondaries)
   where
-    renderLabel Label{labRange = Range s e, labMessage} =
+    renderLabel Label{labSpan = Span _ (Range s e), labMessage} =
         pos s <> "-" <> pos e <> ": " <> labMessage
     pos p = let (r, c) = posRowCol src p in T.pack (show r <> ":" <> show c)
 
@@ -79,7 +85,7 @@ golden path actual = do
 checkResilient :: Logger -> FilePath -> T.Text -> IO ()
 checkResilient logger path input = do
     result <- try @SomeException $ do
-        (root, diags) <- parse logger (SourceFile path input)
+        (root, diags) <- parse logger (SourceFile testFile path input)
         _ <- evaluate (length diags)
         pure root
     case result of
@@ -122,9 +128,33 @@ fixtureSpec logger shouldSucceed src@SourceFile{srcPath, srcContent} = describe 
     it "recovers from every prefix and token deletion"
         $ mapM_ (checkResilient logger srcPath) (mutations srcContent)
 
+bodyName :: Logger -> T.Text -> IO (Maybe ([T.Text], T.Text))
+bodyName logger input = do
+    let src = SourceFile testFile "<name>" input
+    (root, _) <- parse logger src
+    pure $ do
+        tree <- cast (materializeRoot (srcId src) root)
+        def <- rootDefs tree V.!? 0
+        body <- defBody def
+        case body of
+            EVar (Name path member) -> Just (map identText path, identText member)
+            _ -> Nothing
+
+nameSpec :: Logger -> Spec
+nameSpec logger = describe "names" $ do
+    it "reads an unqualified name"
+        $ bodyName logger "def x : T := a" >>= (`shouldBe` Just ([], "a"))
+    it "splits a qualified name into its path and member"
+        $ bodyName logger "def x : T := a::b::c" >>= (`shouldBe` Just (["a", "b"], "c"))
+    it "allows whitespace around the separator"
+        $ bodyName logger "def x : T := a :: b" >>= (`shouldBe` Just (["a"], "b"))
+    it "rejects a name with a missing final segment"
+        $ bodyName logger "def x : T := a::" >>= (`shouldBe` Nothing)
+
 spec :: Spec
 spec = describe "Parser" $ do
     logger <- runIO newLoggerEnv
+    nameSpec logger
     oks <- runIO (sources "ok")
     errs <- runIO (sources "err")
     describe "ok" $ forM_ oks (fixtureSpec logger True)

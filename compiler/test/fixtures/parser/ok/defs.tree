@@ -63,5 +63,6 @@ KRoot 86
     KWhitespace "  "
     KColonEq ":="
     KWhitespace "  "
-    KIdent "x"
+    KName 1
+      KIdent "x"
   KNewline "\n"

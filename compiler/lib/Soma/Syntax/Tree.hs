@@ -4,12 +4,14 @@ module Soma.Syntax.Tree where
 
 import Control.Applicative ((<|>))
 import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Vector.Strict qualified as V
 import GHC.Generics (Generic, Generically (Generically))
 import Maple.Ast
+import Maple.Position (Range (Range), Span (Span))
 import Maple.Red (Red (RNode, RToken), RedNode, RedToken, materializeChildren, tokenKind, tokenText)
 import Soma.Syntax.Kind
-import qualified Data.Text as T
+import Symbolize (Symbol, intern)
 
 -- Tokens
 
@@ -24,6 +26,9 @@ newtype StrLit = StrLit RedToken
 
 identText :: Ident -> Text
 identText = tokenText . syntaxToken
+
+identSymbol :: Ident -> Symbol
+identSymbol = intern . identText
 
 -- Nodes
 
@@ -54,15 +59,33 @@ data Binder
     deriving (Generic)
     deriving (AstNode) via (Generically Binder)
 
+data Name = Name [Ident] Ident
+
+newtype NameNode = NameNode RedNode
+    deriving (AstNode) via (OfKind 'KName)
+
+castName :: RedNode -> Maybe Name
+castName n = do
+    NameNode node <- cast n
+    let tokens = materializeChildren node
+    member <- if V.null tokens then Nothing else castTokenRed (V.last tokens)
+    pure $ Name (V.toList (V.init (childTokens node))) member
+
+nameSpan :: Name -> Span
+nameSpan (Name path member) = Span file (Range start end)
+  where
+    Span file (Range _ end) = syntaxTokenSpan member
+    Span _ (Range start _) = syntaxTokenSpan (case path of first : _ -> first; [] -> member)
+
 data Expr
-    = EVar Ident
+    = EVar Name
     | ENumLit Number
     | EStrLit StrLit
     | EBlock Block
 
 castExpr :: Red -> Maybe Expr
-castExpr (RNode n) = EBlock <$> cast n
-castExpr (RToken t) = (EVar <$> castToken t) <|> (ENumLit <$> castToken t) <|> (EStrLit <$> castToken t)
+castExpr (RNode n) = (EVar <$> castName n) <|> (EBlock <$> cast n)
+castExpr (RToken t) = (ENumLit <$> castToken t) <|> (EStrLit <$> castToken t)
 
 rootDefs :: Root -> V.Vector Def
 rootDefs = children . syntax

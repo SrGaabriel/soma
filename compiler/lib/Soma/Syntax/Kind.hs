@@ -28,6 +28,7 @@ data Kind
     | KRBracket
     | KComma
     | KColon
+    | KColonColon
     | KColonEq
     | KUnknown
     | -- Nodes
@@ -35,6 +36,7 @@ data Kind
     | KMul
     | KDef
     | KType
+    | KName
     | KBlock
     | KExBinder
     | KImBinder
@@ -67,11 +69,13 @@ instance Pretty Kind where
     pretty KRBracket = "']'"
     pretty KComma = "','"
     pretty KColon = "':'"
+    pretty KColonColon = "'::'"
     pretty KColonEq = "':='"
     pretty KUnknown = "unknown"
     pretty KError = "error"
     pretty KRoot = "root"
     pretty KType = "type"
+    pretty KName = "name"
     pretty KMul = "multiplication"
     pretty KDef = "function definition"
     pretty KImplicits = "implicit parameters"

@@ -13,3 +13,8 @@ spec = describe "Lexer" $ do
             let (tokens, diag) = lexAll "2*2"
             diag `shouldBe` []
             (map tKind tokens) `shouldBe` [KNumber, KStar, KNumber, KEof]
+    it "lexes a::b := c : d"
+        $ do
+            let (tokens, diag) = lexAll "a::b:=c:d"
+            diag `shouldBe` []
+            (map tKind tokens) `shouldBe` [KIdent, KColonColon, KIdent, KColonEq, KIdent, KColon, KIdent, KEof]

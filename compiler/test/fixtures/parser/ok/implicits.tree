@@ -40,7 +40,8 @@ KRoot 223
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
-    KIdent "x"
+    KName 1
+      KIdent "x"
   KNewline "\n"
   KNewline "\n"
   KDef 43
@@ -79,7 +80,8 @@ KRoot 223
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
-    KIdent "n"
+    KName 1
+      KIdent "n"
   KNewline "\n"
   KNewline "\n"
   KDef 36
@@ -114,7 +116,8 @@ KRoot 223
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
-    KIdent "x"
+    KName 1
+      KIdent "x"
   KNewline "\n"
   KNewline "\n"
   KDef 21
@@ -162,7 +165,8 @@ KRoot 223
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
-    KIdent "x"
+    KName 1
+      KIdent "x"
   KNewline "\n"
   KNewline "\n"
   KDef 43

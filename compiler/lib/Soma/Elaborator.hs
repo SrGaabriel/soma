@@ -15,7 +15,7 @@ import Soma.Elaborator.Core
 import Soma.Elaborator.Decl (checkBody, elabSig, inferDecl)
 import Soma.Elaborator.Diag (needsSignature)
 import Soma.Env (Item (ItemId, itemFile, itemKind, itemName, itemParent, itemUnique), ItemKind (ItemDef), Namespace (Namespace, nsChildren, nsDecls))
-import Soma.File (SourceFile)
+import Soma.File (SourceFile (srcId))
 import Soma.Syntax.Tree (Root, defName, defType, identText, rootDefs)
 import Soma.Print (Pretty (pretty))
 import Soma.Unique (Unique (Unique))
@@ -95,9 +95,9 @@ elaborateFile src root = do
                 }
         declEntry (u, d) = do
             sym <- intern . identText <$> defName d
-            pure (sym, ItemId{itemUnique = u, itemFile = src, itemName = sym, itemKind = ItemDef, itemParent = Nothing})
+            pure (sym, ItemId{itemUnique = u, itemFile = srcId src, itemName = sym, itemKind = ItemDef, itemParent = Nothing})
     uniquesRef <- newIORef (Unique (length items))
-    itemsRef <- newIORef (U.fromList [(u, Pending (Decl src d)) | (u, d) <- items])
+    itemsRef <- newIORef (U.fromList [(u, Pending (Decl d)) | (u, d) <- items])
     diagsRef <- newIORef []
     let env =
             GlobalEnv

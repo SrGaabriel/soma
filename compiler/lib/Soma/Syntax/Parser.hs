@@ -16,9 +16,9 @@ import Maple.Builder (runBuilderT)
 import Maple.Builder qualified as M (BuilderT, finishNode, startNode, token)
 import Maple.Cache (NodeCache)
 import Maple.Green (GreenNode)
-import Maple.Position (Pos, Range (Range), posRowCol)
-import Soma.Diagnostic (Diagnostic, Label (Label, labFile, labMessage, labRange), Severity (SError), addSecondary, mkDiag)
-import Soma.File (SourceFile (srcContent))
+import Maple.Position (Pos, Range (Range), Span (Span), posRowCol)
+import Soma.Diagnostic (Diagnostic, Label (Label, labMessage, labSpan), Severity (SError), addSecondary, mkDiag)
+import Soma.File (SourceFile (srcContent, srcId))
 import Soma.Print (Pretty (pretty))
 import Soma.Syntax.Kind
 import Soma.Syntax.Lexer (Token (Token))
@@ -62,7 +62,7 @@ modifyPS = lift . lift . modify'
 label :: Range -> T.Text -> Parser Label
 label range msg = do
     src <- getsPS srcFile
-    pure Label{labRange = range, labMessage = msg, labFile = src}
+    pure Label{labSpan = Span (srcId src) range, labMessage = msg}
 
 mkError :: T.Text -> Label -> Diagnostic
 mkError = mkDiag SError
@@ -289,11 +289,24 @@ parseExpr :: TokenSet -> Parser ()
 parseExpr recovery = do
     inc <- incoming
     case inc of
-        KIdent -> bump_
+        KIdent -> parseName
         KNumber -> bump_
         KString -> parseString
         KLBrace -> parseBlock
         _ -> errRecover ["expression"] recovery
+
+parseName :: Parser ()
+parseName = do
+    startNode KName
+    bump_
+    let go = do
+            more <- at KColonColon
+            when more $ do
+                bump_
+                segment <- expect KIdent
+                when segment go
+    go
+    M.finishNode
 
 parseString :: Parser ()
 parseString = do

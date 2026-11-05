@@ -2,23 +2,25 @@
 
 module Soma.Elaborator.Diag where
 
-import Maple.Ast (AstNode (syntax), AstToken (syntaxToken))
-import Maple.Red (RedNode (rnRange), RedToken (rtRange))
-import Soma.Diagnostic (Diagnostic, Label (Label, labFile, labMessage, labRange), Severity (SError), mkDiag, withHelps)
-import Soma.Elaborator.Core (Decl (Decl, declFile, declSyntax))
-import Soma.Syntax.Tree (defName, identText)
+import Data.Text qualified as T
+import Maple.Ast (syntaxSpan, syntaxTokenSpan)
+import Soma.Diagnostic (Diagnostic, Label (Label, labMessage, labSpan), Severity (SError), mkDiag, withHelps)
+import Soma.Elaborator.Core (Decl (Decl, declSyntax))
+import Soma.Syntax.Tree (Name (Name), defName, identText, nameSpan)
 
-unknownVariable :: String -> Diagnostic
-unknownVariable name =
-    mkDiag SError ("unknown variable `" <> name <> "`") $
-        Label{labFile = Nothing, labRange = Nothing, labMessage = "not in scope"}
+unknownName :: Name -> Diagnostic
+unknownName name@(Name path member) =
+    mkDiag SError ("unknown name `" <> text <> "`") $
+        Label{labSpan = nameSpan name, labMessage = "this name is not defined"}
+  where
+    text = T.intercalate "::" (map identText (path ++ [member]))
 
 needsSignature :: Decl -> Diagnostic
-needsSignature Decl{declFile, declSyntax} =
+needsSignature Decl{declSyntax} =
     withHelps ["add a type signature to `" <> name <> "`"] $
         mkDiag SError ("cannot infer the type of `" <> name <> "` because it is used recursively") $
-            Label{labFile = declFile, labRange = range, labMessage = "used recursively"}
+            Label{labSpan = location, labMessage = "used recursively"}
   where
     ident = defName declSyntax
     name = maybe "this definition" identText ident
-    range = maybe (rnRange (syntax declSyntax)) (rtRange . syntaxToken) ident
+    location = maybe (syntaxSpan declSyntax) syntaxTokenSpan ident

@@ -8,7 +8,8 @@ import Soma.Diagnostic (reportAll)
 import Data.Text.IO qualified as TIO
 import Soma.Elaborator (elaborateFile)
 import Soma.Print (Pretty (pretty))
-import Soma.File (readSource)
+import Maple.Position (TreeId (TreeId))
+import Soma.File (SourceFile (srcId), mkFiles, readSource)
 import Soma.Syntax.Parser (parseRoot, runParser)
 import Soma.Syntax.Tree (Root)
 import Somac.Cli (Cli (Elaborate), runCli)
@@ -23,14 +24,15 @@ main = do
 
 elaborate :: FilePath -> IO ()
 elaborate path = do
-    src <- readSource path
+    src <- readSource (TreeId 0) path
+    let files = mkFiles [src]
     logger <- newLoggerEnv
     ((green, _), parseDiags) <- runParser logger src mkCache parseRoot
-    reportAll parseDiags
-    case cast @Root (materializeRoot green) of
+    reportAll files parseDiags
+    case cast @Root (materializeRoot (srcId src) green) of
         Nothing -> putStrLn "internal error: parser did not produce a root node" >> exitFailure
         Just root -> do
             (elaborated, elabDiags) <- elaborateFile src root
-            reportAll elabDiags
+            reportAll files elabDiags
             TIO.putStrLn (pretty elaborated)
             if null parseDiags && null elabDiags then pure () else exitFailure

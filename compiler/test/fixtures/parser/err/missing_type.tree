@@ -8,7 +8,8 @@ KRoot 13
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
-    KIdent "a"
+    KName 1
+      KIdent "a"
   KNewline "\n"
 
 error: expected type, found ':='

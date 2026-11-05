@@ -1,0 +1,3 @@
+def trailing : T := a::
+
+def next : T := b

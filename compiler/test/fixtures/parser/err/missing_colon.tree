@@ -19,7 +19,8 @@ KRoot 25
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
-    KIdent "a"
+    KName 1
+      KIdent "a"
   KNewline "\n"
 
 error: expected ':', found identifier 'Nat'

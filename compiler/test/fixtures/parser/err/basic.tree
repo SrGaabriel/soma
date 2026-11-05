@@ -26,7 +26,8 @@ KRoot 67
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
-    KIdent "a"
+    KName 1
+      KIdent "a"
   KNewline "\n"
   KNewline "\n"
   KDef 35

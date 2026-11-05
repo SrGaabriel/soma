@@ -147,6 +147,7 @@ lexChar c@':' = do
     peekNext <- peekNthChar 1
     case peekNext of
         Just '=' -> Token KColonEq ":=" <$> gets lxCursor <* bumpChar <* bumpChar
+        Just ':' -> Token KColonColon "::" <$> gets lxCursor <* bumpChar <* bumpChar
         _ -> charToken KColon c <* bumpChar
 lexChar c
     | isNumber c = lexNumber
