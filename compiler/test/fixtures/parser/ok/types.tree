@@ -1,0 +1,296 @@
+KRoot 320
+  KDef 34
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "id"
+    KWhitespace " "
+    KImplicits 10
+      KLBracket "["
+      KImBinder 8
+        KIdent "a"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 4
+          KIdent "Sort"
+      KRBracket "]"
+    KWhitespace " "
+    KExBinder 7
+      KLParen "("
+      KIdent "x"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KName 1
+        KIdent "a"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KName 1
+      KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "x"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 28
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "arrow"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KPi 11
+      KName 1
+        KIdent "A"
+      KWhitespace " "
+      KArrow "->"
+      KWhitespace " "
+      KPi 6
+        KName 1
+          KIdent "B"
+        KWhitespace " "
+        KArrow "->"
+        KWhitespace " "
+        KName 1
+          KIdent "C"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "f"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 35
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "dependent"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KPi 14
+      KExBinder 7
+        KLParen "("
+        KIdent "x"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 1
+          KIdent "A"
+        KRParen ")"
+      KWhitespace " "
+      KArrow "->"
+      KWhitespace " "
+      KApp 3
+        KName 1
+          KIdent "B"
+        KWhitespace " "
+        KName 1
+          KIdent "x"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "f"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 32
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "grouped"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KPi 13
+      KParen 8
+        KLParen "("
+        KPi 6
+          KName 1
+            KIdent "A"
+          KWhitespace " "
+          KArrow "->"
+          KWhitespace " "
+          KName 1
+            KIdent "B"
+        KRParen ")"
+      KWhitespace " "
+      KArrow "->"
+      KWhitespace " "
+      KName 1
+        KIdent "C"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "f"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 46
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "applied"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KApp 13
+      KName 4
+        KIdent "List"
+      KWhitespace " "
+      KParen 8
+        KLParen "("
+        KPi 6
+          KName 1
+            KIdent "A"
+          KWhitespace " "
+          KArrow "->"
+          KWhitespace " "
+          KName 1
+            KIdent "B"
+        KRParen ")"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KApp 15
+      KName 1
+        KIdent "f"
+      KWhitespace " "
+      KName 1
+        KIdent "x"
+      KWhitespace " "
+      KParen 5
+        KLParen "("
+        KApp 3
+          KName 1
+            KIdent "g"
+          KWhitespace " "
+          KName 1
+            KIdent "y"
+        KRParen ")"
+      KWhitespace " "
+      KNumber "1"
+      KWhitespace " "
+      KString "\"s\""
+  KNewline "\n"
+  KNewline "\n"
+  KDef 41
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "implicit"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KPi 20
+      KImplicits 10
+        KLBracket "["
+        KImBinder 8
+          KIdent "a"
+          KWhitespace " "
+          KColon ":"
+          KWhitespace " "
+          KName 4
+            KIdent "Sort"
+        KRBracket "]"
+      KWhitespace " "
+      KArrow "->"
+      KWhitespace " "
+      KPi 6
+        KName 1
+          KIdent "a"
+        KWhitespace " "
+        KArrow "->"
+        KWhitespace " "
+        KName 1
+          KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 2
+      KIdent "id"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 55
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "telescope"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KPi 34
+      KImplicits 13
+        KLBracket "["
+        KImBinder 1
+          KIdent "a"
+        KComma ","
+        KWhitespace " "
+        KImBinder 8
+          KIdent "b"
+          KWhitespace " "
+          KColon ":"
+          KWhitespace " "
+          KName 4
+            KIdent "Sort"
+        KRBracket "]"
+      KWhitespace " "
+      KExBinder 7
+        KLParen "("
+        KIdent "x"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 1
+          KIdent "a"
+        KRParen ")"
+      KWhitespace " "
+      KExBinder 7
+        KLParen "("
+        KIdent "y"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 1
+          KIdent "b"
+        KRParen ")"
+      KWhitespace " "
+      KArrow "->"
+      KWhitespace " "
+      KName 1
+        KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "f"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 34
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "body"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KName 4
+      KIdent "Sort"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KPi 15
+      KImplicits 10
+        KLBracket "["
+        KImBinder 8
+          KIdent "a"
+          KWhitespace " "
+          KColon ":"
+          KWhitespace " "
+          KName 4
+            KIdent "Sort"
+        KRBracket "]"
+      KWhitespace " "
+      KArrow "->"
+      KWhitespace " "
+      KName 1
+        KIdent "a"
+  KNewline "\n"

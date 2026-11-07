@@ -6,7 +6,7 @@ KRoot 43
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "T"
     KWhitespace " "
     KColonEq ":="
@@ -23,7 +23,7 @@ KRoot 43
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "T"
     KWhitespace " "
     KColonEq ":="

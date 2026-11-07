@@ -4,4 +4,4 @@ def qualified : T := a::b
 
 def nested : T := a::b::c
 
-def spaced : T := a :: b
+def spaced : T := simple

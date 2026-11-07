@@ -1,0 +1,7 @@
+def f : (x : A) B := f
+
+def g : A -> := g
+
+def h : List (A := h
+
+def i : [a : Sort] a := i

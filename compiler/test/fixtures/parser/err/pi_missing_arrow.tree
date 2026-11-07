@@ -1,0 +1,109 @@
+KRoot 91
+  KDef 22
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "f"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KPi 9
+      KExBinder 7
+        KLParen "("
+        KIdent "x"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 1
+          KIdent "A"
+        KRParen ")"
+      KWhitespace " "
+      KName 1
+        KIdent "B"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "f"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 17
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KPi 4
+      KName 1
+        KIdent "A"
+      KWhitespace " "
+      KArrow "->"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "g"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 20
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "h"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KApp 7
+      KName 4
+        KIdent "List"
+      KWhitespace " "
+      KParen 2
+        KLParen "("
+        KName 1
+          KIdent "A"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "h"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 25
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "i"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KPi 12
+      KImplicits 10
+        KLBracket "["
+        KImBinder 8
+          KIdent "a"
+          KWhitespace " "
+          KColon ":"
+          KWhitespace " "
+          KName 4
+            KIdent "Sort"
+        KRBracket "]"
+      KWhitespace " "
+      KName 1
+        KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "i"
+  KNewline "\n"
+
+error: expected '->', found identifier 'B'
+  1:17-1:18: expected '->'
+
+error: expected type, found ':='
+  3:14-3:16: expected type
+
+error: expected ')', found ':='
+  5:17-5:19: expected ')'
+  5:14-5:15: unclosed '('
+
+error: expected '->', found identifier 'a'
+  7:20-7:21: expected '->'

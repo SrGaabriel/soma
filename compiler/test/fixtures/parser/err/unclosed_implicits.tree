@@ -18,13 +18,13 @@ KRoot 46
       KWhitespace " "
       KColon ":"
       KWhitespace " "
-      KType 1
+      KName 1
         KIdent "a"
       KRParen ")"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "a"
     KWhitespace " "
     KColonEq ":="
@@ -40,7 +40,7 @@ KRoot 46
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 3
+    KName 3
       KIdent "Nat"
     KWhitespace " "
     KColonEq ":="

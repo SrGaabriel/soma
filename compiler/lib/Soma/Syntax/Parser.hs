@@ -13,7 +13,7 @@ import Control.Monad.Writer.Strict
 import Data.Text qualified as T
 import Maple.Ast (SyntaxKind (toRaw))
 import Maple.Builder (runBuilderT)
-import Maple.Builder qualified as M (BuilderT, finishNode, startNode, token)
+import Maple.Builder qualified as M (BuilderT, Checkpoint, checkpoint, finishNode, startNode, startNodeAt, token)
 import Maple.Cache (NodeCache)
 import Maple.Green (GreenNode)
 import Maple.Position (Pos, Range (Range), Span (Span), posRowCol)
@@ -51,7 +51,13 @@ implicitFirst :: TokenSet
 implicitFirst = tokenSet [KIdent]
 
 typeFirst :: TokenSet
-typeFirst = tokenSet [KIdent]
+typeFirst = tokenSet [KIdent, KLParen, KLBracket]
+
+atomFirst :: TokenSet
+atomFirst = tokenSet [KIdent, KNumber, KString, KLBrace, KLParen]
+
+termFirst :: TokenSet
+termFirst = atomFirst <> tokenSet [KLBracket]
 
 getsPS :: (ParserState -> a) -> Parser a
 getsPS = lift . lift . gets
@@ -118,6 +124,12 @@ bump_ = void bump
 
 startNode :: Kind -> Parser ()
 startNode k = eatTrivia >> M.startNode (toRaw k)
+
+checkpoint :: Parser M.Checkpoint
+checkpoint = eatTrivia >> M.checkpoint
+
+startNodeAt :: M.Checkpoint -> Kind -> Parser ()
+startNodeAt cp k = M.startNodeAt cp (toRaw k)
 
 expect :: Kind -> Parser Bool
 expect kind = do
@@ -287,13 +299,91 @@ parseDef = do
 
 parseExpr :: TokenSet -> Parser ()
 parseExpr recovery = do
+    starts <- atAny termFirst
+    if starts then parseTerm recovery else errRecover ["expression"] recovery
+
+parseTerm :: TokenSet -> Parser ()
+parseTerm recovery = do
+    named <- atBinderGroup
+    if named
+        then parseNamedPi recovery
+        else do
+            cp <- checkpoint
+            parseApp
+            arrow <- at KArrow
+            when arrow $ do
+                startNodeAt cp KPi
+                bump_
+                parseType recovery
+                M.finishNode
+
+atNamedBinder :: Parser Bool
+atNamedBinder = do
+    open <- at KLParen
+    if not open
+        then pure False
+        else do
+            name <- L.tKind <$> peekNth 1
+            colon <- L.tKind <$> peekNth 2
+            pure (name == KIdent && colon == KColon)
+
+atBinderGroup :: Parser Bool
+atBinderGroup = do
+    implicits <- at KLBracket
+    if implicits then pure True else atNamedBinder
+
+parseNamedPi :: TokenSet -> Parser ()
+parseNamedPi recovery = do
+    startNode KPi
+    let go = do
+            implicits <- at KLBracket
+            if implicits
+                then parseImplicits >> go
+                else do
+                    named <- atNamedBinder
+                    when named $ parseBinder >> go
+    go
+    _ <- expect KArrow
+    parseType recovery
+    M.finishNode
+
+parseApp :: Parser ()
+parseApp = do
+    cp <- checkpoint
+    parseAtom
+    more <- atArgument
+    when more $ do
+        startNodeAt cp KApp
+        let go = do
+                next <- atArgument
+                when next $ parseAtom >> go
+        go
+        M.finishNode
+
+atArgument :: Parser Bool
+atArgument = do
+    starts <- atAny atomFirst
+    if starts then not <$> atNamedBinder else pure False
+
+parseAtom :: Parser ()
+parseAtom = do
     inc <- incoming
     case inc of
         KIdent -> parseName
         KNumber -> bump_
         KString -> parseString
         KLBrace -> parseBlock
-        _ -> errRecover ["expression"] recovery
+        KLParen -> parseParen
+        _ -> errorExpected ["expression"]
+
+parseParen :: Parser ()
+parseParen = do
+    open <- peek
+    startNode KParen
+    bump_
+    parseExpr (tokenSet [KRParen])
+    expectClosing KRParen open
+    M.finishNode
 
 parseName :: Parser ()
 parseName = do
@@ -377,10 +467,8 @@ parseAnnotation recovery = do
 
 parseType :: TokenSet -> Parser ()
 parseType recovery = do
-    inc <- incoming
-    if inc `member` typeFirst
-        then startNode KType >> bump_ >> M.finishNode
-        else errRecover ["type"] recovery
+    starts <- atAny termFirst
+    if starts then parseTerm recovery else errRecover ["type"] recovery
 
 runParser :: Logger -> SourceFile -> NodeCache -> Parser a -> IO ((GreenNode, NodeCache), [Diagnostic])
 runParser logger src cache parser = do

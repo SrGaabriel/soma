@@ -6,7 +6,7 @@ KRoot 111
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 3
+    KName 3
       KIdent "Nat"
     KWhitespace " "
     KColonEq ":="
@@ -21,7 +21,7 @@ KRoot 111
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 6
+    KName 6
       KIdent "String"
     KWhitespace " "
     KColonEq ":="
@@ -36,7 +36,7 @@ KRoot 111
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 6
+    KName 6
       KIdent "String"
     KWhitespace " "
     KColonEq ":="
@@ -51,7 +51,7 @@ KRoot 111
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 6
+    KName 6
       KIdent "String"
     KWhitespace " "
     KColonEq ":="

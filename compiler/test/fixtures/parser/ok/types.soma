@@ -1,0 +1,15 @@
+def id [a : Sort] (x : a) : a := x
+
+def arrow : A -> B -> C := f
+
+def dependent : (x : A) -> B x := f
+
+def grouped : (A -> B) -> C := f
+
+def applied : List (A -> B) := f x (g y) 1 "s"
+
+def implicit : [a : Sort] -> a -> a := id
+
+def telescope : [a, b : Sort] (x : a) (y : b) -> a := f
+
+def body : Sort := [a : Sort] -> a

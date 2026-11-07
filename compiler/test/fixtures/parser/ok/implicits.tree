@@ -19,7 +19,7 @@ KRoot 223
       KWhitespace " "
       KColon ":"
       KWhitespace " "
-      KType 1
+      KName 1
         KIdent "a"
       KRParen ")"
     KWhitespace " "
@@ -29,13 +29,13 @@ KRoot 223
       KWhitespace " "
       KColon ":"
       KWhitespace " "
-      KType 1
+      KName 1
         KIdent "b"
       KRParen ")"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "a"
     KWhitespace " "
     KColonEq ":="
@@ -59,7 +59,7 @@ KRoot 223
         KWhitespace " "
         KColon ":"
         KWhitespace " "
-        KType 3
+        KName 3
           KIdent "Nat"
       KRBracket "]"
     KWhitespace " "
@@ -69,13 +69,13 @@ KRoot 223
       KWhitespace " "
       KColon ":"
       KWhitespace " "
-      KType 3
+      KName 3
         KIdent "Vec"
       KRParen ")"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 3
+    KName 3
       KIdent "Nat"
     KWhitespace " "
     KColonEq ":="
@@ -105,13 +105,13 @@ KRoot 223
       KWhitespace " "
       KColon ":"
       KWhitespace " "
-      KType 1
+      KName 1
         KIdent "a"
       KRParen ")"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "a"
     KWhitespace " "
     KColonEq ":="
@@ -130,7 +130,7 @@ KRoot 223
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 3
+    KName 3
       KIdent "Nat"
     KWhitespace " "
     KColonEq ":="
@@ -154,13 +154,13 @@ KRoot 223
       KWhitespace " "
       KColon ":"
       KWhitespace " "
-      KType 1
+      KName 1
         KIdent "a"
       KRParen ")"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "a"
     KWhitespace " "
     KColonEq ":="
@@ -186,14 +186,14 @@ KRoot 223
         KWhitespace " "
         KColon ":"
         KWhitespace " "
-        KType 4
+        KName 4
           KIdent "Type"
       KWhitespace " "
       KRBracket "]"
     KWhitespace "  "
     KColon ":"
     KWhitespace "  "
-    KType 3
+    KName 3
       KIdent "Nat"
     KWhitespace "  "
     KColonEq ":="

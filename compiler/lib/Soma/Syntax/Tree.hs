@@ -3,6 +3,7 @@
 module Soma.Syntax.Tree where
 
 import Control.Applicative ((<|>))
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Vector.Strict qualified as V
@@ -37,9 +38,6 @@ newtype Root = Root RedNode
 
 newtype Def = Def RedNode
     deriving (AstNode) via (OfKind 'KDef)
-
-newtype Type = Type RedNode
-    deriving (AstNode) via (OfKind 'KType)
 
 newtype Block = Block RedNode
     deriving (AstNode) via (OfKind 'KBlock)
@@ -77,15 +75,72 @@ nameSpan (Name path member) = Span file (Range start end)
     Span file (Range _ end) = syntaxTokenSpan member
     Span _ (Range start _) = syntaxTokenSpan (case path of first : _ -> first; [] -> member)
 
+newtype Pi = Pi RedNode
+    deriving (AstNode) via (OfKind 'KPi)
+
+newtype App = App RedNode
+    deriving (AstNode) via (OfKind 'KApp)
+
+newtype Paren = Paren RedNode
+    deriving (AstNode) via (OfKind 'KParen)
+
 data Expr
     = EVar Name
     | ENumLit Number
     | EStrLit StrLit
     | EBlock Block
+    | EApp App
+    | EPi Pi
 
 castExpr :: Red -> Maybe Expr
-castExpr (RNode n) = (EVar <$> castName n) <|> (EBlock <$> cast n)
+castExpr (RNode n) =
+    (EVar <$> castName n)
+        <|> (EBlock <$> cast n)
+        <|> (EApp <$> cast n)
+        <|> (EPi <$> cast n)
+        <|> (parenContents n >>= firstJust castExpr)
 castExpr (RToken t) = (ENumLit <$> castToken t) <|> (EStrLit <$> castToken t)
+
+parenContents :: RedNode -> Maybe (V.Vector Red)
+parenContents n = materializeChildren . syntax <$> cast @Paren n
+
+data PiParam
+    = PiBinders (V.Vector Binder)
+    | PiAnon Expr
+
+piParam :: Pi -> Maybe PiParam
+piParam p
+    | not (V.null binders) = Just (PiBinders binders)
+    | otherwise = PiAnon <$> firstJust castExpr params
+  where
+    params = fst (splitAtToken KArrow (syntax p))
+    binders = telescope params
+
+telescope :: V.Vector Red -> V.Vector Binder
+telescope = V.concatMap group
+  where
+    group (RNode n)
+        | Just (Implicits g) <- cast n = BIm <$> children g
+        | Just b <- cast n = V.singleton (BEx b)
+    group _ = V.empty
+
+piCodomain :: Pi -> Maybe Expr
+piCodomain = firstJust castExpr . snd . splitAtToken KArrow . syntax
+
+appTerms :: App -> [Red]
+appTerms = filter (not . isTriviaRed) . V.toList . materializeChildren . syntax
+
+appFn :: App -> Maybe Expr
+appFn a = case appTerms a of
+    t : _ -> castExpr t
+    [] -> Nothing
+
+appArgs :: App -> [Expr]
+appArgs = mapMaybe castExpr . drop 1 . appTerms
+
+isTriviaRed :: Red -> Bool
+isTriviaRed (RToken t) = isTrivia (fromRaw (tokenKind t))
+isTriviaRed (RNode _) = False
 
 rootDefs :: Root -> V.Vector Def
 rootDefs = children . syntax
@@ -100,10 +155,10 @@ defExplicits :: Def -> V.Vector ExBinder
 defExplicits = children . syntax
 
 defBinders :: Def -> V.Vector Binder
-defBinders d = fmap BIm (defImplicits d) <> fmap BEx (defExplicits d)
+defBinders = telescope . materializeChildren . syntax
 
-defType :: Def -> Maybe Type
-defType = child . syntax
+defType :: Def -> Maybe Expr
+defType = firstJust castExpr . fst . splitAtToken KColonEq . syntax
 
 defBody :: Def -> Maybe Expr
 defBody = firstJust castExpr . snd . splitAtToken KColonEq . syntax
@@ -113,17 +168,14 @@ binderName = childToken . syntax
 
 data Annotation
     = Omitted
-    | Annotated (Maybe Type)
+    | Annotated (Maybe Expr)
 
 binderAnnotation :: Binder -> Annotation
 binderAnnotation b = case tokenOf KColon n of
-    Just _ -> Annotated (child n)
+    Just _ -> Annotated (firstJust castExpr (snd (splitAtToken KColon n)))
     Nothing -> Omitted
   where
     n = syntax b
-
-typeName :: Type -> Maybe Ident
-typeName = childToken . syntax
 
 strLitText :: StrLit -> Text
 strLitText = tokenText . syntaxToken

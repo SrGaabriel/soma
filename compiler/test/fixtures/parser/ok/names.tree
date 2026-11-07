@@ -6,7 +6,7 @@ KRoot 100
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "T"
     KWhitespace " "
     KColonEq ":="
@@ -22,7 +22,7 @@ KRoot 100
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "T"
     KWhitespace " "
     KColonEq ":="
@@ -40,7 +40,7 @@ KRoot 100
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "T"
     KWhitespace " "
     KColonEq ":="
@@ -60,15 +60,11 @@ KRoot 100
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 1
+    KName 1
       KIdent "T"
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
     KName 6
-      KIdent "a"
-      KWhitespace " "
-      KColonColon "::"
-      KWhitespace " "
-      KIdent "b"
+      KIdent "simple"
   KNewline "\n"

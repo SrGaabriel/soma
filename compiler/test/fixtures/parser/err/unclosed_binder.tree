@@ -10,7 +10,7 @@ KRoot 55
       KWhitespace " "
       KColon ":"
       KWhitespace " "
-      KType 3
+      KName 3
         KIdent "Nat"
     KWhitespace " "
     KExBinder 10
@@ -19,13 +19,13 @@ KRoot 55
       KWhitespace " "
       KColon ":"
       KWhitespace " "
-      KType 4
+      KName 4
         KIdent "Type"
       KRParen ")"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 3
+    KName 3
       KIdent "Nat"
     KWhitespace " "
     KColonEq ":="
@@ -41,7 +41,7 @@ KRoot 55
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KType 3
+    KName 3
       KIdent "Nat"
     KWhitespace " "
     KColonEq ":="

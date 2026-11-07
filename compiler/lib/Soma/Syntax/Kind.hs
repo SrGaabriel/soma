@@ -30,13 +30,16 @@ data Kind
     | KColon
     | KColonColon
     | KColonEq
+    | KArrow
     | KUnknown
     | -- Nodes
       KRoot
     | KMul
     | KDef
-    | KType
     | KName
+    | KPi
+    | KApp
+    | KParen
     | KBlock
     | KExBinder
     | KImBinder
@@ -71,11 +74,14 @@ instance Pretty Kind where
     pretty KColon = "':'"
     pretty KColonColon = "'::'"
     pretty KColonEq = "':='"
+    pretty KArrow = "'->'"
     pretty KUnknown = "unknown"
     pretty KError = "error"
     pretty KRoot = "root"
-    pretty KType = "type"
     pretty KName = "name"
+    pretty KPi = "pi type"
+    pretty KApp = "application"
+    pretty KParen = "parenthesized expression"
     pretty KMul = "multiplication"
     pretty KDef = "function definition"
     pretty KImplicits = "implicit parameters"

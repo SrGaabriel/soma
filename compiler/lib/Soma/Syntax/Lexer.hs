@@ -143,6 +143,11 @@ lexChar c@']' = charToken KRBracket c <* bumpChar
 lexChar c@',' = charToken KComma c <* bumpChar
 lexChar c@'\n' = charToken KNewline c <* bumpChar
 lexChar '"' = lexString
+lexChar c@'-' = do
+    peekNext <- peekNthChar 1
+    case peekNext of
+        Just '>' -> Token KArrow "->" <$> gets lxCursor <* bumpChar <* bumpChar
+        _ -> unknownToken (T.singleton c) <* bumpChar
 lexChar c@':' = do
     peekNext <- peekNthChar 1
     case peekNext of
