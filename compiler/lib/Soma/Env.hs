@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveAnyClass #-}
-
 module Soma.Env where
 
 import Data.HashMap.Strict qualified as HM
@@ -24,7 +22,7 @@ data Item = ItemId
 
 data Namespace = Namespace
     { nsDecls :: !(HM.HashMap Symbol Item)
-    , nsChildren :: (HM.HashMap Symbol Namespace)
+    , nsChildren :: HM.HashMap Symbol Namespace
     }
 
 walk :: Namespace -> [Symbol] -> Maybe Namespace

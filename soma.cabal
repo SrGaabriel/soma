@@ -43,7 +43,7 @@ library
 
   build-depends:
     Blammo ^>=2.1,
-    base ^>=4.22,
+    base >=4.21 && <4.23,
     containers ^>=0.8,
     diagnose,
     directory ^>=1.3.11,
@@ -71,7 +71,7 @@ executable soma
   import: warnings
   main-is: Main.hs
   build-depends:
-    base ^>=4.22,
+    base >=4.21 && <4.23,
     Blammo,
     text,
     maple,

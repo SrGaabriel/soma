@@ -114,23 +114,21 @@ bumpWhile f = do
     pure taken
 
 emptyToken :: (Monad m) => Kind -> LexerT m Token
-emptyToken k = Token k T.empty <$> lxCursor <$> get
+emptyToken k = Token k T.empty . lxCursor <$> get
 
 charToken :: (Monad m) => Kind -> Char -> LexerT m Token
-charToken k c = Token k (T.singleton c) <$> lxCursor <$> get
+charToken k c = Token k (T.singleton c) . lxCursor <$> get
 
 eofToken :: (Monad m) => LexerT m Token
 eofToken = emptyToken KEof
 
 unknownToken :: (Monad m) => Text -> LexerT m Token
-unknownToken text = Token KUnknown text <$> lxCursor <$> get
+unknownToken text = Token KUnknown text . lxCursor <$> get
 
 lexToken :: (Monad m) => LexerT m Token
 lexToken = do
     mChar <- peekChar
-    case mChar of
-        Nothing -> eofToken
-        Just c -> lexChar c
+    maybe eofToken lexChar mChar
 
 lexChar :: (Monad m) => Char -> LexerT m Token
 lexChar c@'*' = charToken KStar c <* bumpChar

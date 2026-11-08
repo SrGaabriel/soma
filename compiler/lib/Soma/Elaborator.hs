@@ -8,6 +8,8 @@ import Data.Foldable (for_)
 import Data.HashMap.Strict qualified as HM
 import Data.IORef (newIORef, readIORef)
 import Data.Maybe (mapMaybe)
+import Data.Text (Text)
+import Data.Text qualified as T
 import Data.Vector.Strict qualified as V
 import Soma.Calculus (Term (TError), prettyTerm)
 import Soma.Diagnostic (Diagnostic)
@@ -16,16 +18,13 @@ import Soma.Elaborator.Decl (checkBody, elabSig, inferDecl)
 import Soma.Elaborator.Diag (needsSignature)
 import Soma.Env (Item (ItemId, itemFile, itemKind, itemName, itemParent, itemUnique), ItemKind (ItemDef), Namespace (Namespace, nsChildren, nsDecls))
 import Soma.File (SourceFile (srcId))
-import Soma.Syntax.Tree (Root, defName, defType, identText, rootDefs)
 import Soma.Print (Pretty (pretty))
-import Soma.Unique (Unique (Unique))
-import Data.Text (Text)
-import Data.Text qualified as T
+import Soma.Syntax.Tree (Root, defName, defType, identText, rootDefs)
 import Soma.Unique (UniqueMap)
 import Soma.Unique qualified as U
 import Symbolize (Symbol, intern, unintern)
 
-typeOf :: Unique -> Elab Term
+typeOf :: U.Unique -> Elab Term
 typeOf u =
     lookupItem u >>= \case
         Pending d -> do
@@ -46,7 +45,7 @@ typeOf u =
         BodyInProgress ty -> pure ty
         Done ty _ -> pure ty
 
-unfold :: Unique -> Elab (Maybe Term)
+unfold :: U.Unique -> Elab (Maybe Term)
 unfold u =
     lookupItem u >>= \case
         Pending _ -> typeOf u *> unfold u
@@ -75,7 +74,7 @@ instance Pretty Elaborated where
       where
         term = prettyTerm elabNames
         item (u, st) = "def " <> nameOf u <> body st
-        nameOf u@(Unique n) = maybe ("#" <> T.pack (show n)) unintern (U.lookup u elabNames)
+        nameOf u@(U.Unique n) = maybe ("#" <> T.pack (show n)) unintern (U.lookup u elabNames)
         body :: ItemState -> Text
         body = \case
             Pending _ -> " <pending>"
@@ -87,7 +86,7 @@ instance Pretty Elaborated where
 
 elaborateFile :: SourceFile -> Root -> IO (Elaborated, [Diagnostic])
 elaborateFile src root = do
-    let items = zip (map Unique [1 ..]) (V.toList (rootDefs root))
+    let items = zip (map U.Unique [1 ..]) (V.toList (rootDefs root))
         namespace =
             Namespace
                 { nsDecls = HM.fromList (mapMaybe declEntry items)
@@ -96,7 +95,7 @@ elaborateFile src root = do
         declEntry (u, d) = do
             sym <- intern . identText <$> defName d
             pure (sym, ItemId{itemUnique = u, itemFile = srcId src, itemName = sym, itemKind = ItemDef, itemParent = Nothing})
-    uniquesRef <- newIORef (Unique (length items))
+    uniquesRef <- newIORef (U.Unique (length items))
     itemsRef <- newIORef (U.fromList [(u, Pending (Decl d)) | (u, d) <- items])
     diagsRef <- newIORef []
     let env =

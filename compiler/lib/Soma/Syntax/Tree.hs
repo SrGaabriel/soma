@@ -186,7 +186,7 @@ numberText = tokenText . syntaxToken
 strLitValue :: StrLit -> Text
 strLitValue = T.pack . unescape . T.unpack . stripQuotes . strLitText
   where
-    stripQuotes t = maybe t fst (T.unsnoc =<< fmap snd (T.uncons t))
+    stripQuotes t = maybe t fst (T.unsnoc . snd =<< T.uncons t)
     unescape ('\\' : c : cs) = escape c : unescape cs
     unescape (c : cs) = c : unescape cs
     unescape [] = []

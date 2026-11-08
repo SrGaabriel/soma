@@ -1,15 +1,16 @@
 module Main (main) where
 
 import Blammo.Logging.Setup (newLoggerEnv)
+import Control.Monad (unless)
+import Data.Text.IO qualified as TIO
 import Maple.Ast (cast)
 import Maple.Cache (mkCache)
+import Maple.Position (TreeId (TreeId))
 import Maple.Red (materializeRoot)
 import Soma.Diagnostic (reportAll)
-import Data.Text.IO qualified as TIO
 import Soma.Elaborator (elaborateFile)
-import Soma.Print (Pretty (pretty))
-import Maple.Position (TreeId (TreeId))
 import Soma.File (SourceFile (srcId), mkFiles, readSource)
+import Soma.Print (Pretty (pretty))
 import Soma.Syntax.Parser (parseRoot, runParser)
 import Soma.Syntax.Tree (Root)
 import Somac.Cli (Cli (Elaborate), runCli)
@@ -35,4 +36,4 @@ elaborate path = do
             (elaborated, elabDiags) <- elaborateFile src root
             reportAll files elabDiags
             TIO.putStrLn (pretty elaborated)
-            if null parseDiags && null elabDiags then pure () else exitFailure
+            unless (null parseDiags && null elabDiags) exitFailure

@@ -2,6 +2,7 @@
 
 module Soma.Calculus where
 
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Soma.Print (Pretty (pretty))
 import Soma.Unique (Unique (Unique), UniqueMap)
@@ -51,7 +52,7 @@ prettyTerm names = go [] PBinder
     go ctx p = \case
         TMeta u -> "?" <> showUnique u
         TFree u -> "%" <> showUnique u
-        TBound i -> maybe ("#" <> T.show i) id (index ctx i)
+        TBound i -> fromMaybe ("#" <> T.show i) (index ctx i)
         TSort l -> parensIf (p > PApp) ("Sort " <> prettyLevelAtom l)
         TConst u -> maybe ("#" <> showUnique u) unintern (U.lookup u names)
         TLit (LNum n) -> n

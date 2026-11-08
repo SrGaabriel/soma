@@ -38,11 +38,11 @@ instantiateAt (TSigma f s) subst idx =
 instantiateAt u _subst _idx = u
 
 shift :: Term -> Int -> Term
-shift term offset = shiftAt term 0 offset
+shift term = shiftAt term 0
 
 shiftAt :: Term -> Int -> Int -> Term
 shiftAt b@(TBound bIdx) idx offset
-    | bIdx >= idx = TBound $ idx + offset
+    | bIdx >= idx = TBound $ bIdx + offset
     | otherwise = b
 shiftAt (TApp fn value) idx offset =
     TApp (shiftAt fn idx offset) (shiftAt value idx offset)
