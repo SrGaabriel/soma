@@ -1,1 +1,3 @@
 def id[b] (a : Nat) : Nat := a
+
+def pair [a, b : Sort] (x, y : Nat) (z) : Nat := x

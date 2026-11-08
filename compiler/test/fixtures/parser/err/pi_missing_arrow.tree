@@ -1,4 +1,4 @@
-KRoot 91
+KRoot 129
   KDef 22
     KDefKw "def"
     KWhitespace " "
@@ -7,7 +7,7 @@ KRoot 91
     KColon ":"
     KWhitespace " "
     KPi 9
-      KExBinder 7
+      KExplicits 7
         KLParen "("
         KIdent "x"
         KWhitespace " "
@@ -77,13 +77,12 @@ KRoot 91
     KPi 12
       KImplicits 10
         KLBracket "["
-        KImBinder 8
-          KIdent "a"
-          KWhitespace " "
-          KColon ":"
-          KWhitespace " "
-          KName 4
-            KIdent "Sort"
+        KIdent "a"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 4
+          KIdent "Sort"
         KRBracket "]"
       KWhitespace " "
       KName 1
@@ -93,6 +92,46 @@ KRoot 91
     KWhitespace " "
     KName 1
       KIdent "i"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 36
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "j"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KPi 23
+      KImplicits 10
+        KLBracket "["
+        KIdent "a"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 4
+          KIdent "Sort"
+        KRBracket "]"
+      KWhitespace " "
+      KPi 12
+        KExplicits 7
+          KLParen "("
+          KIdent "x"
+          KWhitespace " "
+          KColon ":"
+          KWhitespace " "
+          KName 1
+            KIdent "a"
+          KRParen ")"
+        KWhitespace " "
+        KArrow "->"
+        KWhitespace " "
+        KName 1
+          KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "j"
   KNewline "\n"
 
 error: expected '->', found identifier 'B'
@@ -107,3 +146,6 @@ error: expected ')', found ':='
 
 error: expected '->', found identifier 'a'
   7:20-7:21: expected '->'
+
+error: expected '->', found '('
+  9:20-9:21: expected '->'

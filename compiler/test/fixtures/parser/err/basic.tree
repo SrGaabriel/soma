@@ -5,11 +5,10 @@ KRoot 67
     KIdent "id"
     KImplicits 3
       KLBracket "["
-      KImBinder 1
-        KIdent "b"
+      KIdent "b"
       KRBracket "]"
     KWhitespace " "
-    KExBinder 9
+    KExplicits 9
       KLParen "("
       KIdent "a"
       KWhitespace " "
@@ -36,11 +35,10 @@ KRoot 67
     KIdent "test"
     KImplicits 3
       KLBracket "["
-      KImBinder 1
-        KIdent "b"
+      KIdent "b"
       KRBracket "]"
     KWhitespace " "
-    KExBinder 9
+    KExplicits 9
       KLParen "("
       KIdent "a"
       KWhitespace " "

@@ -5,15 +5,13 @@ KRoot 223
     KIdent "const"
     KImplicits 6
       KLBracket "["
-      KImBinder 1
-        KIdent "a"
+      KIdent "a"
       KComma ","
       KWhitespace " "
-      KImBinder 1
-        KIdent "b"
+      KIdent "b"
       KRBracket "]"
     KWhitespace " "
-    KExBinder 7
+    KExplicits 7
       KLParen "("
       KIdent "x"
       KWhitespace " "
@@ -23,7 +21,7 @@ KRoot 223
         KIdent "a"
       KRParen ")"
     KWhitespace " "
-    KExBinder 7
+    KExplicits 7
       KLParen "("
       KIdent "y"
       KWhitespace " "
@@ -50,20 +48,18 @@ KRoot 223
     KIdent "length"
     KImplicits 12
       KLBracket "["
-      KImBinder 1
-        KIdent "a"
+      KIdent "a"
       KComma ","
       KWhitespace " "
-      KImBinder 7
-        KIdent "n"
-        KWhitespace " "
-        KColon ":"
-        KWhitespace " "
-        KName 3
-          KIdent "Nat"
+      KIdent "n"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KName 3
+        KIdent "Nat"
       KRBracket "]"
     KWhitespace " "
-    KExBinder 9
+    KExplicits 9
       KLParen "("
       KIdent "v"
       KWhitespace " "
@@ -90,16 +86,14 @@ KRoot 223
     KIdent "trailing"
     KImplicits 7
       KLBracket "["
-      KImBinder 1
-        KIdent "a"
+      KIdent "a"
       KComma ","
       KWhitespace " "
-      KImBinder 1
-        KIdent "b"
+      KIdent "b"
       KComma ","
       KRBracket "]"
     KWhitespace " "
-    KExBinder 7
+    KExplicits 7
       KLParen "("
       KIdent "x"
       KWhitespace " "
@@ -143,12 +137,12 @@ KRoot 223
     KWhitespace " "
     KIdent "poly"
     KWhitespace " "
-    KExBinder 3
+    KExplicits 3
       KLParen "("
       KIdent "a"
       KRParen ")"
     KWhitespace " "
-    KExBinder 7
+    KExplicits 7
       KLParen "("
       KIdent "x"
       KWhitespace " "
@@ -177,17 +171,15 @@ KRoot 223
     KImplicits 15
       KLBracket "["
       KWhitespace " "
-      KImBinder 1
-        KIdent "a"
+      KIdent "a"
       KWhitespace " "
       KComma ","
-      KImBinder 8
-        KIdent "b"
-        KWhitespace " "
-        KColon ":"
-        KWhitespace " "
-        KName 4
-          KIdent "Type"
+      KIdent "b"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KName 4
+        KIdent "Type"
       KWhitespace " "
       KRBracket "]"
     KWhitespace "  "

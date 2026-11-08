@@ -7,13 +7,11 @@ KRoot 44
       KLBracket "["
       KComma ","
       KWhitespace " "
-      KImBinder 1
-        KIdent "a"
+      KIdent "a"
       KComma ","
       KComma ","
       KWhitespace " "
-      KImBinder 1
-        KIdent "b"
+      KIdent "b"
       KRBracket "]"
     KWhitespace " "
     KColon ":"

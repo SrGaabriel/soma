@@ -4,7 +4,7 @@ KRoot 55
     KWhitespace " "
     KIdent "f"
     KWhitespace " "
-    KExBinder 8
+    KExplicits 8
       KLParen "("
       KIdent "a"
       KWhitespace " "
@@ -13,7 +13,7 @@ KRoot 55
       KName 3
         KIdent "Nat"
     KWhitespace " "
-    KExBinder 10
+    KExplicits 10
       KLParen "("
       KIdent "b"
       KWhitespace " "

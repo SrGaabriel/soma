@@ -39,12 +39,11 @@ KRoot 86
     KImplicits 5
       KLBracket "["
       KWhitespace " "
-      KImBinder 1
-        KIdent "a"
+      KIdent "a"
       KWhitespace " "
       KRBracket "]"
     KWhitespace "  "
-    KExBinder 9
+    KExplicits 9
       KLParen "("
       KWhitespace " "
       KIdent "x"

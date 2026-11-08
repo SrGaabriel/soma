@@ -17,11 +17,14 @@ data Local = Local
 
 newtype LocalCtx = LocalCtx {locals :: U.UniqueMap Local}
 
+xsLocal :: LocalCtx -> Local -> LocalCtx
+xsLocal ctx@LocalCtx{locals} l@Local{localUnique} = ctx{locals = U.insert localUnique l locals}
+
 resolveLocal :: LocalCtx -> Symbol -> Maybe Local
 resolveLocal lcx sym =
     find
         (\Local{localName = (Just name)} -> name == sym)
-        ([l | l@Local{localName = (Just _)} <- U.elems (locals lcx)])
+        ([l | l@Local{localName = (Just _)} <- reverse (U.elems (locals lcx))])
 
 data Meta
     = MUnsolved !Term !LocalCtx

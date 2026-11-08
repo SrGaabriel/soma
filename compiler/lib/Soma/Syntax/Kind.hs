@@ -41,9 +41,8 @@ data Kind
     | KApp
     | KParen
     | KBlock
-    | KExBinder
-    | KImBinder
     | KImplicits
+    | KExplicits
     | KError
     deriving (Show, Eq, Enum, Data)
     deriving anyclass (SyntaxKind)
@@ -85,6 +84,5 @@ instance Pretty Kind where
     pretty KMul = "multiplication"
     pretty KDef = "function definition"
     pretty KImplicits = "implicit parameters"
-    pretty KExBinder = "explicit binder"
-    pretty KImBinder = "implicit binder"
+    pretty KExplicits = "explicit parameters"
     pretty KBlock = "block"

@@ -9,7 +9,7 @@ import Control.Monad.State.Strict (MonadIO (liftIO), StateT, get, gets, modify',
 import Data.IORef (IORef, modifyIORef', readIORef, writeIORef)
 import Soma.Calculus
 import Soma.Diagnostic (Diagnostic)
-import Soma.Elaborator.Context (Local (localUnique), LocalCtx (LocalCtx), MetaCtx (MetaCtx), resolveLocal)
+import Soma.Elaborator.Context (Local (Local, localName, localType, localUnique, localValue), LocalCtx (LocalCtx), MetaCtx (MetaCtx), resolveLocal, xsLocal)
 import Soma.Env (Item (itemUnique), Namespace, resolveItem)
 import Soma.Syntax.Tree (Def)
 import Soma.Unique (Unique (Unique), UniqueMap)
@@ -95,6 +95,24 @@ unfoldConst :: Unique -> Elab (Maybe Term)
 unfoldConst u = do
     f <- asks envUnfold
     f u
+
+freshLocal :: Maybe Symbol -> Term -> Elab Unique
+freshLocal name typ = do
+    unique <- mkUnique
+    let local =
+            Local
+                { localUnique = unique
+                , localName = name
+                , localType = typ
+                , localValue = Nothing
+                }
+    modify' (\s@DeclState{declLocals} -> s{declLocals = xsLocal declLocals local})
+    pure unique
+
+scoped :: Elab a -> Elab a
+scoped m = do
+    saved <- gets declLocals
+    m <* modify' (\s -> s{declLocals = saved})
 
 lookupName :: [Symbol] -> Symbol -> Elab (Maybe Term)
 lookupName path member =

@@ -4,7 +4,7 @@ KRoot 25
     KWhitespace " "
     KIdent "f"
     KWhitespace " "
-    KExBinder 9
+    KExplicits 9
       KLParen "("
       KIdent "a"
       KWhitespace " "

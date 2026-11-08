@@ -1,0 +1,1 @@
+def left[A,B] (lhs: A) (rhs: B) : A := lhs

@@ -1,4 +1,4 @@
-KRoot 320
+KRoot 322
   KDef 34
     KDefKw "def"
     KWhitespace " "
@@ -6,16 +6,15 @@ KRoot 320
     KWhitespace " "
     KImplicits 10
       KLBracket "["
-      KImBinder 8
-        KIdent "a"
-        KWhitespace " "
-        KColon ":"
-        KWhitespace " "
-        KName 4
-          KIdent "Sort"
+      KIdent "a"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KName 4
+        KIdent "Sort"
       KRBracket "]"
     KWhitespace " "
-    KExBinder 7
+    KExplicits 7
       KLParen "("
       KIdent "x"
       KWhitespace " "
@@ -72,7 +71,7 @@ KRoot 320
     KColon ":"
     KWhitespace " "
     KPi 14
-      KExBinder 7
+      KExplicits 7
         KLParen "("
         KIdent "x"
         KWhitespace " "
@@ -185,13 +184,12 @@ KRoot 320
     KPi 20
       KImplicits 10
         KLBracket "["
-        KImBinder 8
-          KIdent "a"
-          KWhitespace " "
-          KColon ":"
-          KWhitespace " "
-          KName 4
-            KIdent "Sort"
+        KIdent "a"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 4
+          KIdent "Sort"
         KRBracket "]"
       KWhitespace " "
       KArrow "->"
@@ -211,53 +209,47 @@ KRoot 320
       KIdent "id"
   KNewline "\n"
   KNewline "\n"
-  KDef 55
+  KDef 57
     KDefKw "def"
     KWhitespace " "
-    KIdent "telescope"
+    KIdent "grouped_names"
     KWhitespace " "
     KColon ":"
     KWhitespace " "
-    KPi 34
+    KPi 32
       KImplicits 13
         KLBracket "["
-        KImBinder 1
-          KIdent "a"
+        KIdent "a"
         KComma ","
         KWhitespace " "
-        KImBinder 8
-          KIdent "b"
-          KWhitespace " "
-          KColon ":"
-          KWhitespace " "
-          KName 4
-            KIdent "Sort"
+        KIdent "b"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 4
+          KIdent "Sort"
         KRBracket "]"
-      KWhitespace " "
-      KExBinder 7
-        KLParen "("
-        KIdent "x"
-        KWhitespace " "
-        KColon ":"
-        KWhitespace " "
-        KName 1
-          KIdent "a"
-        KRParen ")"
-      KWhitespace " "
-      KExBinder 7
-        KLParen "("
-        KIdent "y"
-        KWhitespace " "
-        KColon ":"
-        KWhitespace " "
-        KName 1
-          KIdent "b"
-        KRParen ")"
       KWhitespace " "
       KArrow "->"
       KWhitespace " "
-      KName 1
-        KIdent "a"
+      KPi 15
+        KExplicits 10
+          KLParen "("
+          KIdent "x"
+          KComma ","
+          KWhitespace " "
+          KIdent "y"
+          KWhitespace " "
+          KColon ":"
+          KWhitespace " "
+          KName 1
+            KIdent "a"
+          KRParen ")"
+        KWhitespace " "
+        KArrow "->"
+        KWhitespace " "
+        KName 1
+          KIdent "a"
     KWhitespace " "
     KColonEq ":="
     KWhitespace " "
@@ -280,13 +272,12 @@ KRoot 320
     KPi 15
       KImplicits 10
         KLBracket "["
-        KImBinder 8
-          KIdent "a"
-          KWhitespace " "
-          KColon ":"
-          KWhitespace " "
-          KName 4
-            KIdent "Sort"
+        KIdent "a"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KName 4
+          KIdent "Sort"
         KRBracket "]"
       KWhitespace " "
       KArrow "->"

@@ -1,6 +1,7 @@
 module Soma.Elaborator.Subst where
 
 import Soma.Calculus
+import Soma.Unique (Unique)
 
 instantiate :: Term -> Term -> Term
 instantiate t t' = instantiateAt t t' 0
@@ -55,3 +56,23 @@ shiftAt (TPi info from to) idx offset =
 shiftAt (TSigma f s) idx offset =
     TSigma (shiftAt f idx offset) (shiftAt s (idx + 1) offset)
 shiftAt u _subst _idx = u
+
+abstract :: Term -> Unique -> Term
+abstract t u = abstractAt t u 0
+
+abstractAt :: Term -> Unique -> Int -> Term
+abstractAt b@(TFree u) target idx
+    | u == target = TBound idx
+    | otherwise = b
+abstractAt (TBound bIdx) _ idx | bIdx >= idx = TBound $ bIdx + 1
+abstractAt (TApp fn value) target idx =
+    TApp (abstractAt fn target idx) (abstractAt value target idx)
+abstractAt (TLam arg body) target idx =
+    TLam (abstractAt arg target idx) (abstractAt body target (idx + 1))
+abstractAt (TLet bind fn value) target idx =
+    TLet (abstractAt bind target idx) (abstractAt fn target idx) (abstractAt value target (idx + 1))
+abstractAt (TPi info from to) target idx =
+    TPi info (abstractAt from target idx) (abstractAt to target (idx + 1))
+abstractAt (TSigma f s) target idx =
+    TSigma (abstractAt f target idx) (abstractAt s target (idx + 1))
+abstractAt u _ _ = u

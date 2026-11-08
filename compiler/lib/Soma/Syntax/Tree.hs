@@ -42,18 +42,15 @@ newtype Def = Def RedNode
 newtype Block = Block RedNode
     deriving (AstNode) via (OfKind 'KBlock)
 
-newtype ExBinder = ExBinder RedNode
-    deriving (AstNode) via (OfKind 'KExBinder)
-
-newtype ImBinder = ImBinder RedNode
-    deriving (AstNode) via (OfKind 'KImBinder)
-
 newtype Implicits = Implicits RedNode
     deriving (AstNode) via (OfKind 'KImplicits)
 
+newtype Explicits = Explicits RedNode
+    deriving (AstNode) via (OfKind 'KExplicits)
+
 data Binder
-    = BIm ImBinder
-    | BEx ExBinder
+    = BIm Implicits
+    | BEx Explicits
     deriving (Generic)
     deriving (AstNode) via (Generically Binder)
 
@@ -105,24 +102,13 @@ parenContents :: RedNode -> Maybe (V.Vector Red)
 parenContents n = materializeChildren . syntax <$> cast @Paren n
 
 data PiParam
-    = PiBinders (V.Vector Binder)
+    = PiBinder Binder
     | PiAnon Expr
 
 piParam :: Pi -> Maybe PiParam
-piParam p
-    | not (V.null binders) = Just (PiBinders binders)
-    | otherwise = PiAnon <$> firstJust castExpr params
+piParam p = (PiBinder <$> firstJust castRed params) <|> (PiAnon <$> firstJust castExpr params)
   where
     params = fst (splitAtToken KArrow (syntax p))
-    binders = telescope params
-
-telescope :: V.Vector Red -> V.Vector Binder
-telescope = V.concatMap group
-  where
-    group (RNode n)
-        | Just (Implicits g) <- cast n = BIm <$> children g
-        | Just b <- cast n = V.singleton (BEx b)
-    group _ = V.empty
 
 piCodomain :: Pi -> Maybe Expr
 piCodomain = firstJust castExpr . snd . splitAtToken KArrow . syntax
@@ -148,14 +134,8 @@ rootDefs = children . syntax
 defName :: Def -> Maybe Ident
 defName = firstJust castTokenRed . fst . splitAtToken KColonEq . syntax
 
-defImplicits :: Def -> V.Vector ImBinder
-defImplicits = maybe V.empty (children . syntax) . (child @Implicits) . syntax
-
-defExplicits :: Def -> V.Vector ExBinder
-defExplicits = children . syntax
-
 defBinders :: Def -> V.Vector Binder
-defBinders = telescope . materializeChildren . syntax
+defBinders = children . syntax
 
 defType :: Def -> Maybe Expr
 defType = firstJust castExpr . fst . splitAtToken KColonEq . syntax
@@ -163,8 +143,8 @@ defType = firstJust castExpr . fst . splitAtToken KColonEq . syntax
 defBody :: Def -> Maybe Expr
 defBody = firstJust castExpr . snd . splitAtToken KColonEq . syntax
 
-binderName :: Binder -> Maybe Ident
-binderName = childToken . syntax
+binderNames :: Binder -> [Ident]
+binderNames = mapMaybe castTokenRed . V.toList . fst . splitAtToken KColon . syntax
 
 data Annotation
     = Omitted

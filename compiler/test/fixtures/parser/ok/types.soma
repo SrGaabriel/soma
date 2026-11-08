@@ -10,6 +10,6 @@ def applied : List (A -> B) := f x (g y) 1 "s"
 
 def implicit : [a : Sort] -> a -> a := id
 
-def telescope : [a, b : Sort] (x : a) (y : b) -> a := f
+def grouped_names : [a, b : Sort] -> (x, y : a) -> a := f
 
 def body : Sort := [a : Sort] -> a

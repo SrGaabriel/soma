@@ -5,11 +5,9 @@ KRoot 40
     KIdent "f"
     KImplicits 5
       KLBracket "["
-      KImBinder 1
-        KIdent "a"
+      KIdent "a"
       KWhitespace " "
-      KImBinder 1
-        KIdent "b"
+      KIdent "b"
       KRBracket "]"
     KWhitespace " "
     KColon ":"

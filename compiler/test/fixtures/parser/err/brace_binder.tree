@@ -13,7 +13,7 @@ KRoot 52
       KIdent "Type"
       KRBrace "}"
     KWhitespace " "
-    KExBinder 7
+    KExplicits 7
       KLParen "("
       KIdent "x"
       KWhitespace " "

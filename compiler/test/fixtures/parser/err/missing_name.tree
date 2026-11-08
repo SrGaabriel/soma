@@ -2,7 +2,7 @@ KRoot 25
   KDef 24
     KDefKw "def"
     KWhitespace " "
-    KExBinder 9
+    KExplicits 9
       KLParen "("
       KIdent "a"
       KWhitespace " "

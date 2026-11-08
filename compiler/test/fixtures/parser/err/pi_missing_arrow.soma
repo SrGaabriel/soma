@@ -5,3 +5,5 @@ def g : A -> := g
 def h : List (A := h
 
 def i : [a : Sort] a := i
+
+def j : [a : Sort] (x : a) -> a := j

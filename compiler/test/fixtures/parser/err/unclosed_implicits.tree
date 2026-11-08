@@ -5,14 +5,12 @@ KRoot 46
     KIdent "f"
     KImplicits 5
       KLBracket "["
-      KImBinder 1
-        KIdent "a"
+      KIdent "a"
       KComma ","
       KWhitespace " "
-      KImBinder 1
-        KIdent "b"
+      KIdent "b"
     KWhitespace " "
-    KExBinder 7
+    KExplicits 7
       KLParen "("
       KIdent "x"
       KWhitespace " "

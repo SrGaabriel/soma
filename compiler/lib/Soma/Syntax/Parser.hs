@@ -325,7 +325,7 @@ atNamedBinder = do
         else do
             name <- L.tKind <$> peekNth 1
             colon <- L.tKind <$> peekNth 2
-            pure (name == KIdent && colon == KColon)
+            pure (name == KIdent && (colon == KColon || colon == KComma))
 
 atBinderGroup :: Parser Bool
 atBinderGroup = do
@@ -335,14 +335,8 @@ atBinderGroup = do
 parseNamedPi :: TokenSet -> Parser ()
 parseNamedPi recovery = do
     startNode KPi
-    let go = do
-            implicits <- at KLBracket
-            if implicits
-                then parseImplicits >> go
-                else do
-                    named <- atNamedBinder
-                    when named $ parseBinder >> go
-    go
+    implicits <- at KLBracket
+    if implicits then parseImplicits else parseExplicits
     _ <- expect KArrow
     parseType recovery
     M.finishNode
@@ -419,20 +413,27 @@ parseBlockBody = do
     unless done $ skipWithError [pretty KRBrace] (tokenSet [KRBrace])
 
 parseImplicits :: Parser ()
-parseImplicits = do
-    open <- peek
-    startNode KImplicits
-    bump_
-    sepList KRBracket KComma implicitFirst (binderFirst <> tokenSet [KColon, KColonEq]) ["implicit parameter"] parseImplicit
-    expectClosing KRBracket open
-    M.finishNode
+parseImplicits = parseBinderGroup KImplicits KRBracket "implicit parameter"
 
-parseImplicit :: Parser ()
-parseImplicit = do
-    startNode KImBinder
+parseExplicits :: Parser ()
+parseExplicits = parseBinderGroup KExplicits KRParen "parameter"
+
+-- group := open name (',' name)* (':' type)? close; every name in a group shares its type
+parseBinderGroup :: Kind -> Kind -> T.Text -> Parser ()
+parseBinderGroup group close what = do
+    open <- peek
+    startNode group
     bump_
+    sepList close KComma implicitFirst (binderFirst <> tokenSet [KColon, KColonEq]) [what] bump_
     annotated <- at KColon
-    when annotated $ bump_ >> parseType (tokenSet [KComma, KRBracket])
+    when annotated $ do
+        bump_
+        parseType (tokenSet [KComma, close])
+        another <- at KComma
+        when another $ do
+            errorHere "all names in a group share one type; start a new group for a different type"
+            skipWithError [pretty close] (tokenSet [close])
+    expectClosing close open
     M.finishNode
 
 parseDefBinder :: Parser ()
@@ -445,25 +446,7 @@ parseDefBinder = do
         KLBrace -> do
             errorHere "implicit parameters are written as '[a, b : T]' after the name"
             skipGroup KRBrace
-        _ -> parseBinder
-
-parseBinder :: Parser ()
-parseBinder = do
-    open <- peek
-    startNode KExBinder
-    bump_
-    _ <- expect KIdent
-    parseAnnotation (tokenSet [KRParen])
-    expectClosing KRParen open
-    M.finishNode
-
-parseAnnotation :: TokenSet -> Parser ()
-parseAnnotation recovery = do
-    inc <- incoming
-    if
-        | inc == KColon -> bump_ >> parseType recovery
-        | inc `member` typeFirst -> errorExpected [pretty KColon] >> parseType recovery
-        | otherwise -> pure ()
+        _ -> parseExplicits
 
 parseType :: TokenSet -> Parser ()
 parseType recovery = do

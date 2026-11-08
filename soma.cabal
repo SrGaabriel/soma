@@ -22,6 +22,7 @@ library
     Soma.Calculus
     Soma.Diagnostic
     Soma.Elaborator
+    Soma.Elaborator.Binder
     Soma.Elaborator.Context
     Soma.Elaborator.Core
     Soma.Elaborator.Decl
@@ -71,12 +72,12 @@ executable soma
   import: warnings
   main-is: Main.hs
   build-depends:
-    base >=4.21 && <4.23,
     Blammo,
-    text,
+    base >=4.21 && <4.23,
     maple,
     optparse-applicative ^>=0.19,
-    soma
+    soma,
+    text
 
   other-modules:
     Somac.Cli

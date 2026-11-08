@@ -1,0 +1,62 @@
+KRoot 65
+  KDef 46
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "mixed"
+    KWhitespace " "
+    KImplicits 19
+      KLBracket "["
+      KIdent "a"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KName 4
+        KIdent "Sort"
+      KError 9
+        KComma ","
+        KWhitespace " "
+        KIdent "n"
+        KWhitespace " "
+        KColon ":"
+        KWhitespace " "
+        KIdent "Nat"
+      KRBracket "]"
+    KWhitespace " "
+    KExplicits 7
+      KLParen "("
+      KIdent "x"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KName 1
+        KIdent "a"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KName 1
+      KIdent "a"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "x"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 16
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "g"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KName 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KNumber "1"
+  KNewline "\n"
+
+error: all names in a group share one type; start a new group for a different type
+  1:20-1:21: all names in a group share one type; start a new group for a different type

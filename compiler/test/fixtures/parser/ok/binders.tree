@@ -1,15 +1,14 @@
-KRoot 31
+KRoot 83
   KDef 30
     KDefKw "def"
     KWhitespace " "
     KIdent "id"
     KImplicits 3
       KLBracket "["
-      KImBinder 1
-        KIdent "b"
+      KIdent "b"
       KRBracket "]"
     KWhitespace " "
-    KExBinder 9
+    KExplicits 9
       KLParen "("
       KIdent "a"
       KWhitespace " "
@@ -28,4 +27,51 @@ KRoot 31
     KWhitespace " "
     KName 1
       KIdent "a"
+  KNewline "\n"
+  KNewline "\n"
+  KDef 50
+    KDefKw "def"
+    KWhitespace " "
+    KIdent "pair"
+    KWhitespace " "
+    KImplicits 13
+      KLBracket "["
+      KIdent "a"
+      KComma ","
+      KWhitespace " "
+      KIdent "b"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KName 4
+        KIdent "Sort"
+      KRBracket "]"
+    KWhitespace " "
+    KExplicits 12
+      KLParen "("
+      KIdent "x"
+      KComma ","
+      KWhitespace " "
+      KIdent "y"
+      KWhitespace " "
+      KColon ":"
+      KWhitespace " "
+      KName 3
+        KIdent "Nat"
+      KRParen ")"
+    KWhitespace " "
+    KExplicits 3
+      KLParen "("
+      KIdent "z"
+      KRParen ")"
+    KWhitespace " "
+    KColon ":"
+    KWhitespace " "
+    KName 3
+      KIdent "Nat"
+    KWhitespace " "
+    KColonEq ":="
+    KWhitespace " "
+    KName 1
+      KIdent "x"
   KNewline "\n"

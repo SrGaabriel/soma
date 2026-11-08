@@ -5,13 +5,12 @@ KRoot 46
     KIdent "f"
     KImplicits 11
       KLBracket "["
-      KImBinder 3
-        KIdent "a"
-        KWhitespace " "
-        KColon ":"
-      KComma ","
+      KIdent "a"
       KWhitespace " "
-      KImBinder 3
+      KColon ":"
+      KError 5
+        KComma ","
+        KWhitespace " "
         KIdent "b"
         KWhitespace " "
         KColon ":"
@@ -45,6 +44,3 @@ KRoot 46
 
 error: expected type, found ','
   1:10-1:11: expected type
-
-error: expected type, found ']'
-  1:16-1:17: expected type

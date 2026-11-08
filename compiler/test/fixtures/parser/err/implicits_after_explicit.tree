@@ -4,7 +4,7 @@ KRoot 45
     KWhitespace " "
     KIdent "f"
     KWhitespace " "
-    KExBinder 7
+    KExplicits 7
       KLParen "("
       KIdent "x"
       KWhitespace " "
@@ -16,8 +16,7 @@ KRoot 45
     KWhitespace " "
     KImplicits 3
       KLBracket "["
-      KImBinder 1
-        KIdent "b"
+      KIdent "b"
       KRBracket "]"
     KWhitespace " "
     KColon ":"
