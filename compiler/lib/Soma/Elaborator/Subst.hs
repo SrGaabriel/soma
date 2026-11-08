@@ -31,8 +31,8 @@ instantiateAt (TLam arg body) subst idx =
     TLam (instantiateAt arg subst idx) (instantiateAt body subst (idx + 1))
 instantiateAt (TLet bind fn value) subst idx =
     TLet (instantiateAt bind subst idx) (instantiateAt fn subst idx) (instantiateAt value subst (idx + 1))
-instantiateAt (TPi from to) subst idx =
-    TPi (instantiateAt from subst idx) (instantiateAt to subst (idx + 1))
+instantiateAt (TPi info from to) subst idx =
+    TPi info (instantiateAt from subst idx) (instantiateAt to subst (idx + 1))
 instantiateAt (TSigma f s) subst idx =
     TSigma (instantiateAt f subst idx) (instantiateAt s subst (idx + 1))
 instantiateAt u _subst _idx = u
@@ -50,8 +50,8 @@ shiftAt (TLam arg body) idx offset =
     TLam (shiftAt arg idx offset) (shiftAt body (idx + 1) offset)
 shiftAt (TLet bind fn value) idx offset =
     TLet (shiftAt bind idx offset) (shiftAt fn idx offset) (shiftAt value (idx + 1) offset)
-shiftAt (TPi from to) idx offset =
-    TPi (shiftAt from idx offset) (shiftAt to (idx + 1) offset)
+shiftAt (TPi info from to) idx offset =
+    TPi info (shiftAt from idx offset) (shiftAt to (idx + 1) offset)
 shiftAt (TSigma f s) idx offset =
     TSigma (shiftAt f idx offset) (shiftAt s (idx + 1) offset)
 shiftAt u _subst _idx = u

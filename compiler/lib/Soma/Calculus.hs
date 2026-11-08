@@ -25,7 +25,7 @@ data Term
     | TBound !Int
     | TSort !Level
     | TConst !Unique
-    | TPi Term Term
+    | TPi BinderInfo Term Term
     | TSigma Term Term
     | TApp Term Term
     | TLam Term Term
@@ -45,6 +45,11 @@ instance Pretty Term where
 instance Pretty Level where
     pretty = prettyLevel
 
+data BinderInfo
+    = BinderExplicit
+    | BinderImplicit
+    deriving (Show, Eq)
+
 prettyTerm :: UniqueMap Symbol -> Term -> T.Text
 prettyTerm names = go [] PBinder
   where
@@ -59,7 +64,7 @@ prettyTerm names = go [] PBinder
         TLit (LStr s) -> T.show s
         TError -> "<error>"
         TApp f a -> parensIf (p > PApp) (go ctx PApp f <> " " <> go ctx PAtom a)
-        TPi a b
+        TPi _ a b -- todo: binder info
             | not (occurs 0 b) -> parensIf (p > PBinder) (go ctx PApp a <> " → " <> go ("_" : ctx) PBinder b)
             | otherwise -> binder ctx p "" " → " a b
         TSigma a b -> binder ctx p "" " × " a b
@@ -83,7 +88,7 @@ occurs :: Int -> Term -> Bool
 occurs k = \case
     TBound i -> i == k
     TApp f a -> occurs k f || occurs k a
-    TPi a b -> occurs k a || occurs (k + 1) b
+    TPi _ a b -> occurs k a || occurs (k + 1) b
     TSigma a b -> occurs k a || occurs (k + 1) b
     TLam a b -> occurs k a || occurs (k + 1) b
     TLet ty v b -> occurs k ty || occurs k v || occurs (k + 1) b

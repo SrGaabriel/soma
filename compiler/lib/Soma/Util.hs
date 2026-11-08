@@ -13,3 +13,6 @@ maybeM def f action = do
     case val of
         Nothing -> pure def
         Just x -> f x
+
+maybeA :: (Applicative m) => b -> (a -> m b) -> Maybe a -> m b
+maybeA def = maybe (pure def)
