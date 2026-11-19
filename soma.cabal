@@ -22,7 +22,6 @@ library
     Soma.Calculus
     Soma.Diagnostic
     Soma.Elaborator
-    Soma.Elaborator.Binder
     Soma.Elaborator.Context
     Soma.Elaborator.Core
     Soma.Elaborator.Decl
